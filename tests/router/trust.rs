@@ -1,0 +1,249 @@
+use super::*;
+use teellm::vault::Vault;
+
+const MODEL: &str = "vendor/Future-v99:preview";
+const EFFORT: &str = "future-ULTRA-v99";
+
+#[rstest]
+#[case(Provider::OpenAI, false)]
+#[case(Provider::Anthropic, false)]
+#[case(Provider::Gemini, false)]
+#[case(Provider::XAI, false)]
+#[case(Provider::OpenAI, true)]
+#[case(Provider::Anthropic, true)]
+#[case(Provider::Gemini, true)]
+#[case(Provider::XAI, true)]
+#[tokio::test]
+async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchanged(
+    #[case] provider: Provider,
+    #[case] chat: bool,
+) {
+    let mut replies = Vec::new();
+    if provider == Provider::Gemini {
+        replies.push(Reply::json(
+            json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"fixture-project"}),
+        ));
+    }
+    replies.push(Reply::json(if provider == Provider::Gemini {
+        json!({"response":native(provider)})
+    } else if provider == Provider::XAI && chat {
+        completion()
+    } else {
+        native(provider)
+    }));
+    let proxy = mock(replies).await;
+    let mut bundle = discovery::bundle(provider, &[&proxy]);
+    bundle.config.models[0].discover = false;
+    bundle.config.models[0].deployments[0].model = "must-not-substitute-this-model".into();
+    // Future field locations are configurable, but accepted values still come
+    // exclusively from the authenticated catalog fixture, not from this config.
+    if matches!(provider, Provider::Gemini | Provider::Anthropic) {
+        bundle.config.compatibility.insert(crate::compatibility::name(provider).into(), serde_json::from_value(json!({
+            "catalog_capabilities":{"effort":"/fixture_levels", "budget_min":"/fixture_budget_min", "budget_max":"/fixture_budget_max"}
+        })).unwrap());
+    }
+    let vault = Vault::memory().unwrap();
+    vault.provision(&bundle).unwrap();
+    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let (path, body) = if chat {
+        (
+            "/v1/chat/completions".to_owned(),
+            json!({"model":MODEL,"messages":[{"role":"user","content":"hello"}],"reasoning_effort":EFFORT}),
+        )
+    } else {
+        match provider {
+            Provider::Anthropic => (
+                "/v1/messages".into(),
+                json!({"model":MODEL,"max_tokens":8,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":EFFORT},"thinking":{"type":"future-mode","budget_tokens":12345}}),
+            ),
+            Provider::Gemini => (
+                format!("/v1beta/models/{MODEL}:generateContent"),
+                json!({"contents":[{"parts":[{"text":"hello"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":EFFORT,"thinkingBudget":12345}}}),
+            ),
+            _ => (
+                "/v1/responses".into(),
+                json!({"model":MODEL,"input":"hello","reasoning":{"effort":EFFORT,"summary":"auto"}}),
+            ),
+        }
+    };
+    let response = client()
+        .post(format!("{}{path}", gateway.url))
+        .bearer_auth("client-secret")
+        .header("x-router-pool", "pool")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let calls = proxy.calls.lock().unwrap();
+    let call = calls.last().unwrap();
+    assert_eq!(call.body["model"], MODEL);
+    assert!(!call.headers.contains_key("x-router-pool"));
+    let effort = match provider {
+        Provider::OpenAI => &call.body["reasoning"]["effort"],
+        Provider::Anthropic => &call.body["output_config"]["effort"],
+        Provider::Gemini => {
+            &call.body["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"]
+        }
+        Provider::XAI if chat => &call.body["reasoning_effort"],
+        Provider::XAI => &call.body["reasoning"]["effort"],
+        #[cfg(feature = "workbuddy-lab")]
+        Provider::Workbuddy => &call.body["reasoning_effort"],
+    };
+    assert_eq!(effort, EFFORT);
+    if !chat && provider == Provider::Anthropic {
+        assert_eq!(call.body["thinking"], body["thinking"]);
+    }
+    if !chat && provider == Provider::Gemini {
+        assert_eq!(
+            call.body["request"]["generationConfig"],
+            body["generationConfig"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn automatic_pool_selection_preserves_explicit_selection_and_acl() {
+    let proxy = mock(vec![Reply::json(completion()); 3]).await;
+    let mut config = configuration(&proxy);
+    let mut second = config.models[0].clone();
+    second.name = "second".into();
+    second.deployments[0].id = "b".into();
+    config.models.push(second);
+    let gateway = gateway(config).await;
+    let body = json!({"model":MODEL,"messages":[{"role":"user","content":"hi"}]});
+    assert_eq!(
+        post(&gateway, "/v1/chat/completions", body.clone())
+            .await
+            .status(),
+        200
+    );
+    let response = client()
+        .post(format!("{}/v1/chat/completions", gateway.url))
+        .bearer_auth("client-secret")
+        .header("x-router-pool", "second")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-deployment"], "b");
+    let update = client().post(format!("{}/admin/apply", gateway.url)).bearer_auth("admin-secret")
+        .json(&json!({"config":{"users":[{"id":"test-user"}],"keys":[{"name":"user","user_id":"test-user","key_ref":"CLIENT_KEY","models":["chat/*"]}]}})).send().await.unwrap();
+    assert_eq!(update.status(), 200, "{}", update.text().await.unwrap());
+    for (pool, status) in [("second", 403), ("chat", 200), ("missing", 404)] {
+        assert_eq!(
+            client()
+                .post(format!("{}/v1/chat/completions", gateway.url))
+                .bearer_auth("client-secret")
+                .header("x-router-pool", pool)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+    }
+    assert_eq!(proxy.calls.lock().unwrap().len(), 3);
+    // A model that resembles the ACL's pool syntax must not authorize another pool.
+    for model in ["chat/forbidden", "chat/vendor/model"] {
+        let mut spoof = body.clone();
+        spoof["model"] = model.into();
+        assert_eq!(
+            client()
+                .post(format!("{}/v1/chat/completions", gateway.url))
+                .bearer_auth("client-secret")
+                .header("x-router-pool", "second")
+                .json(&spoof)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+}
+
+#[tokio::test]
+async fn pool_is_discovered_from_model_and_response_continuations_keep_their_account() {
+    let a = catalog_mock(vec![Reply::json(
+        json!({"models":[{"id":"first-only"},{"id":"shared"}]}),
+    )])
+    .await;
+    let b = catalog_mock(vec![
+        Reply::json(json!({"models":[{"id":"second-only"},{"id":"shared"}]})),
+        Reply::json(native(Provider::XAI)),
+        Reply::json(native(Provider::XAI)),
+    ])
+    .await;
+    let mut bundle = discovery::bundle(Provider::XAI, &[&a, &b]);
+    bundle.config.keys[0].models.clear();
+    let mut second = bundle.config.models[0].clone();
+    second.name = "second".into();
+    second.deployments.retain(|d| d.id == "account-1");
+    bundle.config.models[0]
+        .deployments
+        .retain(|d| d.id == "account-0");
+    bundle.config.models.push(second);
+    let vault = Vault::memory().unwrap();
+    vault.provision(&bundle).unwrap();
+    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    for body in [
+        json!({"model":"second-only","input":"hello"}),
+        json!({"model":"shared","previous_response_id":"reply","input":"continue"}),
+    ] {
+        let response = post(&gateway, "/v1/responses", body.clone()).await;
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let mut expected = body;
+        expected["store"] = false.into();
+        assert_eq!(b.calls.lock().unwrap().last().unwrap().body, expected);
+    }
+    assert_eq!(a.calls.lock().unwrap().len(), 1); // Discovery only, never the user's prompt.
+    assert_eq!(b.calls.lock().unwrap().len(), 3);
+    // Automatic routing must not guess the account of a foreign response ID.
+    assert_eq!(
+        post(
+            &gateway,
+            "/v1/responses",
+            json!({"model":"shared","previous_response_id":"unknown","input":"hello"})
+        )
+        .await
+        .status(),
+        409
+    );
+    assert_eq!(b.calls.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn fallback_retries_the_same_model_and_effort() {
+    let failed = mock(vec![Reply::error(503)]).await;
+    let good = mock(vec![Reply::json(completion())]).await;
+    let mut config = configuration(&failed);
+    config.compatibility.insert(
+        "openai".into(),
+        serde_json::from_value(json!({
+            "catalog_capabilities":{"effort":"/fixture_levels"}
+        }))
+        .unwrap(),
+    );
+    config.models[0].max_attempts = 2;
+    config.models[0].fallbacks.push("backup".into());
+    let mut backup = config.models[0].clone();
+    backup.name = "backup".into();
+    backup.fallbacks.clear();
+    backup.deployments[0].id = "backup".into();
+    backup.deployments[0].model = "different-model".into();
+    backup.deployments[0].api_base = Some(format!("{}/v1", good.running.url));
+    backup.deployments[0].proxy = Some(good.running.url.clone());
+    config.models.push(backup);
+    let gateway = gateway(config).await;
+    let response = client().post(format!("{}/v1/chat/completions", gateway.url)).bearer_auth("client-secret")
+        .header("x-router-pool", "chat").json(&json!({"model":MODEL,"reasoning_effort":EFFORT,"messages":[{"role":"user","content":"hi"}]})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    for proxy in [&failed, &good] {
+        let calls = proxy.calls.lock().unwrap();
+        assert_eq!(calls[0].body["model"], MODEL);
+        assert_eq!(calls[0].body["reasoning_effort"], EFFORT);
+    }
+}

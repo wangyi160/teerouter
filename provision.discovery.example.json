@@ -1,0 +1,120 @@
+{
+  "config": {
+    "server": {
+      "bind": "127.0.0.1:4000",
+      "admin_key_ref": "admin"
+    },
+    "discovery": {
+      "refresh_secs": 300,
+      "max_stale_secs": 86400,
+      "timeout_secs": 15,
+      "codex_client_version": "0.162.0"
+    },
+    "keys": [
+      {
+        "name": "user",
+        "key_ref": "client",
+        "models": [
+          "chatgpt/*",
+          "claude/*",
+          "gemini/*",
+          "grok/*"
+        ],
+        "user_id": "test-user"
+      }
+    ],
+    "models": [
+      {
+        "name": "chatgpt",
+        "discover": true,
+        "deployments": [
+          {
+            "id": "chatgpt-1",
+            "provider": "openai",
+            "oauth_account": "chatgpt-1"
+          }
+        ]
+      },
+      {
+        "name": "claude",
+        "discover": true,
+        "deployments": [
+          {
+            "id": "claude-1",
+            "provider": "anthropic",
+            "oauth_account": "claude-1"
+          }
+        ]
+      },
+      {
+        "name": "gemini",
+        "discover": true,
+        "deployments": [
+          {
+            "id": "gemini-1",
+            "provider": "gemini",
+            "oauth_account": "gemini-1"
+          }
+        ]
+      },
+      {
+        "name": "grok",
+        "discover": true,
+        "deployments": [
+          {
+            "id": "grok-1",
+            "provider": "xai",
+            "oauth_account": "grok-1"
+          }
+        ]
+      }
+    ],
+    "users": [
+      {
+        "id": "test-user",
+        "max_concurrent": 16
+      }
+    ]
+  },
+  "secrets": {
+    "client": "REPLACE_WITH_ROUTER_KEY",
+    "admin": "REPLACE_WITH_SEPARATE_ADMIN_KEY"
+  },
+  "accounts": {
+    "chatgpt-1": {
+      "provider": "openai",
+      "proxy": "http://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18081",
+      "credential": {
+        "access_token": "REPLACE_WITH_ACCESS_TOKEN",
+        "refresh_token": "REPLACE_WITH_REFRESH_TOKEN",
+        "expires_at": 1
+      }
+    },
+    "claude-1": {
+      "provider": "anthropic",
+      "proxy": "http://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18082",
+      "credential": {
+        "access_token": "sk-ant-oat-REPLACE_WITH_ACCESS_TOKEN",
+        "expires_at": 1
+      }
+    },
+    "gemini-1": {
+      "provider": "gemini",
+      "proxy": "socks5h://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18083",
+      "credential": {
+        "access_token": "REPLACE_WITH_ACCESS_TOKEN",
+        "refresh_token": "REPLACE_WITH_REFRESH_TOKEN",
+        "expiry_date": 1
+      }
+    },
+    "grok-1": {
+      "provider": "xai",
+      "proxy": "http://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18084",
+      "credential": {
+        "access_token": "REPLACE_WITH_ACCESS_TOKEN",
+        "refresh_token": "REPLACE_WITH_REFRESH_TOKEN",
+        "expires_at": 1
+      }
+    }
+  }
+}

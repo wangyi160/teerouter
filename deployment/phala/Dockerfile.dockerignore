@@ -1,0 +1,15 @@
+**
+!Cargo.toml
+!Cargo.lock
+!LICENSE
+!NOTICE
+!LICENSES
+!LICENSES/**
+!src
+!src/**
+!tests
+!tests/memory_cli.rs
+!deployment
+!deployment/phala
+!deployment/phala/Dockerfile
+!deployment/phala/Dockerfile.dockerignore

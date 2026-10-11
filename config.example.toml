@@ -1,0 +1,72 @@
+# Configuration-shape / unit-test example only. Runtime is initialized by management APIs.
+# Enable other deployments after setting their key and model environment variables.
+[server]
+bind = "127.0.0.1:4000"
+max_concurrent = 256
+max_body_bytes = 16777216
+request_timeout_secs = 120
+body_timeout_secs = 15
+# Optional, separate credential for GET /admin/status and /admin/usage:
+# admin_key_env = "TEELLM_ADMIN_KEY"
+
+[[users]]
+id = "test-user"
+max_concurrent = 16
+
+[[keys]]
+user_id = "test-user"
+name = "local"
+key_env = "TEELLM_API_KEY"
+models = ["chat/*"] # Select with x-router-pool; send the real model ID unchanged.
+rpm = 120
+tpm = 0
+max_concurrent = 32
+
+[[models]]
+name = "chat"
+strategy = "round_robin" # weighted round_robin or weighted least_busy
+max_attempts = 3         # total attempts, including the initial request and fallbacks
+retry_delay_ms = 100     # exponential delay, bounded by the request deadline
+fallbacks = []          # other model aliases, tried after this pool
+
+[[models.deployments]]
+id = "openai-primary"
+provider = "openai"
+model = "env:OPENAI_MODEL"
+api_key_env = "OPENAI_API_KEY"
+proxy = "http://127.0.0.1:18081" # Required; replace with this account's proxy.
+# api_base = "https://api.openai.com/v1"
+weight = 1
+max_concurrent = 32
+rpm = 0
+failure_threshold = 2
+cooldown_secs = 30
+timeout_secs = 90
+
+[[models.deployments]]
+id = "claude-primary"
+provider = "anthropic" # alias: claude
+model = "env:ANTHROPIC_MODEL"
+api_key_env = "ANTHROPIC_API_KEY"
+proxy = "http://127.0.0.1:18082"
+enabled = false
+# api_base = "https://api.anthropic.com/v1"
+
+[[models.deployments]]
+id = "gemini-primary"
+provider = "gemini"
+model = "env:GEMINI_MODEL"
+api_key_env = "GEMINI_API_KEY"
+proxy = "socks5h://127.0.0.1:18083"
+enabled = false
+# Native API root; the router adds /openai for Chat Completions.
+# api_base = "https://generativelanguage.googleapis.com/v1beta"
+
+[[models.deployments]]
+id = "grok-primary"
+provider = "xai" # alias: grok
+model = "env:XAI_MODEL"
+api_key_env = "XAI_API_KEY"
+proxy = "http://127.0.0.1:18084"
+enabled = false
+# api_base = "https://api.x.ai/v1"

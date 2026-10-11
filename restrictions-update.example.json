@@ -1,0 +1,8 @@
+{
+  "config": {
+    "restrictions": [
+      {"provider": "openai", "model": "official-model-id-to-block", "block_model": true},
+      {"provider": "openai", "model": "another-official-model-id", "blocked_efforts": ["high"]}
+    ]
+  }
+}

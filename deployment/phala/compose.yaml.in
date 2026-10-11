@@ -1,0 +1,21 @@
+services:
+  router:
+    image: __ROUTER_IMAGE_DIGEST__
+    platform: linux/amd64
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    memswap_limit: 1g
+    ulimits:
+      core: 0
+    logging:
+      driver: none
+    environment:
+      TEELLM_ADMIN_KEY: ${TEELLM_ADMIN_KEY:?Set encrypted TEELLM_ADMIN_KEY in Phala}
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock:ro
