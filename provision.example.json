@@ -1,0 +1,50 @@
+{
+  "config": {
+    "server": {
+      "bind": "127.0.0.1:4000",
+      "admin_key_ref": "admin"
+    },
+    "keys": [
+      {
+        "name": "user",
+        "key_ref": "client",
+        "user_id": "test-user"
+      }
+    ],
+    "models": [
+      {
+        "name": "chat",
+        "discover": true,
+        "strategy": "round_robin",
+        "deployments": [
+          {
+            "id": "chatgpt-1",
+            "provider": "openai",
+            "oauth_account": "chatgpt-1"
+          }
+        ]
+      }
+    ],
+    "users": [
+      {
+        "id": "test-user",
+        "max_concurrent": 16
+      }
+    ]
+  },
+  "secrets": {
+    "client": "REPLACE_WITH_ROUTER_KEY",
+    "admin": "REPLACE_WITH_SEPARATE_ADMIN_KEY"
+  },
+  "accounts": {
+    "chatgpt-1": {
+      "provider": "openai",
+      "proxy": "http://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18081",
+      "credential": {
+        "access_token": "REPLACE_WITH_ACCESS_TOKEN",
+        "refresh_token": "REPLACE_WITH_REFRESH_TOKEN",
+        "expires_at": 1
+      }
+    }
+  }
+}

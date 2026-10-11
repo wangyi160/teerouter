@@ -1,0 +1,74 @@
+# Configuration-shape / unit-test example only. Runtime is initialized by management APIs.
+# For new accounts use vault login/provision commands; see README.md.
+# Existing account paths are relative to this import file.
+[server]
+bind = "127.0.0.1:4000"
+request_timeout_secs = 180
+# admin_key_env = "TEELLM_ADMIN_KEY"
+
+[[users]]
+id = "test-user"
+max_concurrent = 16
+
+[[keys]]
+user_id = "test-user"
+name = "local"
+key_env = "TEELLM_API_KEY" # Router access key, not a provider API key.
+models = ["chat/*", "claude/*", "gemini/*", "grok/*"] # Pool ACLs; model is passed unchanged.
+max_concurrent = 16
+
+[[models]]
+name = "chat"
+strategy = "round_robin"
+max_attempts = 3
+[[models.deployments]]
+id = "chatgpt-account-1"
+provider = "openai"
+model = "env:OPENAI_MODEL"
+oauth_file = "accounts/chatgpt-1.json"
+proxy = "http://127.0.0.1:18081" # Imported into the encrypted account binding.
+# Default OAuth API: https://chatgpt.com/backend-api/codex
+[[models.deployments]]
+id = "chatgpt-account-2"
+provider = "openai"
+model = "env:OPENAI_MODEL"
+oauth_file = "accounts/chatgpt-2.json"
+proxy = "http://127.0.0.1:18082"
+enabled = false
+
+[[models]]
+name = "claude"
+[[models.deployments]]
+id = "claude-account-1"
+provider = "anthropic"
+model = "env:ANTHROPIC_MODEL"
+# Replace with your actual Claude Code credential file, for example:
+# oauth_file = 'C:\Users\YOUR_USER\.claude\.credentials.json'
+# Claude Code manages login/refresh; import renewed credentials into the vault.
+oauth_file = "accounts/claude-1.json"
+proxy = "http://127.0.0.1:18083"
+enabled = false
+
+[[models]]
+name = "gemini"
+[[models.deployments]]
+id = "gemini-cli-account-1"
+provider = "gemini"
+model = "env:GEMINI_MODEL"
+oauth_file = "accounts/gemini-1.json"
+proxy = "socks5h://127.0.0.1:18084"
+# Or point directly to Gemini CLI's ~/.gemini/oauth_creds.json.
+# gemini_project = "your-project-id" # For accounts requiring a project.
+# Default OAuth API: https://cloudcode-pa.googleapis.com/v1internal
+timeout_secs = 150
+enabled = false
+
+[[models]]
+name = "grok"
+[[models.deployments]]
+id = "grok-account-1"
+provider = "xai"
+model = "env:XAI_MODEL"
+oauth_file = "accounts/grok-1.json"
+proxy = "http://127.0.0.1:18085"
+enabled = false
