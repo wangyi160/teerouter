@@ -39,6 +39,8 @@ pub struct Engine {
     admin_secret: Option<String>,
     groups: HashMap<String, Group>,
     ledger: Arc<Ledger>,
+    moderation: Option<crate::moderation::Scanner>,
+    moderation_shared: Arc<crate::moderation::Shared>,
     global: Arc<crate::resources::Gate>,
     sequence: Arc<AtomicU64>,
     request_prefix: Arc<str>,
@@ -236,6 +238,20 @@ impl Engine {
             .map(|p| p.ledger.clone())
             .unwrap_or_else(|| Arc::new(Ledger::new(vault.clone())));
         let global = previous.map(|p| p.global.clone()).unwrap_or_default();
+        let moderation_shared = previous
+            .map(|p| p.moderation_shared.clone())
+            .unwrap_or_default();
+        let moderation = config
+            .moderation
+            .as_ref()
+            .map(|options| {
+                crate::moderation::Scanner::new(
+                    options,
+                    &config::secret(&options.api_key_ref, &env)?,
+                    moderation_shared.clone(),
+                )
+            })
+            .transpose()?;
         Ok(Arc::new(Self {
             vault,
             config_revision,
@@ -245,6 +261,8 @@ impl Engine {
             groups,
             ledger,
             global,
+            moderation,
+            moderation_shared,
             sequence: previous
                 .map(|p| p.sequence.clone())
                 .unwrap_or_else(|| Arc::new(AtomicU64::new(1))),
@@ -653,6 +671,17 @@ impl Engine {
                 "request_timeout",
                 "Official catalog refresh exceeded request deadline",
             ));
+        }
+        if let Some(scanner) = &self.moderation {
+            let report = scanner
+                .check(protocol, &body, deadline, self.config_revision)
+                .await;
+            let error = report.error();
+            ticket.moderation = Some(report);
+            if let Some(error) = error {
+                ticket.finish(error.status);
+                return Err(error);
+            }
         }
         let streaming = body["stream"] == true;
         let include_usage = body["stream_options"]["include_usage"] == true;

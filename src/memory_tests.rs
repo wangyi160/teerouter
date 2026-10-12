@@ -27,6 +27,7 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
             ..Default::default()
         },
         &json!({"request_id":"first"}),
+        None,
     );
     let saved = v.checkpoint().unwrap();
     assert_eq!(
@@ -40,6 +41,7 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
             ..Default::default()
         },
         &json!({"request_id":"second"}),
+        None,
     );
     assert!(
         v.acknowledge("wrong", saved["state"]["generation"].as_u64().unwrap(), 1)

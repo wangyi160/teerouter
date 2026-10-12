@@ -29,6 +29,8 @@ mod catalog_policy;
 mod compatibility;
 #[path = "router/discovery.rs"]
 mod discovery;
+#[path = "router/moderation.rs"]
+mod moderation;
 #[path = "router/oauth.rs"]
 mod oauth;
 #[path = "router/operations.rs"]
@@ -81,6 +83,7 @@ struct Mock {
 
 #[derive(Clone)]
 struct Reply {
+    headers: HeaderMap,
     status: u16,
     content_type: &'static str,
     body: String,
@@ -91,6 +94,7 @@ struct Reply {
 impl Reply {
     fn json(value: Value) -> Self {
         Self {
+            headers: HeaderMap::new(),
             status: 200,
             content_type: "application/json",
             body: value.to_string(),
@@ -214,6 +218,7 @@ async fn mock_inner(replies: Vec<Reply>, automatic_catalog: bool) -> Mock {
                     .headers_mut()
                     .insert("retry-after", n.to_string().parse().unwrap());
             }
+            response.headers_mut().extend(reply.headers);
             response
         }
     }));
@@ -260,6 +265,7 @@ fn engine(config: Config) -> Arc<Engine> {
             match name {
                 "CLIENT_KEY" => "client-secret",
                 "ADMIN_KEY" => "admin-secret",
+                "LOCKLLM_KEY" => "moderation-secret",
                 _ => "provider-secret",
             }
             .into(),
