@@ -27,7 +27,7 @@ async fn workbuddy_discovers_and_forwards_chat_through_bound_proxy() {
         model["router_capabilities"][0]["protocols"],
         json!(["chat_completions"])
     );
-    let gateway = run(server::app(engine)).await;
+    let gateway = run(server::app_upstream_fixture(engine)).await;
     let body = json!({"model":"future-local-chat","messages":[{"role":"user","content":"preserve this exact question"}],"store":true});
     let response = post(&gateway, "/v1/chat/completions", body.clone()).await;
     assert_eq!(response.status(), 200);

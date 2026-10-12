@@ -41,6 +41,12 @@ pub fn app(engine: Arc<Engine>) -> Router {
     let runtime = crate::runtime::Runtime::new(engine);
     app_runtime(runtime)
 }
+// Provider protocol fixtures exercise a merchant engine directly. This entry
+// point is absent from production; platform boundary tests use app/app_runtime.
+#[cfg(test)]
+pub(crate) fn app_upstream_fixture(engine: Arc<Engine>) -> Router {
+    app_runtime(crate::runtime::Runtime::merchant(engine))
+}
 pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
@@ -160,6 +166,18 @@ async fn authenticate(
             ))
     };
     result = result.and_then(|identity| {
+        if runtime.is_platform()
+            && (path == "/admin/accounts"
+                || path.starts_with("/admin/accounts/")
+                || path == "/admin/models"
+                || path.starts_with("/admin/models/"))
+        {
+            return Err(ApiError::new(
+                404,
+                "merchant_owned_resource",
+                "Manage upstream accounts and models through the merchant API",
+            ));
+        }
         if let Some(index) = identity {
             engine.authorize(index)?;
         }
@@ -226,7 +244,7 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
         .unwrap()
         .values()
         .any(|m| m.runtime.engine().ready());
-    if engine.ready() || (engine.vault.serving() && merchant_ready) {
+    if (!runtime.is_platform() && engine.ready()) || (engine.vault.serving() && merchant_ready) {
         Json(json!({"status":"ready"})).into_response()
     } else {
         ApiError::new(
@@ -241,7 +259,11 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
 async fn models(request: Request) -> Result<Json<Value>, ApiError> {
     let identity = request.extensions().get::<Identity>().unwrap();
     let account = identity.account.unwrap();
-    let mut result = identity.engine.models(account).await;
+    let mut result = if identity.runtime.is_platform() {
+        json!({"object":"list","data":[]})
+    } else {
+        identity.engine.models(account).await
+    };
     let merchants =
         crate::merchants::routing::models(&identity.runtime, &identity.engine, account).await?;
     result["data"].as_array_mut().unwrap().extend(merchants);
@@ -255,7 +277,11 @@ async fn discovery_status(State(runtime): State<Arc<crate::runtime::Runtime>>) -
 
 async fn pools(request: Request) -> Result<Json<Value>, ApiError> {
     let identity = request.extensions().get::<Identity>().unwrap();
-    let mut result = identity.engine.pools(identity.account.unwrap());
+    let mut result = if identity.runtime.is_platform() {
+        json!({"object":"list","data":[]})
+    } else {
+        identity.engine.pools(identity.account.unwrap())
+    };
     result["data"].as_array_mut().unwrap().extend(
         crate::merchants::routing::pools(
             &identity.runtime,
@@ -301,7 +327,12 @@ async fn usage(request: Request) -> Result<Json<Value>, ApiError> {
 
 async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
     let engine = runtime.engine();
-    Json(engine.status())
+    let mut status = engine.status();
+    if runtime.is_platform() {
+        status["platform_ready"] = engine.vault.serving().into();
+        status["merchant_only"] = true.into();
+    }
+    Json(status)
 }
 
 async fn generate(request: Request) -> Result<Response, ApiError> {
@@ -389,9 +420,10 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             }
         }
     }
-    let merchant_request = alias
-        .split_once('/')
-        .is_some_and(|(id, _)| id.starts_with("m_"))
+    let merchant_request = identity.runtime.is_platform()
+        || alias
+            .split_once('/')
+            .is_some_and(|(id, _)| id.starts_with("m_"))
         || headers
             .get("x-router-pool")
             .and_then(|h| h.to_str().ok())

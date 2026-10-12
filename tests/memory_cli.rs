@@ -173,6 +173,19 @@ async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_a
     let second = start(dir.path()).await;
     let c = get(&second, "/admin/checkpoint").await;
     assert_ne!(c["boot_id"], saved["boot_id"]);
+    let mut unowned = saved["state"].clone();
+    unowned["bundle"]["config"]["models"] = json!([{"name":"unowned","provider":"openai","deployments":[{"id":"old","provider":"openai","api_key_ref":"unused","enabled":false}]}]);
+    let rejected = post(
+        &second,
+        "/admin/initialize",
+        json!({"boot_id":c["boot_id"],"state":unowned}),
+    )
+    .await;
+    assert_eq!(rejected.status(), 400);
+    assert_eq!(
+        rejected.json::<Value>().await.unwrap()["error"]["code"],
+        "merchant_ownership_required"
+    );
     assert_eq!(
         post(
             &second,
@@ -197,6 +210,22 @@ async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_a
         200
     );
     let config = get(&second, "/admin/config").await;
+    for path in [
+        "/admin/accounts",
+        "/admin/accounts/old/credential",
+        "/admin/models",
+    ] {
+        assert_eq!(
+            reqwest::Client::new()
+                .get(format!("{}{path}", second.url))
+                .bearer_auth(ADMIN)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
     assert!(config["config"]["keys"][0].get("quota_group").is_none());
     assert!(config["config"]["server"].get("database").is_none());
     assert_eq!(

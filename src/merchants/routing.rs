@@ -283,6 +283,16 @@ pub(crate) async fn execute(
             "Reload the merchant price before requesting",
         ));
     }
+    if price
+        .valid_until
+        .is_some_and(|t| t <= crate::oauth::tokens::now() as u64)
+    {
+        return Err(ApiError::new(
+            409,
+            "merchant_price_expired",
+            "Merchant must renew the price for this model",
+        ));
+    }
     let permit = selection
         .live
         .gate

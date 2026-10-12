@@ -78,6 +78,28 @@ pub(crate) struct Price {
     pub cache_write: Option<u64>,
     #[serde(default)]
     pub cache_write_hour: Option<u64>,
+    #[serde(default)]
+    pub long_context: Option<LongContextPrice>,
+    #[serde(default)]
+    pub valid_until: Option<u64>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LongContextPrice {
+    pub above_input_tokens: u64,
+    pub rates: TokenRates,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TokenRates {
+    pub input: u64,
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: Option<u64>,
+    #[serde(default)]
+    pub cache_write: Option<u64>,
+    #[serde(default)]
+    pub cache_write_hour: Option<u64>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -327,7 +349,7 @@ pub(crate) async fn unlock(
                 sum.saturating_add(u.input_tokens)
                     .saturating_add(u.output_tokens)
             });
-    let child = Runtime::new(engine);
+    let child = Runtime::merchant(engine);
     runtime.merchants.live.lock().unwrap().insert(
         item.id.clone(),
         Arc::new(Live {
@@ -409,6 +431,22 @@ fn validate_bundle(
     }
     let mut prices = BTreeSet::new();
     for p in &settings.prices {
+        if p.long_context.as_ref().is_some_and(|tier| {
+            tier.above_input_tokens == 0
+                || tier.above_input_tokens > 1_000_000_000
+                || [
+                    Some(tier.rates.input),
+                    Some(tier.rates.output),
+                    tier.rates.cache_read,
+                    tier.rates.cache_write,
+                    tier.rates.cache_write_hour,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|v| v > 1_000_000_000_000)
+        }) {
+            return Err(invalid());
+        }
         if !bundle.config.models.iter().any(|g| g.name == p.pool)
             || !crate::config::valid_model_id(&p.model)
             || !prices.insert((&p.pool, &p.model))
@@ -466,6 +504,8 @@ pub(crate) struct MerchantUpdate {
     pub delete_accounts: Vec<String>,
     #[serde(default)]
     pub delete_secrets: Vec<String>,
+    pub compatibility: Option<BTreeMap<String, crate::compatibility::Profile>>,
+    pub restrictions: Option<Vec<crate::policy::Restriction>>,
 }
 pub(crate) async fn apply(
     runtime: &Runtime,
@@ -521,6 +561,12 @@ pub(crate) async fn apply(
     }
     let mut config = snapshot.bundle.config.clone();
     config.models = input.pools;
+    if let Some(profiles) = input.compatibility {
+        config.compatibility = profiles;
+    }
+    if let Some(restrictions) = input.restrictions {
+        config.restrictions = restrictions;
+    }
     config.server.max_concurrent = settings.max_concurrent.min(item.max_concurrent);
     config.users = settings
         .customers

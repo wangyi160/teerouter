@@ -71,7 +71,10 @@ async fn each_account_uses_its_own_authenticated_proxy_for_every_request(
             "http://upstream.fixture.invalid/v1",
         ))
         .unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     for _ in 0..2 {
         let response = generate(&gateway, provider).await;
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
@@ -110,7 +113,10 @@ async fn dead_proxy_never_contacts_reachable_origin_and_failover_uses_next_bindi
             &base,
         ))
         .unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let response = generate(&gateway, Provider::XAI).await;
     assert_eq!(response.status(), 200);
     // The dead account is excluded by catalog admission before generation.
@@ -125,7 +131,10 @@ async fn dead_proxy_never_contacts_reachable_origin_and_failover_uses_next_bindi
     vault
         .provision(&bundle(Provider::XAI, &[dead], &base))
         .unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     assert!(
         generate(&gateway, Provider::XAI)
             .await
@@ -147,7 +156,10 @@ async fn changing_binding_blocks_old_clients_until_restart_and_preserves_tokens(
             "http://upstream.fixture.invalid/v1",
         ))
         .unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault.clone()).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault.clone()).unwrap(),
+    ))
+    .await;
     vault
         .set_account_proxy("account-0", Provider::XAI, &new.running.url)
         .unwrap();
@@ -159,7 +171,10 @@ async fn changing_binding_blocks_old_clients_until_restart_and_preserves_tokens(
     );
     assert!(old.calls.lock().unwrap().is_empty());
     assert!(new.calls.lock().unwrap().is_empty());
-    let restarted = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let restarted = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     assert_eq!(generate(&restarted, Provider::XAI).await.status(), 200);
     assert_eq!(
         new.calls.lock().unwrap()[0].headers["authorization"],

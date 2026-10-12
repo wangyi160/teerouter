@@ -272,7 +272,7 @@ fn engine(config: Config) -> Arc<Engine> {
 }
 
 async fn gateway(config: Config) -> Running {
-    run(server::app(engine(config))).await
+    run(server::app_upstream_fixture(engine(config))).await
 }
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
