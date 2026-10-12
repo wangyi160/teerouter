@@ -7,6 +7,7 @@ pub mod config;
 mod discovery;
 mod error;
 mod ledger;
+pub mod moderation;
 mod network;
 pub mod oauth;
 mod official;

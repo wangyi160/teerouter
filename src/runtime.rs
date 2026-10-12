@@ -95,6 +95,7 @@ impl Runtime {
             || data.generation > u64::MAX / 2
             || data.sequence > u64::MAX / 2
             || data.events.len() > 8192
+            || data.moderation.values().any(|m| m.recent_events.len() > 20)
             || data.account_revisions.len() != bundle.accounts.len()
             || bundle
                 .accounts

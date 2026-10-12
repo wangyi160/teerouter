@@ -40,9 +40,9 @@
 | GET | `/admin/config` | 返回脱敏配置及 revision。 |
 | PATCH | `/admin/config` | 带 revision 提交配置补丁；过期 revision 被拒绝。 |
 | POST | `/admin/apply` | 管理平台统一下发配置、凭证与账号变更。 |
-| GET | `/admin/users` | 用户、所属 API key 与并发权限。 |
+| GET | `/admin/users` | 用户、所属 API key、并发权限和 moderation 审核统计。 |
 | POST | `/admin/users` | 创建用户及其访问权限；金额不属于 router 用户属性。 |
-| GET | `/admin/users/{id}` | 读取指定用户。 |
+| GET | `/admin/users/{id}` | 读取指定用户，包括违规次数、最近一次违规及最近 20 条审核异常事件。 |
 | PUT | `/admin/users/{id}` | 更新指定用户及其权限。 |
 | DELETE | `/admin/users/{id}` | 撤销指定用户及其 API key。 |
 | GET | `/admin/accounts` | 返回账号状态，不包含凭证。 |
@@ -55,3 +55,49 @@
 | POST | `/admin/initialize` | 绑定本次 boot_id 恢复管理平台保存的快照。 |
 | GET | `/admin/logs` | 运行元数据，不是问题与回答内容。 |
 | POST | `/admin/maintenance` | 触发内部维护任务；正常使用由 router 自动执行。 |
+
+## 输入审核错误与用户记录
+
+启用 `config.moderation` 后，四种推理协议（包括流式）在首次模型调用之前执行一次 LockLLM 全量文本审核。上游重试复用本次结果；不同客户端请求不做历史缓存。正常通过后沿用原转发和 SSE 行为，不扫描模型输出。
+
+| HTTP | error.code | 行为 |
+| --- | --- | --- |
+| 403 | `content_policy_violation` | 明确违规，停止转发，用户 blocked_requests 加一 |
+| 503 | `moderation_unavailable` | 超时、限流、服务故障、异常/不完整结果或未确认故障拒绝能力；停止转发，unavailable_requests 加一，不记违规 |
+| 413 | `moderation_input_too_large` | 全量输入超过本地审核大小限制或服务返回超限；停止转发，rejected_requests 加一 |
+| 400 | `moderation_unsupported_content` | 输入包含不可见历史引用或不支持的非文本内容；停止转发，rejected_requests 加一 |
+
+错误沿用 `{"error":{"type":"...","code":"...","message":"..."}}` 格式和 `x-request-id` 响应头。审核拒绝发生在 SSE 开始之前，仍返回普通 JSON 错误。未调用上游时 attempts 和模型 token 用量为零，不记未知模型费用。
+
+管理端通过 `GET /admin/users/{id}` 的 `user.moderation`（或列表中对应用户的 `moderation`）读取：
+
+```json
+{
+  "allowed_requests": 10,
+  "blocked_requests": 1,
+  "unavailable_requests": 0,
+  "rejected_requests": 0,
+  "last_violation": {
+    "id": 11,
+    "request_id": "req-example",
+    "key": "key-1",
+    "model": "example-model",
+    "created_at": 1791763200,
+    "result": {
+      "decision": "blocked",
+      "reason": "content_policy",
+      "categories": ["sexual_content"],
+      "scanner_request_id": "scan-example",
+      "scanner_status": 403,
+      "input_chars": 1000,
+      "duration_ms": 180,
+      "config_revision": 2
+    }
+  },
+  "recent_events": []
+}
+```
+
+`recent_events` 使用相同事件结构，保留最近 20 条 blocked/unavailable/rejected 事件，按旧到新排列；上面的空数组仅用于缩短示例。allowed_requests 在模型请求结束/取消后记入，其他结果立即记入。计数按用户 ID 聚合所有 key，轮换或删除 key、用户资料更新、配置热更新以及 ACK 不清空计数。`moderation` 是只读结果字段，不能通过用户 POST/PUT 修改。
+
+每个调用的 `moderation` 结果也进入 `/admin/logs` 的待同步调用事件和 checkpoint；未开启审核时该字段为 null。完整历史由外部管理服务随调用事件保存，router 用户记录仅保留累计统计、最近一次违规和最近 20 条异常。事件只含固定原因、归一化类别、时间、模型及请求 ID，不含对话原文、工具内容或供应商的 violation_details/自由文本说明。未知类别统一为 other_policy。

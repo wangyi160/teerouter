@@ -41,3 +41,27 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 用户并发范围为正在执行的模型请求，所有关联 API key 共享 `max_concurrent`（1 至 100000，默认 16）。超限响应为 429 / `user_concurrency_limit`，不会排队。流式调用直到流结束或客户端断开才释放。单个 key、router 总体和上游账号的限制仍可能更严格。
 
 余额、已用金额、额度、价格和结算由外部管理服务负责，不是 router 用户属性。
+
+## LockLLM 输入审核
+
+默认省略 `config.moderation`，保持原有转发。启用时以管理密钥调用 `POST /admin/apply`，提交 [moderation-update.example.json](moderation-update.example.json)；将示例值换成真实 LockLLM 密钥，可以加 `expected_revision` 做并发控制。密钥只放入 secrets，通过 api_key_ref 引用。不要把密钥写进客户端请求或提交到仓库。
+
+| 配置项 | 默认值 | 含义 |
+| --- | --- | --- |
+| api_key_ref | 必填 | secrets 内的独立 LockLLM 密钥名称 |
+| sensitivity | medium | low / medium / high |
+| timeout_secs | 30 | 审核总时限 1–300 秒，也受 router 整体请求时限约束 |
+| max_input_bytes | 16777216 | 提取后完整文本的 UTF-8 字节上限，不是 token 上限；超限拒绝，不截断 |
+| max_concurrent | 16 | 所有用户共享的审核并发上限 |
+| rpm | 300 | 所有用户共享的每分钟扫描调用上限，按账号实际额度配置 |
+| proxy | null | 可选 http / https / socks5h 显式代理；省略时直连，仅针对审核服务 |
+
+接口固定为 `https://api.lockllm.com/v1/scan`，不接受管理员自定义域名或路径，禁用重定向和系统代理继承。审核始终使用 combined、scan-action=block、policy-action=block、on-unavailable=block；客户端不能覆盖。整个当前请求中的可见文本、角色、顺序、指令、工具定义/调用/结果一起序列化成 input，全量提交，由服务自动分块；不做截断、摘要、逐轮增量或会话缓存。模型请求本身不因审核而改写。
+
+审核不向服务发送 router 用户密钥、上游模型密钥、客户端认证头或管理凭证，也不发送外层 metadata/user 标识字段。当前扫描的是文本，图片、音频、附件、加密推理块、previous_response_id/conversation/cachedContent 或服务端 prompt 模板等不可见内容引用会明确报不支持；不要将其当作已经完整审核。通过后直接调用原上游，本次仅做输入审核，模型回复和 SSE 内容不经过 LockLLM。
+
+使用 `{"config":{"moderation":null}}` 可关闭审核；历史统计继续保留。配置热更新、关闭后重新启用或更换密钥都不会重置本进程的审核并发和 RPM 计数。用户统计及最近事件存在内存并随 checkpoint 导出，管理端恢复旧快照时缺少该字段视为零；重启时仍必须恢复已保存的 state。管理员查询和错误码见 [API 文档](docs/API.md#输入审核错误与用户记录)。
+
+上线前需要真实账号联调。LockLLM 的 [API 文档](https://www.lockllm.com/docs/api-reference#behaviour-when-a-check-is-unavailable) 说明故障拒绝能力仍按账号逐步开放：通过结果必须带 `X-LockLLM-On-Unavailable: block`，否则本实现返回 503。也会拒绝 degraded、缺失或零置信度等不完整结果。文档目前的 detection_status 只明确覆盖威胁检测，不能把 policy_confidence 的存在当作外部内容政策检查一定成功的证明；供应商内容政策故障的实际行为仍须验证。此集成不保证分类零漏判，也不能检测服务端未报告的故障。
+
+首次部署应验证中文与代码误判、全量长上下文的延迟/大小上限、余额不足、429、超时和故障拒绝。自动分块参考 [官方长文本指南](https://www.lockllm.com/docs/api-reference#scanning-long-documents)。本地测试使用受控服务，不消耗真实 API 额度。审核费用属于外部管理账务，不能计作模型 token 用量。

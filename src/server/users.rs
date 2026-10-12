@@ -18,7 +18,11 @@ fn conflict() -> ApiError {
     ApiError::new(409, "user_conflict", "User or API key already exists")
 }
 
-fn view(bundle: &crate::vault::Provision, user: &User, vault: &crate::vault::Vault) -> Value {
+fn view(
+    bundle: &crate::vault::Provision,
+    user: &User,
+    vault: &crate::vault::Vault,
+) -> Result<Value, ApiError> {
     let mut value = serde_json::to_value(user).expect("serializable user");
     value["in_flight"] = json!(vault.user_gate(&user.id).used());
     value["keys"] = json!(
@@ -34,12 +38,32 @@ fn view(bundle: &crate::vault::Provision, user: &User, vault: &crate::vault::Vau
             })
             .collect::<Vec<_>>()
     );
-    value
+    value["moderation"] = json!(
+        vault
+            .lock()
+            .map_err(storage)?
+            .moderation
+            .get(&user.id)
+            .cloned()
+            .unwrap_or_default()
+    );
+    Ok(value)
 }
 pub(super) async fn list(State(runtime): State<Arc<Runtime>>) -> Result<Response, ApiError> {
     let engine = runtime.engine();
     let snapshot = engine.vault.snapshot().map_err(storage)?;
-    Ok(([("cache-control", "no-store")], Json(json!({"revision":snapshot.revision,"data":snapshot.bundle.config.users.iter().map(|u|view(&snapshot.bundle,u,&engine.vault)).collect::<Vec<_>>()}))).into_response())
+    let users = snapshot
+        .bundle
+        .config
+        .users
+        .iter()
+        .map(|u| view(&snapshot.bundle, u, &engine.vault))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((
+        [("cache-control", "no-store")],
+        Json(json!({"revision":snapshot.revision,"data":users})),
+    )
+        .into_response())
 }
 pub(super) async fn get_one(
     State(runtime): State<Arc<Runtime>>,
@@ -57,7 +81,7 @@ pub(super) async fn get_one(
     Ok((
         [("cache-control", "no-store")],
         Json(
-            json!({"revision":snapshot.revision,"user":view(&snapshot.bundle,user,&engine.vault)}),
+            json!({"revision":snapshot.revision,"user":view(&snapshot.bundle,user,&engine.vault)?}),
         ),
     )
         .into_response())

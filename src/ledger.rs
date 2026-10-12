@@ -35,7 +35,13 @@ impl Ledger {
             .cloned()
             .unwrap_or_default())
     }
-    pub fn record(&self, key: &str, usage: &Usage, audit: &serde_json::Value) {
+    pub fn record(
+        &self,
+        key: &str,
+        usage: &Usage,
+        audit: &serde_json::Value,
+        moderation: Option<&crate::moderation::Report>,
+    ) {
         let Ok(mut data) = self.vault.lock() else {
             return;
         };
@@ -49,6 +55,21 @@ impl Ledger {
             .saturating_add(usage.unknown_usage_requests);
         data.sequence += 1;
         let seq = data.sequence;
+        if let Some(result) = moderation
+            && let Some(user) = audit["user_id"].as_str()
+        {
+            data.moderation
+                .entry(user.into())
+                .or_default()
+                .observe(crate::moderation::Event {
+                    id: seq,
+                    request_id: audit["request_id"].as_str().unwrap_or_default().into(),
+                    key: key.into(),
+                    model: audit["model"].as_str().unwrap_or_default().into(),
+                    created_at: audit["created_at"].as_u64().unwrap_or_default(),
+                    result: result.clone(),
+                });
+        }
         data.events
             .push_back(serde_json::json!({"seq":seq,"event":audit}));
         data.changed();

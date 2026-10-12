@@ -44,6 +44,8 @@ pub(crate) struct Data {
     pub revision: i64,
     pub account_revisions: BTreeMap<String, i64>,
     pub usage: BTreeMap<String, crate::ledger::Usage>,
+    #[serde(default)]
+    pub moderation: BTreeMap<String, crate::moderation::UserRecord>,
     pub instance: String,
     pub sequence: u64,
     pub events: VecDeque<Value>,
@@ -362,6 +364,23 @@ impl Vault {
                 return Err(VaultError("admin key must differ from client keys"));
             }
         }
+        if let Some(moderation) = &config.moderation {
+            required(&moderation.api_key_ref)?;
+            let secret = &bundle.secrets[&moderation.api_key_ref];
+            if client_keys.contains(secret)
+                || config
+                    .server
+                    .admin_key_env
+                    .as_ref()
+                    .is_some_and(|name| &bundle.secrets[name] == secret)
+            {
+                return Err(VaultError(
+                    "moderation key must differ from router credentials",
+                ));
+            }
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {secret}"))
+                .map_err(|_| VaultError("invalid moderation credential"))?;
+        }
         for deployment in config.models.iter().flat_map(|m| &m.deployments) {
             if deployment.oauth_file.is_some()
                 || (deployment.enabled && deployment.model.starts_with("env:"))
@@ -477,6 +496,9 @@ impl Provision {
         }
         if let Some(name) = &config.server.admin_key_env {
             import(name)?;
+        }
+        if let Some(moderation) = &config.moderation {
+            import(&moderation.api_key_ref)?;
         }
         for d in config.models.iter_mut().flat_map(|m| &mut m.deployments) {
             if !d.enabled {
