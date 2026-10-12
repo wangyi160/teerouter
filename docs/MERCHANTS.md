@@ -34,7 +34,7 @@
 ```json
 {
   "expected_revision":1,"max_concurrent":16,"rpm":60,"tpm":100000,
-  "pools":[{"name":"openai","provider":"openai","deployments":[{"id":"account1","provider":"openai","api_key_ref":"upstream1"}]}],
+  "pools":[{"name":"openai","provider":"openai","deployments":[{"id":"account1","provider":"openai","api_key_ref":"upstream1","proxy":"socks5h://YOUR_ACCOUNT_PROXY:1080"}]}],
   "customers":[{"user_id":"alice","enabled":true,"models":[],"max_concurrent":4,"rpm":30,"tpm":50000}],
   "prices":[{"pool":"openai","model":"OFFICIAL_MODEL_ID","input":1000000,"output":2000000,"cache_read":500000}],
   "secrets":{"upstream1":"ADMINISTER_THROUGH_ATTESTED_CHANNEL"}
@@ -42,6 +42,8 @@
 ```
 
 价格为**整数 micro-USD / 百万 tokens**：`1000000` 表示 $1 / 百万 tokens。支持 `input`、`output`、`cache_read`、`cache_write`、`cache_write_hour`。这是商户固定销售费率，非官方成本；本版没有长上下文阶梯定价。缺少价格时拒绝模型调用，缺少实际使用的缓存类别费率时，外部账务保留待结算记录。每次配置更新递增版本，调用的用量事件记录当时的商户、价格版本和完整费率快照。
+
+每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 账号在 deployment 的 `proxy` 中配置；OAuth 账号在 `accounts` 对象内配置 `proxy`。代理仅提供网络出口，模型请求目标仍固定为官方服务。仅获授权的 Workbuddy 测试账号允许 `direct://`。
 
 ## 用户选路
 
