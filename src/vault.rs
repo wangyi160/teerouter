@@ -347,11 +347,6 @@ impl Vault {
         for key in &config.keys {
             required(&key.key_env)?;
         }
-        for profile in config.compatibility.values() {
-            if let Some(name) = profile.client_secret_for("oauth_refresh") {
-                required(name)?;
-            }
-        }
         let mut client_keys = std::collections::HashSet::new();
         for key in &config.keys {
             if !client_keys.insert(&bundle.secrets[&key.key_env]) {
@@ -568,7 +563,6 @@ fn provider_id(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAI => "openai",
         Provider::Anthropic => "anthropic",
-        Provider::Gemini => "gemini",
         Provider::XAI => "xai",
         #[cfg(feature = "workbuddy-lab")]
         Provider::Workbuddy => "workbuddy",

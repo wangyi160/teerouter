@@ -29,7 +29,7 @@ pub(crate) async fn send(
         client.base_url.as_str().trim_end_matches('/'),
         client.profile.path("responses", "responses")
     );
-    super::gemini::checked(
+    checked(
         client
             .profile
             .json(
@@ -175,16 +175,25 @@ pub(crate) async fn decode(
                 .trim()
                 .eq_ignore_ascii_case("application/json")
         });
-    let output = decode_native(
-        response,
-        Protocol::Responses,
-        streaming || !is_json,
-        false,
-        limits,
-    )
-    .await?;
+    let output =
+        decode_native(response, Protocol::Responses, streaming || !is_json, limits).await?;
     match output {
         Output::Stream(events) if !streaming => collect(events).await.map(Output::Json),
         output => Ok(output),
     }
+}
+
+pub(crate) async fn checked(response: reqwest::Response) -> Result<reqwest::Response, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Api {
+            status: response.status().as_u16(),
+            retry_after_secs: response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok()),
+            body: String::new(),
+        });
+    }
+    Ok(response)
 }

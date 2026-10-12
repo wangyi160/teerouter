@@ -149,10 +149,6 @@ impl Engine {
                         let store = Arc::get_mut(&mut account).unwrap();
                         store.profile = profile.clone();
                         store.refresh_ahead = config.operations.refresh_ahead_secs;
-                        store.client_secret = profile
-                            .client_secret_for("oauth_refresh")
-                            .map(|r| config::secret(r, &env))
-                            .transpose()?;
                         oauth_accounts.insert(index, account.clone());
                         account
                     };
@@ -165,7 +161,7 @@ impl Engine {
                         deployment.timeout_secs,
                     )
                     .map_err(|e| e.to_string())?;
-                    Client::with_oauth(account, http, deployment.gemini_project.clone())
+                    Client::with_oauth(account, http)
                 } else {
                     let proxy = deployment
                         .proxy
@@ -191,17 +187,7 @@ impl Engine {
                     idle: config.server.stream_idle_secs,
                 };
                 if let Some(base) = &deployment.api_base {
-                    let base = if deployment.provider == Provider::Gemini
-                        && deployment.oauth_account.is_none()
-                    {
-                        format!(
-                            "{}/openai",
-                            base.trim_end_matches('/').trim_end_matches("/openai")
-                        )
-                    } else {
-                        base.clone()
-                    };
-                    client = client.with_base_url(&base).map_err(|_| {
+                    client = client.with_base_url(base).map_err(|_| {
                         format!("invalid api_base for deployment {}", deployment.id)
                     })?;
                 }
@@ -362,7 +348,6 @@ impl Engine {
                         (Protocol::Chat, "chat_completions"),
                         (Protocol::Responses, "responses"),
                         (Protocol::Messages, "messages"),
-                        (Protocol::Gemini, "gemini"),
                     ]
                     .into_iter()
                     .filter_map(|(p, name)| p.supports(backend.config.provider).then_some(name))

@@ -94,11 +94,6 @@ fn every_protocol_keeps_full_text_roles_tools_and_order() {
             json!({"system":"rules","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":long}]}],"tools":[{"name":"run","description":"tool-description"}]}),
             "/messages/0/content/0/content",
         ),
-        (
-            Protocol::Gemini,
-            json!({"systemInstruction":{"parts":[{"text":"rules"}]},"contents":[{"role":"user","parts":[{"functionResponse":{"name":"run","response":{"output":long}}}]}],"tools":[{"functionDeclarations":[{"name":"run","description":"tool-description"}]}]}),
-            "/contents/0/parts/0/functionResponse/response/output",
-        ),
     ] {
         let extracted = input::extract(protocol, &body, 16 * 1024 * 1024).unwrap();
         let parsed: Value = serde_json::from_str(&extracted).unwrap();

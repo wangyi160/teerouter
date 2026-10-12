@@ -254,7 +254,6 @@ async fn rate_limit_survives_config_reload_and_user_records_survive_key_rotation
 #[case(Provider::OpenAI, "/v1/chat/completions", "messages")]
 #[case(Provider::OpenAI, "/v1/responses", "input")]
 #[case(Provider::Anthropic, "/v1/messages", "messages")]
-#[case(Provider::Gemini, "/v1beta/models/chat:generateContent", "contents")]
 #[tokio::test]
 async fn every_generation_protocol_runs_the_guard(
     #[case] provider: Provider,
@@ -455,8 +454,6 @@ async fn invalid_configuration_is_atomic_and_removing_guard_stops_service_and_pr
 #[case("/v1/responses", true)]
 #[case("/v1/messages", false)]
 #[case("/v1/messages", true)]
-#[case("/v1beta/models/chat:generateContent", false)]
-#[case("/v1beta/models/chat:streamGenerateContent", true)]
 #[tokio::test]
 async fn missing_moderation_rejects_every_model_endpoint(#[case] path: &str, #[case] stream: bool) {
     let upstream = mock(vec![]).await;
@@ -464,7 +461,7 @@ async fn missing_moderation_rejects_every_model_endpoint(#[case] path: &str, #[c
     config.moderation = None;
     let g = gateway(config).await;
     let body = json!({"model":"chat","stream":stream,"input":"hello","max_tokens":32,
-        "messages":[{"role":"user","content":"hello"}],"contents":[{"parts":[{"text":"hello"}]}]});
+        "messages":[{"role":"user","content":"hello"}]});
     let response = post(&g, path, body).await;
     assert_eq!(response.status(), 503);
     assert_eq!(response.headers()["content-type"], "application/json");

@@ -82,17 +82,11 @@ impl Engine {
                 .vault
                 .health(&name, revision)
                 .map_err(crate::runtime::storage)?;
-            let expiry = if account.provider == Provider::Gemini {
-                account.credential["expiry_date"]
+            let expiry = account.credential["expires_at"].as_f64().or_else(|| {
+                account.credential["claudeAiOauth"]["expiresAt"]
                     .as_f64()
                     .map(|v| v / 1000.0)
-            } else {
-                account.credential["expires_at"].as_f64().or_else(|| {
-                    account.credential["claudeAiOauth"]["expiresAt"]
-                        .as_f64()
-                        .map(|v| v / 1000.0)
-                })
-            };
+            });
             data.push(json!({"name":name,"provider":account.provider,"enabled":account.enabled,"revision":revision,
                 "proxy_configured":account.proxy.is_some(),"expires_at":expiry,"health":health,
                 "refresh_mode":if account.provider.is_local_test() {"none"} else if account.provider == Provider::Anthropic {"external"} else {"automatic"}}));

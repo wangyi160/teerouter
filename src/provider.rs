@@ -4,7 +4,6 @@ pub enum Provider {
     OpenAI,
     #[serde(alias = "claude")]
     Anthropic,
-    Gemini,
     #[serde(alias = "grok")]
     XAI,
     #[cfg(feature = "workbuddy-lab")]
@@ -16,7 +15,6 @@ impl Provider {
         match self {
             Self::OpenAI => "OPENAI_API_KEY",
             Self::Anthropic => "ANTHROPIC_API_KEY",
-            Self::Gemini => "GEMINI_API_KEY",
             Self::XAI => "XAI_API_KEY",
             #[cfg(feature = "workbuddy-lab")]
             Self::Workbuddy => "WORKBUDDY_API_KEY",
@@ -27,7 +25,6 @@ impl Provider {
         match self {
             Self::OpenAI => "https://api.openai.com/v1",
             Self::Anthropic => "https://api.anthropic.com/v1",
-            Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
             Self::XAI => "https://api.x.ai/v1",
             #[cfg(feature = "workbuddy-lab")]
             Self::Workbuddy => match option_env!("TEEROUTER_WORKBUDDY_BASE_URL") {

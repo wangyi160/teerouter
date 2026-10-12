@@ -1,8 +1,8 @@
 //! Router glue around the upstream message transformations. Native endpoints keep
 //! provider payloads; this adapter exposes the common Chat Completions endpoint.
 use crate::{
-    Client, Error, Provider,
-    upstream::{self, Frame, Output, Protocol, Tokens},
+    Client, Error,
+    upstream::{Frame, Output, Protocol, Tokens},
 };
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -14,35 +14,19 @@ pub(crate) async fn call(
     body: Value,
     streaming: bool,
 ) -> Result<Output, Error> {
-    let responses = client.provider == Provider::OpenAI;
-    let protocol = if responses {
-        Protocol::Responses
-    } else {
-        Protocol::Gemini
-    };
-    let body = if responses {
-        super::responses_bridge::request(&body)?
-    } else {
-        super::gemini_bridge::request(&body)?
-    };
+    let body = super::responses_bridge::request(&body)?;
     let response = client
-        .native(protocol, model, body, streaming, HeaderMap::new())
+        .native(Protocol::Responses, model, body, HeaderMap::new())
         .await?;
-    let output = if responses {
-        super::chatgpt::decode(response, streaming, client.limits).await?
-    } else {
-        upstream::decode_native(response, protocol, streaming, true, client.limits).await?
-    };
+    let output = super::chatgpt::decode(response, streaming, client.limits).await?;
     if !streaming {
         let value = match output {
             Output::Json(value) => value,
             Output::Stream(events) => super::chatgpt::collect(events).await?,
         };
-        return Ok(Output::Json(if responses {
-            super::responses_bridge::response(value, model)?
-        } else {
-            super::gemini_bridge::response(value, model)?
-        }));
+        return Ok(Output::Json(super::responses_bridge::response(
+            value, model,
+        )?));
     }
     let Output::Stream(events) = output else {
         unreachable!()
@@ -50,30 +34,25 @@ pub(crate) async fn call(
     let state = (
         events,
         super::responses_bridge::StreamState::default(),
-        super::gemini_bridge::StreamState::default(),
         model.to_owned(),
         false,
         None::<Value>,
     );
     Ok(Output::Stream(Box::pin(futures_util::stream::unfold(
         state,
-        move |(mut events, mut rs, mut gs, model, ended, pending)| async move {
+        move |(mut events, mut rs, model, ended, pending)| async move {
             if ended {
                 return None;
             }
             if let Some(chunk) = pending {
-                return Some((Ok(Frame::json(chunk)), (events, rs, gs, model, false, None)));
+                return Some((Ok(Frame::json(chunk)), (events, rs, model, false, None)));
             }
             loop {
                 let result = match events.next().await? {
                     Err(error) => Err(error),
                     Ok(frame) => {
                         let Some(value) = frame.value else { continue };
-                        if responses {
-                            rs.event(&value, &model)
-                        } else {
-                            gs.event(&value, &model)
-                        }
+                        rs.event(&value, &model)
                     }
                 };
                 match result {
@@ -88,12 +67,9 @@ pub(crate) async fn call(
                             } else {
                                 None
                             };
-                        return Some((
-                            Ok(Frame::json(chunk)),
-                            (events, rs, gs, model, false, pending),
-                        ));
+                        return Some((Ok(Frame::json(chunk)), (events, rs, model, false, pending)));
                     }
-                    Err(error) => return Some((Err(error), (events, rs, gs, model, true, None))),
+                    Err(error) => return Some((Err(error), (events, rs, model, true, None))),
                 }
             }
         },

@@ -172,9 +172,10 @@ pub struct Deployment {
     #[serde(default)]
     pub proxy: Option<String>,
     #[serde(default)]
-    pub gemini_project: Option<String>,
-    #[serde(default)]
     pub api_base: Option<String>,
+    /// Accept legacy empty checkpoints; a configured project is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini_project: Option<String>,
     #[serde(default = "enabled")]
     pub enabled: bool,
     #[serde(default = "one")]
@@ -328,6 +329,9 @@ impl Config {
                     .is_some_and(|provider| provider != deployment.provider)
                 {
                     return Err("deployment provider must match its pool provider".into());
+                }
+                if deployment.gemini_project.is_some() {
+                    return Err("Gemini projects are no longer supported".into());
                 }
                 if let Some(base) = &deployment.api_base {
                     crate::official::validate(base, Some(deployment.provider)).map_err(|_| {

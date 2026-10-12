@@ -4,17 +4,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-fn account(path: &Path, provider: Provider, token: &str) {
+fn account(path: &Path, _provider: Provider, token: &str) {
     let expiry = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
         + 3600;
-    let value = if provider == Provider::Gemini {
-        json!({"access_token":token,"refresh_token":"fixture-refresh","expiry_date":expiry*1000})
-    } else {
-        json!({"access_token":token,"expires_at":expiry,"account_id":"fixture-account"})
-    };
+    let value = json!({"access_token":token,"expires_at":expiry,"account_id":"fixture-account"});
     std::fs::write(path, value.to_string()).unwrap();
 }
 fn oauth_config(mock: &Mock, provider: Provider, path: &Path) -> Config {
@@ -42,15 +38,10 @@ fn codex_events(output: Value) -> Reply {
         json!({"type":"response.completed","response":response}),
     ])
 }
-fn loaded() -> Reply {
-    Reply::json(json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"project-test"}))
-}
 
 #[rstest]
 #[case(Provider::OpenAI, false)]
 #[case(Provider::OpenAI, true)]
-#[case(Provider::Gemini, false)]
-#[case(Provider::Gemini, true)]
 #[tokio::test]
 async fn native_oauth_uses_account_backend_and_preserves_usage(
     #[case] provider: Provider,
@@ -59,44 +50,18 @@ async fn native_oauth_uses_account_backend_and_preserves_usage(
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture-access");
-    let replies = if provider == Provider::OpenAI {
-        vec![codex_events(native(provider)["output"].clone())]
-    } else {
-        let wrapper = json!({"traceId":"trace-test","response":native(provider)});
-        vec![
-            loaded(),
-            if streaming {
-                events(vec![wrapper])
-            } else {
-                Reply::json(wrapper)
-            },
-        ]
-    };
+    let replies = vec![codex_events(native(provider)["output"].clone())];
     let mock = mock(replies).await;
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
-    let (route, body) = if provider == Provider::OpenAI {
-        (
-            "/v1/responses",
-            json!({"model":"chat","input":"hello","stream":streaming,"store":true,"service_tier":"fast"}),
-        )
-    } else {
-        (
-            if streaming {
-                "/v1beta/models/chat:streamGenerateContent"
-            } else {
-                "/v1beta/models/chat:generateContent"
-            },
-            json!({"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"temperature":0.2}}),
-        )
-    };
+    let (route, body) = (
+        "/v1/responses",
+        json!({"model":"chat","input":"hello","stream":streaming,"store":true,"service_tier":"fast"}),
+    );
     let response = post(&gateway, route, body).await;
     assert_eq!(response.status(), 200);
     let text = response.text().await.unwrap();
     assert!(text.contains("ok"));
-    if provider == Provider::Gemini {
-        assert!(text.contains("trace-test"));
-        assert!(!text.contains("\"response\":"));
-    }
+
     let used = usage(&gateway).await;
     assert_eq!(used["input_tokens"], 10);
     assert_eq!(used["output_tokens"], 5);
@@ -106,42 +71,24 @@ async fn native_oauth_uses_account_backend_and_preserves_usage(
         assert_eq!(call.headers["authorization"], "Bearer fixture-access");
         assert!(!call.headers.contains_key("x-goog-api-key"));
     }
-    if provider == Provider::OpenAI {
-        assert_eq!(last.path, "/v1/responses");
-        assert_eq!(last.headers["chatgpt-account-id"], "fixture-account");
-        assert_eq!(last.headers["originator"], "codex_cli_rs");
-        assert!(last.headers.contains_key("session_id"));
-        assert_eq!(last.body["stream"], true);
-        assert_eq!(last.body["store"], false);
-        assert_eq!(last.body["service_tier"], "priority");
-        assert!(
-            last.body["include"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("reasoning.encrypted_content"))
-        );
-    } else {
-        assert_eq!(calls[0].path, "/v1:loadCodeAssist");
-        assert_eq!(last.body["project"], "project-test");
-        assert_eq!(last.body["model"], "chat");
-        assert_eq!(
-            last.body["request"]["contents"][0]["parts"][0]["text"],
-            "hello"
-        );
-        assert!(last.body["request"].get("model").is_none());
-        assert!(last.path.contains(if streaming {
-            ":streamGenerateContent?alt=sse"
-        } else {
-            ":generateContent"
-        }));
-    }
+    assert_eq!(last.path, "/v1/responses");
+    assert_eq!(last.headers["chatgpt-account-id"], "fixture-account");
+    assert_eq!(last.headers["originator"], "codex_cli_rs");
+    assert!(last.headers.contains_key("session_id"));
+    assert_eq!(last.body["stream"], true);
+    assert_eq!(last.body["store"], false);
+    assert_eq!(last.body["service_tier"], "priority");
+    assert!(
+        last.body["include"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("reasoning.encrypted_content"))
+    );
 }
 
 #[rstest]
 #[case(Provider::OpenAI, false)]
 #[case(Provider::OpenAI, true)]
-#[case(Provider::Gemini, false)]
-#[case(Provider::Gemini, true)]
 #[tokio::test]
 async fn chat_bridge_handles_tools_and_visible_replay(
     #[case] provider: Provider,
@@ -151,31 +98,16 @@ async fn chat_bridge_handles_tools_and_visible_replay(
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture-access");
     let tool = json!({"type":"function_call","call_id":"call-return","name":"lookup","arguments":"{\"city\":\"Paris\"}"});
-    let replies = if provider == Provider::OpenAI {
-        let mut final_response = native(provider);
-        final_response["output"] = json!([tool]);
-        vec![events(vec![
-            json!({"type":"response.created","response":{"id":"resp-tools"}}),
-            json!({"type":"response.output_item.added","output_index":2,"item":tool}),
-            json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"city\":"}),
-            json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"Paris\"}"}),
-            json!({"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"city\":\"Paris\"}"}),
-            json!({"type":"response.completed","response":final_response}),
-        ])]
-    } else {
-        let mut response = native(provider);
-        response["candidates"][0]["content"]["parts"] = json!([{"functionCall":{"name":"lookup","args":{"city":"Paris"}},"thoughtSignature":"signature-return"}]);
-        response["usageMetadata"]["thoughtsTokenCount"] = 3.into();
-        let wrapper = json!({"response":response,"traceId":"gemini-tools"});
-        vec![
-            loaded(),
-            if streaming {
-                events(vec![wrapper])
-            } else {
-                Reply::json(wrapper)
-            },
-        ]
-    };
+    let mut final_response = native(provider);
+    final_response["output"] = json!([tool]);
+    let replies = vec![events(vec![
+        json!({"type":"response.created","response":{"id":"resp-tools"}}),
+        json!({"type":"response.output_item.added","output_index":2,"item":tool}),
+        json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"city\":"}),
+        json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"Paris\"}"}),
+        json!({"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"city\":\"Paris\"}"}),
+        json!({"type":"response.completed","response":final_response}),
+    ])];
     let mock = mock(replies).await;
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
     let body = json!({"model":"chat","stream":streaming,"stream_options":{"include_usage":true},
@@ -207,31 +139,13 @@ async fn chat_bridge_handles_tools_and_visible_replay(
     }
     let used = usage(&gateway).await;
     assert_eq!(used["input_tokens"], 10);
-    assert_eq!(
-        used["output_tokens"],
-        if provider == Provider::Gemini { 8 } else { 5 }
-    );
+    assert_eq!(used["output_tokens"], 5);
     let calls = mock.calls.lock().unwrap();
     let sent = &calls.last().unwrap().body;
-    if provider == Provider::OpenAI {
-        assert_eq!(sent["input"][2]["type"], "function_call");
-        assert_eq!(sent["input"][3]["type"], "function_call_output");
-        assert_eq!(sent["tools"][0]["type"], "function");
-        assert_eq!(sent["tool_choice"]["name"], "lookup");
-    } else {
-        assert_eq!(
-            sent["request"]["systemInstruction"]["parts"][0]["text"],
-            "system instructions"
-        );
-        let parts = &sent["request"]["contents"][1]["parts"];
-        assert!(parts[0].get("thoughtSignature").is_none());
-        assert!(parts[1].get("thoughtSignature").is_none());
-        assert_eq!(
-            sent["request"]["contents"][2]["parts"][0]["functionResponse"]["name"],
-            "lookup"
-        );
-        assert!(text.contains("signature-return"));
-    }
+    assert_eq!(sent["input"][2]["type"], "function_call");
+    assert_eq!(sent["input"][3]["type"], "function_call_output");
+    assert_eq!(sent["tools"][0]["type"], "function");
+    assert_eq!(sent["tool_choice"]["name"], "lookup");
 }
 
 #[tokio::test]
@@ -258,44 +172,6 @@ async fn chatgpt_nonstream_recovers_output_omitted_from_terminal_event() {
     .await
     .unwrap();
     assert_eq!(result["output"][0]["content"][0]["text"], "ok");
-}
-
-#[tokio::test]
-async fn gemini_free_onboarding_omits_configured_project_and_is_cached() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("auth.json");
-    account(&path, Provider::Gemini, "fixture");
-    let mock = mock(vec![
-        Reply::json(json!({"allowedTiers":[{"id":"free-tier","isDefault":true}]})),
-        Reply::json(
-            json!({"done":true,"response":{"cloudaicompanionProject":{"id":"allocated-project"}}}),
-        ),
-        Reply::json(json!({"response":native(Provider::Gemini)})),
-        Reply::json(json!({"response":native(Provider::Gemini)})),
-    ])
-    .await;
-    let mut config = oauth_config(&mock, Provider::Gemini, &path);
-    config.models[0].deployments[0].gemini_project = Some("configured-project".into());
-    let gateway = gateway(config).await;
-    for _ in 0..2 {
-        assert_eq!(
-            post(&gateway, "/v1/chat/completions", request())
-                .await
-                .status(),
-            200
-        );
-    }
-    let calls = mock.calls.lock().unwrap();
-    assert_eq!(calls.len(), 4);
-    assert_eq!(
-        calls[0].body["cloudaicompanionProject"],
-        "configured-project"
-    );
-    assert_eq!(calls[1].path, "/v1:onboardUser");
-    assert!(calls[1].body.get("cloudaicompanionProject").is_none());
-    assert!(calls[1].body["metadata"].get("duetProject").is_none());
-    assert_eq!(calls[2].body["project"], "allocated-project");
-    assert_eq!(calls[3].body["project"], "allocated-project");
 }
 
 #[tokio::test]
@@ -388,17 +264,12 @@ async fn truncated_codex_stream_returns_error_instead_of_success(#[case] done_se
 
 #[rstest]
 #[case(Provider::OpenAI)]
-#[case(Provider::Gemini)]
 #[tokio::test]
 async fn oauth_chat_usage_is_accounted_but_hidden_unless_requested(#[case] provider: Provider) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture");
-    let replies = if provider == Provider::OpenAI {
-        vec![codex_events(native(provider)["output"].clone())]
-    } else {
-        vec![loaded(), events(vec![json!({"response":native(provider)})])]
-    };
+    let replies = vec![codex_events(native(provider)["output"].clone())];
     let mock = mock(replies).await;
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
     let mut body = request();
@@ -459,7 +330,7 @@ async fn codex_nonstream_also_accepts_a_json_backend_response() {
 #[rstest]
 fn oauth_example_resolves_paths_and_rejects_ambiguous_credentials() {
     let mut config = Config::parse(include_str!("../../config.oauth.example.toml")).unwrap();
-    assert_eq!(config.models.len(), 4);
+    assert_eq!(config.models.len(), 3);
     config.models[0].deployments[0].api_key_env = "AMBIGUOUS".into();
     assert!(config.validate().is_err());
     let dir = tempfile::tempdir().unwrap();

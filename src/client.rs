@@ -14,7 +14,6 @@ pub struct Client {
     headers: HeaderMap,
     pub(crate) base_url: reqwest::Url,
     pub(crate) oauth: Option<Arc<crate::oauth::TokenStore>>,
-    pub(crate) gemini: Option<Arc<crate::oauth::gemini::CodeAssist>>,
 }
 
 impl Client {
@@ -64,14 +63,12 @@ impl Client {
             headers,
             base_url: parse_base_url(provider.base_url())?,
             oauth: None,
-            gemini: None,
         })
     }
 
     pub(crate) fn with_oauth(
         account: Arc<crate::oauth::TokenStore>,
         http: reqwest::Client,
-        project: Option<String>,
     ) -> Result<Self, Error> {
         let provider = account.provider;
         let mut headers = HeaderMap::new();
@@ -80,7 +77,6 @@ impl Client {
         }
         let base = match provider {
             Provider::OpenAI => crate::oauth::CHATGPT_API_BASE,
-            Provider::Gemini => crate::oauth::GEMINI_CLI_BASE,
             _ => provider.base_url(),
         };
         Ok(Self {
@@ -91,8 +87,6 @@ impl Client {
             headers,
             base_url: parse_base_url(base)?,
             oauth: Some(account),
-            gemini: (provider == Provider::Gemini)
-                .then(|| Arc::new(crate::oauth::gemini::CodeAssist::new(project))),
         })
     }
 
@@ -209,7 +203,7 @@ impl Client {
             anthropic::request(request, streaming)?
         } else {
             let mut body = request;
-            if matches!(self.provider, Provider::Gemini | Provider::XAI) {
+            if self.provider == Provider::XAI {
                 let object = body
                     .as_object_mut()
                     .ok_or(Error::InvalidRequest("request must be an object"))?;
@@ -263,77 +257,29 @@ impl Client {
         protocol: crate::upstream::Protocol,
         model: &str,
         mut body: Value,
-        streaming: bool,
         extra_headers: HeaderMap,
     ) -> Result<reqwest::Response, Error> {
         use crate::upstream::Protocol;
         if self.oauth.is_some() && self.provider == Provider::OpenAI {
             return crate::oauth::chatgpt::send(self, model, body).await;
         }
-        if let Some(gemini) = &self.gemini {
-            return gemini.send(self, model, body, streaming).await;
-        }
         let object = body
             .as_object_mut()
             .ok_or(Error::InvalidRequest("request must be an object"))?;
         let mut url = self.base_url.clone();
-        let mut headers = self.auth_headers(extra_headers).await?;
-        let operation;
-        if protocol == Protocol::Gemini {
-            operation = if streaming {
-                "stream_generate_content"
-            } else {
-                "generate_content"
-            };
-            object.remove("model");
-            object.remove("stream");
-            let base = url
-                .path()
-                .trim_end_matches('/')
-                .trim_end_matches("/openai")
-                .to_owned();
-            url.set_path(&base);
-            url.path_segments_mut()
-                .map_err(|_| Error::InvalidRequest("invalid Gemini base URL"))?
-                .push("models")
-                .push(&format!(
-                    "{}:{}",
-                    model,
-                    if streaming {
-                        self.profile.path(operation, "streamGenerateContent")
-                    } else {
-                        self.profile.path(operation, "generateContent")
-                    }
-                ));
-            if streaming {
-                url.query_pairs_mut().append_pair("alt", "sse");
-            }
-            let bearer = headers
-                .remove("authorization")
-                .ok_or(Error::InvalidRequest("missing Gemini credential"))?;
-            let mut key = HeaderValue::from_bytes(
-                bearer
-                    .as_bytes()
-                    .strip_prefix(b"Bearer ")
-                    .unwrap_or(bearer.as_bytes()),
-            )
-            .map_err(|_| Error::InvalidRequest("invalid Gemini credential"))?;
-            key.set_sensitive(true);
-            headers.insert("x-goog-api-key", key);
+        let headers = self.auth_headers(extra_headers).await?;
+        let operation = if protocol == Protocol::Messages {
+            "messages"
         } else {
-            operation = if protocol == Protocol::Messages {
-                "messages"
-            } else {
-                "responses"
-            };
-            object.insert("model".into(), model.into());
-            let endpoint = if protocol == Protocol::Messages {
-                self.profile.path("messages", "messages")
-            } else {
-                self.profile.path("responses", "responses")
-            };
-            url.set_path(&format!("{}/{endpoint}", url.path().trim_end_matches('/')));
-        }
+            "responses"
+        };
+        object.insert("model".into(), model.into());
+        let endpoint = if protocol == Protocol::Messages {
+            self.profile.path("messages", "messages")
+        } else {
+            self.profile.path("responses", "responses")
+        };
+        url.set_path(&format!("{}/{endpoint}", url.path().trim_end_matches('/')));
         let response = self
             .profile
             .json(operation, &self.http, url, headers, body)?

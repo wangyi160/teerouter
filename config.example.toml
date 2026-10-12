@@ -64,16 +64,6 @@ enabled = false
 # api_base = "https://api.anthropic.com/v1"
 
 [[models.deployments]]
-id = "gemini-primary"
-provider = "gemini"
-model = "env:GEMINI_MODEL"
-api_key_env = "GEMINI_API_KEY"
-proxy = "socks5h://127.0.0.1:18083"
-enabled = false
-# Native API root; the router adds /openai for Chat Completions.
-# api_base = "https://generativelanguage.googleapis.com/v1beta"
-
-[[models.deployments]]
 id = "grok-primary"
 provider = "xai" # alias: grok
 model = "env:XAI_MODEL"

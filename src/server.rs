@@ -48,7 +48,6 @@ pub fn app(engine: Arc<Engine>) -> Router {
         .route("/v1/chat/completions", post(generate))
         .route("/v1/messages", post(generate))
         .route("/v1/responses", post(generate))
-        .route("/v1beta/models/{*action}", post(generate))
         .route("/admin/status", get(status))
         .route("/admin/usage", get(usage))
         .route("/admin/models", get(discovery_status))
@@ -188,10 +187,7 @@ fn credential(headers: &HeaderMap) -> Option<&str> {
             .then_some(key)
             .filter(|s| !s.is_empty());
     }
-    headers
-        .get("x-api-key")
-        .or_else(|| headers.get("x-goog-api-key"))
-        .and_then(|v| v.to_str().ok())
+    headers.get("x-api-key").and_then(|v| v.to_str().ok())
 }
 
 async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response {
@@ -271,24 +267,11 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         .clone();
     let (parts, body) = request.into_parts();
     let identity = parts.extensions.get::<Identity>().unwrap();
-    let (protocol, url_model, url_stream) = match parts.uri.path() {
-        "/v1/chat/completions" => (Protocol::Chat, None, None),
-        "/v1/messages" => (Protocol::Messages, None, None),
-        "/v1/responses" => (Protocol::Responses, None, None),
-        path => {
-            let action = path.strip_prefix("/v1beta/models/").unwrap_or("");
-            let (model, method) = action.rsplit_once(':').ok_or(ApiError::new(
-                404,
-                "not_found",
-                "Unknown Gemini action",
-            ))?;
-            let stream = match method {
-                "generateContent" => false,
-                "streamGenerateContent" => true,
-                _ => return Err(ApiError::new(404, "not_found", "Unknown Gemini action")),
-            };
-            (Protocol::Gemini, Some(model.to_owned()), Some(stream))
-        }
+    let protocol = match parts.uri.path() {
+        "/v1/chat/completions" => Protocol::Chat,
+        "/v1/messages" => Protocol::Messages,
+        "/v1/responses" => Protocol::Responses,
+        _ => return Err(ApiError::new(404, "not_found", "Unknown model endpoint")),
     };
     let bytes = tokio::time::timeout(
         Duration::from_secs(engine.config.server.body_timeout_secs),
@@ -303,7 +286,7 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             "Cannot read request body within configured limit",
         )
     })?;
-    let mut body: Value = serde_json::from_slice(&bytes)
+    let body: Value = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::new(400, "invalid_json", "Request body must be valid JSON"))?;
     if !body.is_object() {
         return Err(ApiError::new(
@@ -312,17 +295,15 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             "Request body must be a JSON object",
         ));
     }
-    let alias = url_model
-        .or_else(|| body["model"].as_str().map(str::to_owned))
+    let alias = body["model"]
+        .as_str()
+        .map(str::to_owned)
         .filter(|s| !s.is_empty())
         .ok_or(ApiError::new(
             400,
             "invalid_request",
             "A model ID is required",
         ))?;
-    if let Some(stream) = url_stream {
-        body["stream"] = stream.into();
-    }
     if body.get("stream").is_some_and(|v| !v.is_boolean()) {
         return Err(ApiError::new(
             400,

@@ -139,8 +139,7 @@ fn fixture_catalog() -> Value {
     ]
     .into_iter()
     .map(|id| {
-        json!({"id":id,"slug":id,"name":format!("models/{id}"),"modelId":id,
-            "supportedGenerationMethods":["generateContent"],
+        json!({"id":id,"slug":id,
             "supported_reasoning_levels":[{"effort":"future-ULTRA-v99"}],
             "capabilities":{"reasoning_effort":["future-ULTRA-v99"],
                 "effort":{"supported":true,"future-ULTRA-v99":{"supported":true}},
@@ -149,7 +148,7 @@ fn fixture_catalog() -> Value {
             "fixture_levels":["future-ULTRA-v99"]})
     })
     .collect();
-    json!({"data":entries,"models":entries,"buckets":entries})
+    json!({"data":entries,"models":entries})
 }
 
 async fn mock_inner(replies: Vec<Reply>, automatic_catalog: bool) -> Mock {
@@ -173,8 +172,7 @@ async fn mock_inner(replies: Vec<Reply>, automatic_catalog: bool) -> Mock {
             }
             if automatic_catalog
                 && (parts.uri.path().ends_with("/models")
-                    || parts.uri.path().ends_with("/language-models")
-                    || parts.uri.path().ends_with(":retrieveUserQuota"))
+                    || parts.uri.path().ends_with("/language-models"))
             {
                 return axum::Json(fixture_catalog()).into_response();
             }
@@ -311,9 +309,6 @@ fn native(provider: Provider) -> Value {
         Provider::Anthropic => {
             json!({"id":"reply","model":"actual-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}})
         }
-        Provider::Gemini => {
-            json!({"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}})
-        }
         _ => {
             json!({"id":"reply","object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"status":"completed","usage":{"input_tokens":10,"output_tokens":5}})
         }
@@ -344,10 +339,9 @@ async fn usage(gateway: &Running) -> Value {
 #[rstest]
 #[case(Provider::OpenAI, "/v1/chat/completions")]
 #[case(Provider::Anthropic, "/v1/messages")]
-#[case(Provider::Gemini, "/v1/openai/chat/completions")]
 #[case(Provider::XAI, "/v1/chat/completions")]
 #[tokio::test]
-async fn unified_chat_routes_all_four_providers(#[case] provider: Provider, #[case] path: &str) {
+async fn unified_chat_routes_all_three_providers(#[case] provider: Provider, #[case] path: &str) {
     let response = if provider == Provider::Anthropic {
         native(provider)
     } else {
@@ -394,12 +388,6 @@ async fn unified_chat_routes_all_four_providers(#[case] provider: Provider, #[ca
 #[case(Provider::Anthropic, "/v1/messages", "/v1/messages", "x-api-key")]
 #[case(Provider::OpenAI, "/v1/responses", "/v1/responses", "authorization")]
 #[case(Provider::XAI, "/v1/responses", "/v1/responses", "authorization")]
-#[case(
-    Provider::Gemini,
-    "/v1beta/models/chat:generateContent",
-    "/v1/models/chat:generateContent",
-    "x-goog-api-key"
-)]
 #[tokio::test]
 async fn native_protocols_preserve_payload_and_use_provider_auth(
     #[case] provider: Provider,
@@ -441,10 +429,7 @@ async fn native_protocols_preserve_payload_and_use_provider_auth(
             "provider-secret"
         }
     );
-    if provider == Provider::Gemini {
-        assert!(calls[0].body.get("model").is_none());
-        assert!(calls[0].headers.get("authorization").is_none());
-    }
+
     if provider == Provider::Anthropic {
         assert_eq!(calls[0].headers["anthropic-beta"], "test-beta");
     }
@@ -767,7 +752,6 @@ async fn stream_retries_before_first_frame_but_not_after_output() {
 #[case(Provider::Anthropic, "/v1/messages")]
 #[case(Provider::OpenAI, "/v1/responses")]
 #[case(Provider::XAI, "/v1/responses")]
-#[case(Provider::Gemini, "/v1beta/models/chat:streamGenerateContent")]
 #[tokio::test]
 async fn native_streams_preserve_events_and_account_tokens(
     #[case] provider: Provider,
@@ -779,7 +763,6 @@ async fn native_streams_preserve_events_and_account_tokens(
             "event: message_start\ndata: {}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
             json!({"type":"message_start","message":native})
         ),
-        Provider::Gemini => format!("data: {native}\n\n"),
         _ => format!(
             "event: response.completed\ndata: {}\n\n",
             json!({"type":"response.completed","response":native})
@@ -801,13 +784,6 @@ async fn native_streams_preserve_events_and_account_tokens(
     assert!(text.contains("reply") || text.contains("candidates"));
     assert_eq!(usage(&gateway).await["input_tokens"], 10);
     assert_eq!(usage(&gateway).await["output_tokens"], 5);
-    if provider == Provider::Gemini {
-        assert!(
-            mock.calls.lock().unwrap()[0]
-                .path
-                .ends_with(":streamGenerateContent?alt=sse")
-        );
-    }
 }
 
 #[tokio::test]

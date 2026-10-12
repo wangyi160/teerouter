@@ -23,15 +23,9 @@ fn deny_rules_are_additive_and_scope_includes_official_canonical_id() {
 #[test]
 fn restrictions_never_rewrite_parameters_or_require_optional_fields() {
     let p = policy(json!([{"blocked_efforts":["high"]}]));
-    for path in [
-        "reasoning_effort",
-        "reasoning",
-        "output_config",
-        "generationConfig",
-    ] {
+    for path in ["reasoning_effort", "reasoning", "output_config"] {
         let value = match path {
             "reasoning_effort" => json!("high"),
-            "generationConfig" => json!({"thinkingConfig":{"thinkingLevel":"high"}}),
             _ => json!({"effort":"high"}),
         };
         let body = json!({path:value});

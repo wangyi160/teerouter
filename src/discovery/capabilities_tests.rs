@@ -113,19 +113,17 @@ fn source_paths_can_follow_protocol_changes_without_local_allowlists() {
     let paths: CapabilityPaths = serde_json::from_value(json!({"effort":"/new/choices","effort_item":"/value","budget_min":"/new/min","budget_max":"/new/max"})).unwrap();
     paths.validate().unwrap();
     let caps = Capabilities::read(
-        Provider::Gemini,
+        Provider::XAI,
         false,
         &json!({"new":{"choices":[{"value":"Next-Level"}],"min":-1,"max":2048}}),
         &paths,
     )
     .unwrap();
-    let body = json!({"generationConfig":{"thinkingConfig":{"thinkingLevel":"Next-Level","thinkingBudget":-1}}});
-    caps.check(Provider::Gemini, Protocol::Gemini, &body)
+    let body = json!({"reasoning":{"effort":"Next-Level"}});
+    caps.check(Provider::XAI, Protocol::Responses, &body)
         .unwrap();
-    assert_eq!(
-        body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
-        -1
-    );
+    assert_eq!(body["reasoning"]["effort"], "Next-Level");
+    assert_eq!(caps.budget, Some((-1, 2048)));
     assert!(serde_json::from_value::<CapabilityPaths>(json!({"effort":["high"]})).is_err());
     for invalid in [
         json!({"effort":"not/a/pointer"}),
@@ -211,7 +209,7 @@ fn alternate_control_spellings_and_misplaced_values_cannot_bypass_admission() {
         json!({"effort":"high"}),
     ] {
         assert_eq!(
-            caps.check(Provider::Gemini, Protocol::Gemini, &body)
+            caps.check(Provider::XAI, Protocol::Responses, &body)
                 .unwrap_err()
                 .status,
             400
