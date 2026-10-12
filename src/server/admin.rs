@@ -6,7 +6,7 @@ use crate::{
 use axum::extract::{Path, Query};
 use std::collections::BTreeMap;
 
-pub(super) async fn input(
+pub(crate) async fn input(
     runtime: &Runtime,
     request: Request,
 ) -> Result<(String, Value), ApiError> {
@@ -200,6 +200,7 @@ pub(super) async fn admin_maintenance(
 pub(super) async fn admin_checkpoint(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::merchants::checkpoint_all(&runtime).await?;
     let checkpoint = runtime.engine().vault.checkpoint().map_err(storage)?;
     Ok(([("cache-control", "no-store")], Json(checkpoint)))
 }

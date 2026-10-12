@@ -405,7 +405,7 @@ impl Engine {
         groups
     }
 
-    fn model_allowed(&self, account: usize, pool: &str, model: &str) -> bool {
+    pub(crate) fn model_allowed(&self, account: usize, pool: &str, model: &str) -> bool {
         let rules = &self.accounts[account].config.models;
         rules.is_empty()
             || rules.iter().any(|rule| {
@@ -568,54 +568,105 @@ impl Engine {
         protocol: Protocol,
         alias: &str,
         body: Value,
-        mut headers: HeaderMap,
+        headers: HeaderMap,
         request_id: String,
     ) -> Result<Routed, ApiError> {
+        self.execute_admitted(account, protocol, alias, body, headers, request_id, None)
+            .await
+    }
+
+    pub(crate) fn admit_external(
+        &self,
+        account: usize,
+        request_id: String,
+        model: String,
+    ) -> Result<Ticket, ApiError> {
+        self.accounts[account].admit(
+            self.ledger.clone(),
+            self.global.clone(),
+            self.config.server.max_concurrent,
+            request_id,
+            model,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_admitted(
+        &self,
+        account: usize,
+        protocol: Protocol,
+        alias: &str,
+        body: Value,
+        mut headers: HeaderMap,
+        request_id: String,
+        mut parent: Option<Ticket>,
+    ) -> Result<Routed, ApiError> {
+        let reject = |parent: &mut Option<Ticket>, error: ApiError| {
+            if let Some(parent) = parent.as_mut() {
+                parent.finish(error.status);
+            }
+            error
+        };
         if !config::valid_model_id(alias) {
-            return Err(ApiError::new(400, "invalid_model", "Invalid model ID"));
+            return Err(reject(
+                &mut parent,
+                ApiError::new(400, "invalid_model", "Invalid model ID"),
+            ));
         }
         let deadline =
             Instant::now() + Duration::from_secs(self.config.server.request_timeout_secs);
         let pool = self
             .select_pool(account, protocol, alias, &body, &mut headers, deadline)
-            .await?;
+            .await
+            .map_err(|e| reject(&mut parent, e))?;
         if !self.model_allowed(account, pool, alias) {
-            return Err(ApiError::new(
-                403,
-                "model_forbidden",
-                "API key cannot use this model",
+            return Err(reject(
+                &mut parent,
+                ApiError::new(403, "model_forbidden", "API key cannot use this model"),
             ));
         }
         if !self.storage_ready() {
-            return Err(ApiError::new(
-                503,
-                "storage_capacity",
-                "Runtime state is unavailable",
+            return Err(reject(
+                &mut parent,
+                ApiError::new(503, "storage_capacity", "Runtime state is unavailable"),
             ));
         }
         let groups = self.route_groups(pool);
         let Some(primary) = groups.first() else {
-            return Err(ApiError::new(404, "model_not_found", "Unknown model alias"));
+            return Err(reject(
+                &mut parent,
+                ApiError::new(404, "model_not_found", "Unknown model alias"),
+            ));
         };
         if !groups.iter().any(|g| {
             g.backends
                 .iter()
                 .any(|b| protocol.supports(b.config.provider))
         }) {
-            return Err(ApiError::new(
-                400,
-                "unsupported_protocol",
-                "No enabled deployment supports this API protocol",
+            return Err(reject(
+                &mut parent,
+                ApiError::new(
+                    400,
+                    "unsupported_protocol",
+                    "No enabled deployment supports this API protocol",
+                ),
             ));
         }
-        let mut affinity = affinity::Affinity::new(self, account, &groups, &body, &mut headers)?;
-        let mut ticket = self.accounts[account].admit(
-            self.ledger.clone(),
-            self.global.clone(),
-            self.config.server.max_concurrent,
-            request_id,
-            alias.into(),
-        )?;
+        let mut affinity = affinity::Affinity::new(self, account, &groups, &body, &mut headers)
+            .map_err(|e| reject(&mut parent, e))?;
+        let mut ticket = self.accounts[account]
+            .admit(
+                self.ledger.clone(),
+                self.global.clone(),
+                self.config.server.max_concurrent,
+                request_id,
+                alias.into(),
+            )
+            .map_err(|e| reject(&mut parent, e))?;
+        if let Some(parent) = parent {
+            ticket.context = parent.context.clone();
+            ticket.parent = Some(Box::new(parent));
+        }
         let catalogs = groups
             .iter()
             .flat_map(|g| &g.backends)

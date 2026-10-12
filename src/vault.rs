@@ -40,6 +40,9 @@ fn account_enabled() -> bool {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Data {
+    /// Public admission records and opaque merchant-owned recovery capsules only.
+    #[serde(default)]
+    pub merchants: BTreeMap<String, crate::merchants::Registration>,
     pub bundle: Option<Provision>,
     pub revision: i64,
     pub account_revisions: BTreeMap<String, i64>,

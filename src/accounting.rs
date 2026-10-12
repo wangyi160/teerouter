@@ -167,6 +167,8 @@ impl Account {
             attempts: 0,
             refusal: None,
             settled: false,
+            parent: None,
+            context: serde_json::Value::Null,
         })
     }
 }
@@ -189,6 +191,8 @@ pub(crate) struct Ticket {
     pub attempts: usize,
     pub refusal: Option<crate::refusal::Observer>,
     settled: bool,
+    pub(crate) parent: Option<Box<Ticket>>,
+    pub(crate) context: serde_json::Value,
 }
 
 impl Ticket {
@@ -225,14 +229,37 @@ impl Ticket {
             .refusal
             .as_ref()
             .and_then(crate::refusal::Observer::report);
-        self.ledger.record(&self.account.config.name, &usage,
-            &serde_json::json!({"event":"request", "request_id":self.request_id,
-            "key":self.account.config.name, "user_id":self.account.config.user_id, "model":self.model, "pool":self.pool,"provider":self.provider,"created_at":self.created_at,"started_at_ms": self.started_at_ms,
-            "deployment":self.backend.as_ref().map(|b| &b.config.id), "status":status,
-            "attempts":self.attempts, "duration_ms":self.start.elapsed().as_millis(), "usage":usage,
-            "cache_usage":{"read":self.tokens.cache_read,"write":self.tokens.cache_write,"write_hour":self.tokens.cache_write_hour},
-            }), refusal.as_ref()
-        );
+        let mut audit = serde_json::json!({"event":"request", "request_id":self.request_id,
+        "key":self.account.config.name, "user_id":self.account.config.user_id, "model":self.model, "pool":self.pool,"provider":self.provider,"created_at":self.created_at,"started_at_ms": self.started_at_ms,
+        "deployment":self.backend.as_ref().map(|b| &b.config.id), "status":status,
+        "attempts":self.attempts, "duration_ms":self.start.elapsed().as_millis(), "usage":usage,
+        "cache_usage":{"read":self.tokens.cache_read,"write":self.tokens.cache_write,"write_hour":self.tokens.cache_write_hour},
+        });
+        if let Some(extra) = self.context.as_object() {
+            audit.as_object_mut().unwrap().extend(extra.clone());
+        }
+        self.ledger
+            .record(&self.account.config.name, &usage, &audit, refusal.as_ref());
+        if let Some(parent) = self.parent.as_mut() {
+            parent.settled = true;
+            let mut meter = parent.account.meter.lock().unwrap();
+            meter.refresh();
+            meter.tokens = meter
+                .tokens
+                .saturating_add(self.tokens.input)
+                .saturating_add(self.tokens.output);
+            audit["key"] = parent.account.config.name.clone().into();
+            audit["user_id"] = parent.account.config.user_id.clone().into();
+            if let Some(extra) = parent.context.as_object() {
+                audit.as_object_mut().unwrap().extend(extra.clone());
+            }
+            parent.ledger.record(
+                &parent.account.config.name,
+                &usage,
+                &audit,
+                refusal.as_ref(),
+            );
+        }
     }
 }
 
