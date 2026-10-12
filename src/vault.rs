@@ -46,8 +46,10 @@ pub(crate) struct Data {
     pub usage: BTreeMap<String, crate::ledger::Usage>,
     #[serde(default)]
     pub moderation: BTreeMap<String, crate::moderation::UserRecord>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub refusals: BTreeMap<String, crate::refusal::UserRecord>,
+    #[serde(default)]
+    pub refusal_queue: crate::refusal::Queue,
     #[serde(skip)]
     pub pending_event_bytes: usize,
     pub instance: String,

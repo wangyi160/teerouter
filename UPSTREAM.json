@@ -198,9 +198,11 @@
     "files": [
       "src/refusal.rs",
       "src/refusal/tests.rs",
-      "tests/router/refusals.rs"
+      "tests/router/refusals.rs",
+      "src/refusal/queue.rs",
+      "src/server/refusals.rs"
     ],
-    "behavior": "Observe explicit upstream refusal signals before protocol conversion, merge streaming parts, retain bounded per-user evidence and checkpoint events, preserve partial evidence on stream interruption or client cancellation, and do not retry confirmed policy refusals. No request-body storage or plain-text refusal classification.",
+    "behavior": "Observe explicit upstream signals before conversion, merge streaming parts and enqueue each refusal once with a global increasing ID and user identity. Admins page across all users and delete the archived prefix by ID. No automatic eviction; backlog pauses admission. Checkpoint usage ACK is independent, usage events retain only refusal_id, and deleted bodies have no per-user or usage-log copy. Queue, counter and deletion watermark survive checkpoint restore. No request-body storage or plain-text refusal classification.",
     "validation": "Local JSON/SSE fixtures for retained providers; no live vendor policy-trigger tests."
   }
 }

@@ -127,17 +127,21 @@ fn metadata_truncation_is_reported_even_when_refusal_text_is_short() {
     assert_eq!(report.response_text.unwrap(), "Declined");
 }
 
-#[test]
-fn history_eviction_and_archive_backpressure_preserve_counts_and_inflight_events() {
-    let vault = crate::vault::Vault::memory().unwrap();
-    let ledger = crate::ledger::Ledger::new(vault.clone());
+fn test_report() -> Report {
     let observer = Observer::new(Provider::OpenAI);
     observer.observe(
         Protocol::Chat,
         &json!({"choices":[{"message":{"refusal":"r".repeat(TEXT_BYTES)}}]}),
         false,
     );
-    let report = observer.report().unwrap();
+    observer.report().unwrap()
+}
+
+#[test]
+fn queue_backpressure_never_evicts_and_usage_ack_does_not_consume_refusals() {
+    let vault = crate::vault::Vault::memory().unwrap();
+    let ledger = crate::ledger::Ledger::new(vault.clone());
+    let report = test_report();
     let usage = crate::ledger::Usage {
         requests: 1,
         ..Default::default()
@@ -148,36 +152,25 @@ fn history_eviction_and_archive_backpressure_preserve_counts_and_inflight_events
         ledger.record(
             "key",
             &usage,
-            &json!({"user_id":format!("user-{count}"),"refusal":report}),
+            &json!({"user_id":format!("user-{count}")}),
             Some(&report),
         );
-        assert!(
-            count < 4096,
-            "byte budget must apply before the event count limit"
-        );
+        assert!(count < 4096);
     }
     {
         let data = vault.lock().unwrap();
-        assert!(data.pending_event_bytes >= PENDING_BYTES);
-        assert!(history_bytes(&data.refusals) <= HISTORY_BYTES);
-        assert_eq!(
-            data.refusals
-                .values()
-                .map(|r| r.refused_requests)
-                .sum::<u64>(),
-            count
+        assert!(data.refusal_queue.bytes >= PENDING_BYTES);
+        assert_eq!(data.refusal_queue.events.len(), count);
+        assert_eq!(data.refusal_queue.events.front().unwrap().id, 1);
+        assert!(data.refusals.is_empty());
+        assert!(
+            data.events
+                .iter()
+                .all(|e| e["event"].get("refusal").is_none())
         );
-        assert!(data.refusals.values().all(UserRecord::valid));
-        assert!(data.refusals.values().any(|r| r.evicted_events > 0));
     }
     let exported = vault.checkpoint().unwrap();
-    // A request admitted before saturation may settle after the export.
-    ledger.record(
-        "key",
-        &usage,
-        &json!({"user_id":"inflight","refusal":report}),
-        Some(&report),
-    );
+    ledger.record("key", &usage, &json!({"user_id":"inflight"}), Some(&report));
     vault
         .acknowledge(
             &vault.boot_id,
@@ -185,25 +178,131 @@ fn history_eviction_and_archive_backpressure_preserve_counts_and_inflight_events
             exported["state"]["sequence"].as_u64().unwrap(),
         )
         .unwrap();
-    assert!(ledger.healthy());
+    assert!(!ledger.healthy());
     {
-        let data = vault.lock().unwrap();
+        let mut data = vault.lock().unwrap();
+        assert_eq!(data.refusal_queue.events.len(), count + 1);
         assert_eq!(data.events.len(), 1);
-        assert_eq!(data.events[0]["event"]["user_id"], "inflight");
+        assert_eq!(data.refusal_queue.delete_through(count as u64), Some(count));
+        assert_eq!(data.refusal_queue.events[0].user_id, "inflight");
         assert_eq!(
-            data.pending_event_bytes,
-            serde_json::to_vec(&data.events[0]).unwrap().len()
+            data.refusal_queue.bytes,
+            serde_json::to_vec(&data.refusal_queue.events[0])
+                .unwrap()
+                .len()
         );
-        assert_eq!(data.refusals.len() as u64, count + 1);
-        assert_eq!(data.refusals["user-1"].refused_requests, 1);
-        assert_eq!(data.refusals["user-1"].recent_events.len(), 0);
     }
-    let empty_history = BTreeMap::from([(
+    assert!(ledger.healthy());
+    ledger.record(
+        "key",
+        &usage,
+        &json!({"user_id":"after-delete"}),
+        Some(&report),
+    );
+    let data = vault.lock().unwrap();
+    assert_eq!(data.refusal_queue.last_id, count as u64 + 2);
+    assert_eq!(data.refusal_queue.events[1].user_id, "after-delete");
+}
+
+#[test]
+fn legacy_checkpoint_migration_deduplicates_and_removes_old_payload_copies() {
+    let report = test_report();
+    let audit = json!({"user_id":"old-user","key":"old-key","request_id":"old-request","model":"chat","created_at":1,"status":200,"attempts":1,"refusal":report});
+    let event = Event::from_audit(5, &audit, report.clone());
+    let mut data = crate::vault::Data {
+        sequence: 10,
+        ..Default::default()
+    };
+    data.refusals.insert(
         "old-user".into(),
         UserRecord {
-            refused_requests: u64::MAX,
+            refused_requests: 99,
+            recent_events: VecDeque::from([event]),
             ..Default::default()
         },
-    )]);
-    assert_eq!(history_bytes(&empty_history), 0);
+    );
+    data.events.push_back(json!({"seq":5,"event":audit}));
+    data.events.push_back(json!({"seq":8,"event":audit}));
+    restore(&mut data).unwrap();
+    assert_eq!(data.refusal_queue.events.len(), 2);
+    assert_eq!(data.refusal_queue.events[0].id, 5);
+    assert_eq!(data.refusal_queue.events[1].id, 8);
+    assert!(data.refusals.is_empty());
+    assert!(
+        data.events
+            .iter()
+            .all(|e| e["event"].get("refusal").is_none())
+    );
+    assert_eq!(data.events[0]["event"]["refusal_id"], 5);
+    let bytes = data.refusal_queue.bytes;
+    let encoded = serde_json::to_value(&data).unwrap();
+    assert!(encoded.get("refusals").is_none());
+    assert!(encoded["refusal_queue"].get("bytes").is_none());
+    let mut restored: crate::vault::Data = serde_json::from_value(encoded).unwrap();
+    restore(&mut restored).unwrap();
+    assert_eq!(restored.refusal_queue.bytes, bytes);
+    assert_eq!(restored.refusal_queue.delete_through(10), Some(2));
+    // An empty restored queue must retain both watermarks and never reuse IDs.
+    let mut restored: crate::vault::Data =
+        serde_json::from_value(serde_json::to_value(&restored).unwrap()).unwrap();
+    restore(&mut restored).unwrap();
+    assert_eq!(restored.refusal_queue.last_id, 10);
+    assert_eq!(restored.refusal_queue.deleted_through, 10);
+    assert_eq!(restored.refusal_queue.bytes, 0);
+    assert_eq!(
+        restored
+            .refusal_queue
+            .push(Event::from_audit(0, &audit, report)),
+        11
+    );
+}
+
+#[test]
+fn malformed_checkpoint_ids_are_rejected_instead_of_resurrecting_or_overwriting_records() {
+    let event = Event::from_audit(1, &json!({"user_id":"u"}), test_report());
+    let queue = json!({"last_id":2,"deleted_through":0,"events":[event]});
+    let mut cases = Vec::new();
+    let mut duplicate = queue.clone();
+    duplicate["events"] = json!([event, event]);
+    cases.push(duplicate);
+    let mut deleted = queue.clone();
+    deleted["deleted_through"] = json!(1);
+    cases.push(deleted);
+    let mut future = queue.clone();
+    future["events"][0]["id"] = json!(3);
+    cases.push(future);
+    let mut missing_user = queue.clone();
+    missing_user["events"][0]["user_id"] = json!("");
+    cases.push(missing_user);
+    let mut invalid_watermark = queue.clone();
+    invalid_watermark["deleted_through"] = json!(3);
+    cases.push(invalid_watermark);
+    for case in cases {
+        let mut data = crate::vault::Data {
+            refusal_queue: serde_json::from_value(case).unwrap(),
+            ..Default::default()
+        };
+        assert!(restore(&mut data).is_err());
+    }
+    let mut data = crate::vault::Data {
+        refusal_queue: serde_json::from_value(queue).unwrap(),
+        ..Default::default()
+    };
+    data.refusals.insert("u".into(), UserRecord::default());
+    assert!(restore(&mut data).is_err());
+}
+
+#[test]
+fn old_event_without_user_field_gets_its_owner_from_the_user_map() {
+    let mut event = serde_json::to_value(Event::from_audit(7, &json!({}), test_report())).unwrap();
+    event.as_object_mut().unwrap().remove("user_id");
+    let record: UserRecord = serde_json::from_value(json!({"recent_events":[event]})).unwrap();
+    let mut data = crate::vault::Data {
+        sequence: 9,
+        ..Default::default()
+    };
+    data.refusals.insert("legacy-user".into(), record);
+    restore(&mut data).unwrap();
+    assert_eq!(data.refusal_queue.events[0].user_id, "legacy-user");
+    assert_eq!(data.refusal_queue.events[0].id, 7);
 }

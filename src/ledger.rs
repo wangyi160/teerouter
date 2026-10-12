@@ -21,7 +21,9 @@ impl Ledger {
     pub fn healthy(&self) -> bool {
         self.vault.serving()
             && self.vault.lock().is_ok_and(|d| {
-                d.events.len() < 4096 && d.pending_event_bytes < crate::refusal::PENDING_BYTES
+                d.events.len() < 4096
+                    && d.pending_event_bytes < crate::refusal::PENDING_BYTES
+                    && d.refusal_queue.healthy()
             })
     }
     pub(crate) fn recover(&self) -> Result<(), crate::vault::VaultError> {
@@ -58,38 +60,16 @@ impl Ledger {
             .saturating_add(usage.unknown_usage_requests);
         data.sequence += 1;
         let seq = data.sequence;
-        if let Some(result) = refusal
-            && let Some(user) = audit["user_id"].as_str()
-        {
-            data.refusals
-                .entry(user.into())
-                .or_default()
-                .observe(crate::refusal::Event {
-                    id: seq,
-                    request_id: audit["request_id"].as_str().unwrap_or_default().into(),
-                    key: key.into(),
-                    model: audit["model"].as_str().unwrap_or_default().into(),
-                    created_at: audit["created_at"].as_u64().unwrap_or_default(),
-                    pool: audit["pool"].as_str().map(str::to_owned),
-                    deployment: audit["deployment"].as_str().map(str::to_owned),
-                    status: audit["status"].as_u64().unwrap_or_default() as u16,
-                    attempts: audit["attempts"].as_u64().unwrap_or_default(),
-                    result: result.clone(),
-                });
-            // Recent detail is bounded globally; pending checkpoint events retain the archive copy.
-            while crate::refusal::history_bytes(&data.refusals) > crate::refusal::HISTORY_BYTES {
-                let oldest = data
-                    .refusals
-                    .iter()
-                    .filter_map(|(user, record)| {
-                        record.recent_events.front().map(|e| (e.id, user.clone()))
-                    })
-                    .min();
-                let Some((_, user)) = oldest else {
-                    break;
-                };
-                data.refusals.get_mut(&user).unwrap().evict();
-            }
+        let mut audit = audit.clone();
+        // Usage records only link to the queue, so deleting a refusal removes its
+        // body from the entire current checkpoint, independently of usage ACKs.
+        if let Some(object) = audit.as_object_mut() {
+            object.remove("refusal");
+        }
+        if let Some(result) = refusal {
+            let mut event = crate::refusal::Event::from_audit(0, &audit, result.clone());
+            event.key = key.into();
+            audit["refusal_id"] = data.refusal_queue.push(event).into();
         }
         let event = serde_json::json!({"seq":seq,"event":audit});
         data.pending_event_bytes += serde_json::to_vec(&event).unwrap().len();

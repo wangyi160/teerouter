@@ -52,13 +52,21 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 拒答审计默认启用，无需额外密钥。`/admin/status` 返回 `moderation_mode: "upstream_refusal"`、`lockllm_enabled: false`、`refusal_audit_enabled: true`。模型可用性仍受账号、目录、权限、限流和管理同步约束。缺少 LockLLM 配置不再阻止推理或目录查询；旧快照里的 `config.moderation` 仅在导入时兼容读取，新导出省略，既不会调用扫描服务，也不要求恢复它的密钥。
 
-`GET /admin/users/{id}` 的 `user.refusals` 保存累计次数、最近拒答时间、已淘汰明细数和最近事件；`GET /admin/users` 也返回这些信息。原 `user.moderation` 只保留已有 LockLLM 历史，新拒答不混入旧违规统计。管理员查询结构见 [API 文档](docs/API.md#上游拒答与用户记录)。
+`GET /admin/refusals?after_id=0&limit=100` 按 ID 升序读取所有用户的未归档拒答。记录包含 `user_id`、密钥名称和拒答详情；用户详情与列表不再提供 `refusals`。router 不维护按用户累计统计，完整历史与统计由管理端保存。原 `user.moderation` 仅兼容已有 LockLLM 历史，不再增长。接口与字段见 [API 文档](docs/API.md#上游拒答队列)。
 
-请求结束、失败、超时或客户端取消时，每个请求最多累计一次拒答。流式未完成也保存已收到的信号和原文，并标记 `complete: false`，事件 `status` 说明 router 最终处理结果。拒答是上游响应，常见 HTTP 200 不会因审计被改成错误；明确安全错误码则返回 403 / `upstream_refusal`，记录中保留实际上游 HTTP 状态。检测到明确拒答后不切换账号或模型重试。
+管理端将一页记录持久保存后，执行 `DELETE /admin/refusals?through_id=N`，N 是已完整归档的最大连续前缀 ID，删除 `id <= N` 的全部记录。可以每次从队列头读取、保存、删除一页，也可用 `next_after_id` 继续分页；不要用尚未全部读完的 `last_id` 来确认删除。重复删除幂等，未来 ID 返回 409，新产生的较大 ID 不受影响。删除不会重置编号。
 
-每用户保留最近 20 条明细（旧到新）；全局明细空间约 2 MiB，超限淘汰最旧明细并增加 `evicted_events`，累计次数不清零。每次记录最多 16 个拒答内容片段，拒答文本合计最多 8 KiB，Claude 随附可见文本、解释及安全错误说明分别最多 8 KiB；报告序列化后最多 16 KiB，超限标记 `truncated: true`。这些是审计存储限制，不截断转发给客户端的回复。
+请求结束、失败、超时或客户端取消时，每个请求最多产生一条拒答记录。流式未完成也保存已收到的信号和原文，并标记 `complete: false`，事件 `status` 说明 router 最终处理结果。常见 HTTP 200 拒答不会因审计被改成错误；明确安全错误返回 403 / `upstream_refusal`，记录保留上游 HTTP 状态。确认拒答后不切换账号或模型重试。
 
-所有已观察的拒答也随调用事件进入 checkpoint / `/admin/logs`。外部管理服务必须先归档这些事件再 ACK，才能保留超过最近窗口的历史；ACK 只移除待同步事件，用户累计和最近记录继续保留。待同步事件达到 4096 条或约 2 MiB 后停止接收新请求，等待管理端同步；在途请求仍完成结算。恢复旧快照缺少 `refusals` 时按空记录处理。
+队列积压达到 4096 条或约 2 MiB 时暂停新模型请求（503 / `accounting_unavailable`），已经在途的请求继续结算，因此可暂时超过阈值。队列不会自动淘汰，管理员仍可拉取和删除；删除后还须满足正常的用量同步条件才能恢复接收请求。`/admin/metrics` 的 `storage` 提供 `pending_refusals`、`pending_refusal_bytes`、`last_refusal_id`、`refusals_deleted_through`。分页默认 100 条，最大 500 条，不会序列化所有用户历史。
+
+每条记录最多 16 个拒答片段，文本合计最多 8 KiB；Claude 可见文本、解释及安全错误说明分别最多 8 KiB，报告序列化后最多 16 KiB。触及限制时标记 `truncated: true`，不截断转发给客户端的回复。
+
+checkpoint 的 `state.refusal_queue` 保存队列、`last_id` 与 `deleted_through`，用于停机恢复。checkpoint ACK 仅清理用量事件，不能确认拒答归档；反过来删除拒答也不删除用量。用量事件和 `/admin/logs` 仅保存 `refusal_id` 引用，拒答正文不会另存于用户信息或用量记录。用户删除、密钥轮换和配置热更新不会清除待归档拒答。
+
+管理端以 `(instance_id, id)` 去重，并将归档与消费游标持久保存；删除后保存最新 checkpoint。正常恢复最新状态时 ID 继续递增。若只能恢复旧备份，管理端须结合已归档游标修正快照：将 `last_id` 至少推进到已归档最大 ID，按已确认前缀更新 `deleted_through` 并移除相应 events，避免重复编号或重新保留已归档记录。router 是内存服务，这不是独立持久化的恰好一次投递保证。
+
+导入旧 `state.refusals` 时，将仍存在的用户窗口和旧待同步用量中的拒答报告按旧 ID 合并去重，迁移到统一队列并删除旧副本；首次迁移可能重放已归档旧历史，由管理员按游标删除。旧版已经淘汰且未备份的明细无法恢复；旧用户累计数字不迁移为新记录。缺少新旧拒答数据的快照初始化为空队列。
 
 此方式是在模型上游处理请求之后记录明确拒答，不执行输入预审核，不用文字关键词猜测拒答，也不保证发现所有不当请求。未标明 refusal 的普通自然语言拒答不会统计。上游类别和原因原样记录，不视作已证实的用户违规；用户的长上下文只发给所选模型上游，不再额外发送给 LockLLM。
 

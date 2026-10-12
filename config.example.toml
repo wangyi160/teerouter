@@ -10,7 +10,7 @@ body_timeout_secs = 15
 # admin_key_env = "TEELLM_ADMIN_KEY"
 
 # Upstream refusal audit is always enabled and requires no separate API key.
-# Admin user endpoints expose refusal text and metadata; request bodies are not saved.
+# Admins pull /admin/refusals and delete through the last archived ID; request bodies are not saved.
 
 [[users]]
 id = "test-user"

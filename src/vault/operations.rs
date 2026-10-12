@@ -276,7 +276,10 @@ impl Vault {
     pub(crate) fn storage_status(&self) -> Result<Value> {
         let data = self.lock()?;
         Ok(
-            json!({"mode":"memory","low_disk":false,"pending_usage":data.events.len(),"manager_connected":self.serving(),"initialized":self.initialized(),"boot_id":self.boot_id}),
+            json!({"mode":"memory","low_disk":false,"pending_usage":data.events.len(),
+                "pending_refusals":data.refusal_queue.events.len(),"pending_refusal_bytes":data.refusal_queue.bytes,
+                "last_refusal_id":data.refusal_queue.last_id,"refusals_deleted_through":data.refusal_queue.deleted_through,
+                "manager_connected":self.serving(),"initialized":self.initialized(),"boot_id":self.boot_id}),
         )
     }
     pub(crate) fn maintain(&self, ops: &crate::config::Operations) -> Result<()> {

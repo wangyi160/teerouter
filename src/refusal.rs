@@ -7,11 +7,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod queue;
 #[cfg(test)]
 mod tests;
+pub(crate) use queue::{Queue, restore};
 
-pub(crate) const RECENT_LIMIT: usize = 20;
-pub(crate) const HISTORY_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const PENDING_BYTES: usize = 2 * 1024 * 1024;
 const TEXT_BYTES: usize = 8192;
 const PART_LIMIT: usize = 16;
@@ -383,6 +383,9 @@ impl Tracker {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Event {
     pub id: u64,
+    // Missing only in old per-user checkpoints; migration fills the map's key.
+    #[serde(default)]
+    pub user_id: String,
     pub request_id: String,
     pub key: String,
     pub model: String,
@@ -393,6 +396,30 @@ pub(crate) struct Event {
     pub attempts: u64,
     pub result: Report,
 }
+impl Event {
+    pub(crate) fn from_audit(id: u64, audit: &Value, result: Report) -> Self {
+        Self {
+            id,
+            user_id: audit["user_id"].as_str().unwrap_or_default().into(),
+            request_id: audit["request_id"].as_str().unwrap_or_default().into(),
+            key: audit["key"].as_str().unwrap_or_default().into(),
+            model: audit["model"].as_str().unwrap_or_default().into(),
+            created_at: audit["created_at"].as_u64().unwrap_or_default(),
+            pool: audit["pool"].as_str().map(str::to_owned),
+            deployment: audit["deployment"].as_str().map(str::to_owned),
+            status: audit["status"].as_u64().unwrap_or_default() as u16,
+            attempts: audit["attempts"].as_u64().unwrap_or_default(),
+            result,
+        }
+    }
+    fn valid(&self) -> bool {
+        !self.user_id.is_empty()
+            && self.result.parts.len() <= PART_LIMIT
+            && !self.result.signals.is_empty()
+            && serde_json::to_vec(&self.result).is_ok_and(|v| v.len() <= REPORT_BYTES)
+    }
+}
+/// Import-only compatibility with the previous per-user history layout.
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct UserRecord {
@@ -400,36 +427,4 @@ pub(crate) struct UserRecord {
     pub last_refusal_at: Option<u64>,
     pub evicted_events: u64,
     pub recent_events: VecDeque<Event>,
-}
-/// Only detail consumes the eviction budget. Lifetime counters must survive even
-/// when many users have no recent events left.
-pub(crate) fn history_bytes(records: &BTreeMap<String, UserRecord>) -> usize {
-    records
-        .values()
-        .flat_map(|record| &record.recent_events)
-        .map(|event| serde_json::to_vec(event).unwrap().len())
-        .sum()
-}
-impl UserRecord {
-    pub(crate) fn observe(&mut self, event: Event) {
-        self.refused_requests = self.refused_requests.saturating_add(1);
-        self.last_refusal_at = Some(event.created_at);
-        self.recent_events.push_back(event);
-        while self.recent_events.len() > RECENT_LIMIT {
-            self.evict();
-        }
-    }
-    pub(crate) fn evict(&mut self) {
-        if self.recent_events.pop_front().is_some() {
-            self.evicted_events = self.evicted_events.saturating_add(1);
-        }
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.recent_events.len() <= RECENT_LIMIT
-            && self.recent_events.iter().all(|e| {
-                e.result.parts.len() <= PART_LIMIT
-                    && !e.result.signals.is_empty()
-                    && serde_json::to_vec(&e.result).is_ok_and(|v| v.len() <= REPORT_BYTES)
-            })
-    }
 }

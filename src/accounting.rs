@@ -117,7 +117,7 @@ impl Account {
             return Err(ApiError::new(
                 503,
                 "accounting_unavailable",
-                "Usage synchronization is unavailable",
+                "Usage or refusal synchronization is unavailable",
             ));
         }
         let _global = global.acquire(global_limit.min(4096)).ok_or_else(|| {
@@ -231,7 +231,7 @@ impl Ticket {
             "deployment":self.backend.as_ref().map(|b| &b.config.id), "status":status,
             "attempts":self.attempts, "duration_ms":self.start.elapsed().as_millis(), "usage":usage,
             "cache_usage":{"read":self.tokens.cache_read,"write":self.tokens.cache_write,"write_hour":self.tokens.cache_write_hour},
-            "refusal":refusal}), refusal.as_ref()
+            }), refusal.as_ref()
         );
     }
 }
