@@ -8,7 +8,7 @@
 - OpenAI / ChatGPT、Claude、Gemini / Gemini CLI、Grok 上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
 - Chat Completions、Responses、Messages 与 Gemini 原生接口；支持流式转发和选定格式转换。
 - 用户、API key、模型权限与用户并发控制；额度、价格和结算由外部管理服务负责。
-- 可选 LockLLM 全量文本输入审核：违规立即拒绝，上游不接收该请求；用户违规统计和近期事件通过管理员用户接口查询，并随 checkpoint 同步。
+- 必需的 LockLLM 全量文本输入审核：管理员下发审核配置和密钥之前拒绝模型请求；违规立即拒绝，上游不接收该请求；用户违规统计和近期事件通过管理员用户接口查询，并随 checkpoint 同步。
 - 官方域名固定在代码中；模型与思考参数对照官方目录验证并原值传递；管理员只能屏蔽，不能伪造目录或覆盖请求内容。
 - Phala / dstack Intel TDX 证明与 TLS 1.3 在同一进程中完成；另保留 Linux SNP 取证路径。
 - 全部业务状态保存在内存中，通过管理 API 初始化和同步；router 不包含数据库、管理页面或计费系统。
@@ -47,7 +47,7 @@ cargo build --release --locked --features dstack-tdx
 ## 文档与验证
 
 - [架构](ARCHITECTURE.md)、[运行和恢复](OPERATIONS.md)、[接口索引](docs/API.md)、[TEE 安全边界](SECURITY-TEE.md)。
-- [LockLLM 配置与边界](OPERATIONS.md#lockllm-输入审核)、[管理 API 配置示例](moderation-update.example.json)。默认不启用，需管理端下发审核密钥；该服务会收到明文输入，仅做输入审核，不过滤模型输出。
+- [LockLLM 配置与边界](OPERATIONS.md#lockllm-输入审核)、[管理 API 配置示例](moderation-update.example.json)。初始化时由管理端下发审核配置与密钥，未配置时模型服务不可用；该服务会收到明文输入，仅做输入审核，不过滤模型输出。
 
 ```sh
 cargo test --locked --features workbuddy-lab,sample-demo

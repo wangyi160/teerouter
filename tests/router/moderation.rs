@@ -322,10 +322,16 @@ async fn unsupported_and_oversized_inputs_fail_without_scanning_or_user_violatio
     long["messages"][0]["content"] = json!("x".repeat(2000));
     assert_eq!(post(&g, "/v1/chat/completions", long).await.status(), 413);
     assert_eq!(post(&g,"/v1/responses",json!({"model":"chat","input":[{"type":"message","content":[{"type":"input_image","image_url":"https://example.invalid/image"}]}]})).await.status(),400);
+    let opaque_tool = post(&g,"/v1/chat/completions",json!({"model":"chat","messages":[{"role":"assistant","content":"checking","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"},"extra_content":{"google":{"thought_signature":"opaque-signature"}}}]}]})).await;
+    assert_eq!(opaque_tool.status(), 400);
+    assert_eq!(
+        opaque_tool.json::<Value>().await.unwrap()["error"]["code"],
+        "moderation_unsupported_content"
+    );
     assert!(upstream.calls.lock().unwrap().is_empty());
     assert!(scanner.calls.lock().unwrap().is_empty());
     let record = user(&g).await;
-    assert_eq!(record["moderation"]["rejected_requests"], 2);
+    assert_eq!(record["moderation"]["rejected_requests"], 3);
     assert_eq!(record["moderation"]["blocked_requests"], 0);
 }
 
@@ -386,7 +392,7 @@ async fn authentication_precedes_scanning_and_other_users_have_no_violation() {
 }
 
 #[tokio::test]
-async fn invalid_configuration_is_atomic_and_disabling_guard_preserves_records() {
+async fn invalid_configuration_is_atomic_and_removing_guard_stops_service_and_preserves_records() {
     let upstream = mock(vec![Reply::json(completion())]).await;
     let scanner = mock(vec![blocked()]).await;
     let g = gateway(configured(&upstream, &scanner)).await;
@@ -413,6 +419,15 @@ async fn invalid_configuration_is_atomic_and_disabling_guard_preserves_records()
             400
         );
     }
+    for update in [
+        json!({"delete_secrets":["LOCKLLM_KEY"]}),
+        json!({"secrets":{"LOCKLLM_KEY":""}}),
+    ] {
+        assert_eq!(
+            admin(&g, "POST", "/admin/apply", update).await.status(),
+            400
+        );
+    }
     assert_eq!(
         admin(
             &g,
@@ -426,8 +441,195 @@ async fn invalid_configuration_is_atomic_and_disabling_guard_preserves_records()
     );
     assert_eq!(
         post(&g, "/v1/chat/completions", request()).await.status(),
-        200
+        503
     );
+    assert!(upstream.calls.lock().unwrap().is_empty());
     assert_eq!(scanner.calls.lock().unwrap().len(), 1);
     assert_eq!(user(&g).await["moderation"]["blocked_requests"], 1);
+}
+
+#[rstest]
+#[case("/v1/chat/completions", false)]
+#[case("/v1/chat/completions", true)]
+#[case("/v1/responses", false)]
+#[case("/v1/responses", true)]
+#[case("/v1/messages", false)]
+#[case("/v1/messages", true)]
+#[case("/v1beta/models/chat:generateContent", false)]
+#[case("/v1beta/models/chat:streamGenerateContent", true)]
+#[tokio::test]
+async fn missing_moderation_rejects_every_model_endpoint(#[case] path: &str, #[case] stream: bool) {
+    let upstream = mock(vec![]).await;
+    let mut config = configuration(&upstream);
+    config.moderation = None;
+    let g = gateway(config).await;
+    let body = json!({"model":"chat","stream":stream,"input":"hello","max_tokens":32,
+        "messages":[{"role":"user","content":"hello"}],"contents":[{"parts":[{"text":"hello"}]}]});
+    let response = post(&g, path, body).await;
+    assert_eq!(response.status(), 503);
+    assert_eq!(response.headers()["content-type"], "application/json");
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["error"]["code"],
+        "moderation_not_configured"
+    );
+    assert!(upstream.calls.lock().unwrap().is_empty());
+    let record = user(&g).await;
+    assert_eq!(record["moderation"]["blocked_requests"], 0);
+    assert_eq!(usage(&g).await["requests"], 0);
+}
+
+#[tokio::test]
+async fn missing_guard_keeps_management_live_until_admin_provisions_it() {
+    let upstream = mock(vec![Reply::json(completion())]).await;
+    let scanner = mock(vec![safe()]).await;
+    let mut config = configuration(&upstream);
+    config.moderation = None;
+    let g = gateway(config).await;
+    assert_eq!(
+        client()
+            .get(format!("{}/health/live", g.url))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client()
+            .get(format!("{}/health/ready", g.url))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+    let response = client()
+        .get(format!("{}/v1/models", g.url))
+        .bearer_auth("client-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["error"]["code"],
+        "moderation_not_configured"
+    );
+    let status: Value = admin(&g, "GET", "/admin/status", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["ready"], false);
+    assert_eq!(status["moderation_configured"], false);
+    let moderation = json!({"api_key_ref":"new-moderation-key","test_endpoint":format!("{}/v1/scan",scanner.running.url)});
+    // A dangling key reference cannot activate the service.
+    assert_eq!(
+        admin(
+            &g,
+            "POST",
+            "/admin/apply",
+            json!({"config":{"moderation":moderation}})
+        )
+        .await
+        .status(),
+        400
+    );
+    assert_eq!(
+        post(&g, "/v1/chat/completions", request()).await.status(),
+        503
+    );
+    assert_eq!(admin(&g,"POST","/admin/apply",json!({"config":{"moderation":moderation},"secrets":{"new-moderation-key":"new-moderation-secret"}})).await.status(),200);
+    assert_eq!(
+        post(&g, "/v1/chat/completions", request()).await.status(),
+        200
+    );
+    assert_eq!(
+        client()
+            .get(format!("{}/health/ready", g.url))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client()
+            .get(format!("{}/v1/models", g.url))
+            .bearer_auth("client-secret")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        scanner.calls.lock().unwrap()[0].headers["authorization"],
+        "Bearer new-moderation-secret"
+    );
+    assert_eq!(upstream.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn initialization_requires_referenced_secret_and_restores_mandatory_guard() {
+    let upstream = mock(vec![Reply::json(completion())]).await;
+    let scanner = mock(vec![safe()]).await;
+    let mut config = configuration(&upstream);
+    config.moderation = None;
+    let e = engine(config);
+    e.vault.require_manager();
+    let g = run(server::app(e)).await;
+    let checkpoint: Value = admin(&g, "GET", "/admin/checkpoint", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let mut state = checkpoint["state"].clone();
+    state["bundle"]["config"]["moderation"] = json!({
+        "api_key_ref":"initial-moderation-key",
+        "test_endpoint":format!("{}/v1/scan",scanner.running.url)
+    });
+    assert_eq!(
+        admin(
+            &g,
+            "POST",
+            "/admin/initialize",
+            json!({"boot_id":checkpoint["boot_id"],"state":state})
+        )
+        .await
+        .status(),
+        400
+    );
+    assert_eq!(
+        post(&g, "/v1/chat/completions", request()).await.status(),
+        503
+    );
+    assert!(scanner.calls.lock().unwrap().is_empty());
+    assert!(upstream.calls.lock().unwrap().is_empty());
+    state["bundle"]["secrets"]["initial-moderation-key"] = json!("initial-moderation-secret");
+    assert_eq!(
+        admin(
+            &g,
+            "POST",
+            "/admin/initialize",
+            json!({"boot_id":checkpoint["boot_id"],"state":state})
+        )
+        .await
+        .status(),
+        200
+    );
+    let checkpoint: Value = admin(&g, "GET", "/admin/checkpoint", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(admin(&g,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"]})).await.status(),200);
+    assert_eq!(
+        post(&g, "/v1/chat/completions", request()).await.status(),
+        200
+    );
+    assert_eq!(
+        scanner.calls.lock().unwrap()[0].headers["authorization"],
+        "Bearer initial-moderation-secret"
+    );
+    assert_eq!(upstream.calls.lock().unwrap().len(), 1);
 }

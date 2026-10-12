@@ -202,20 +202,21 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
         ApiError::new(
             503,
             "not_ready",
-            "Router has no ready deployments or accounting is unavailable",
+            "Router awaits moderation configuration, ready deployments or healthy accounting",
         )
         .into_response()
     }
 }
 
-async fn models(request: Request) -> Json<Value> {
+async fn models(request: Request) -> Result<Json<Value>, ApiError> {
     let engine = request
         .extensions()
         .get::<Identity>()
         .unwrap()
         .engine
         .clone();
-    Json(
+    engine.require_moderation()?;
+    Ok(Json(
         engine
             .models(
                 request
@@ -226,7 +227,7 @@ async fn models(request: Request) -> Json<Value> {
                     .unwrap(),
             )
             .await,
-    )
+    ))
 }
 
 async fn discovery_status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {

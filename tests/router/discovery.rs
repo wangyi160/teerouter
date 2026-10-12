@@ -22,9 +22,10 @@ fn bundle_urls(provider: Provider, proxies: &[&str]) -> Provision {
     }
     serde_json::from_value(json!({"config":{
         "server":{"admin_key_ref":"admin"},
+        "moderation":{"api_key_ref":"moderation", "test_endpoint":format!("{}/fixture/moderation",proxies[0])},
         "users":[{"id":"test-user"}],"keys":[{"name":"user","user_id":"test-user","key_ref":"client","models":["pool/*"]}],
         "models":[{"name":"pool","discover":true,"max_attempts":2,"retry_delay_ms":0,"deployments":deployments}]},
-        "secrets":{"client":"client-secret","admin":"admin-secret"},"accounts":accounts})).unwrap()
+        "secrets":{"client":"client-secret","admin":"admin-secret","moderation":"moderation-secret"},"accounts":accounts})).unwrap()
 }
 
 fn catalog(provider: Provider, names: &[&str]) -> Reply {
@@ -320,6 +321,7 @@ async fn background_refresh_works_without_list_requests_and_shared_account_limit
         let calls = calls.clone();
         async move {
             match request.uri().path() {
+                "/fixture/moderation" => moderation_fixture().into_response(),
                 "/v1/language-models" => {
                     let count = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let model = if count == 0 { "old" } else { "new" };

@@ -310,12 +310,23 @@ impl Engine {
         self.admin_secret.is_some()
     }
     pub(crate) fn ready(&self) -> bool {
-        self.ledger.healthy()
+        self.moderation.is_some()
+            && self.ledger.healthy()
             && self.storage_ready()
             && self
                 .groups
                 .values()
                 .any(|g| g.backends.iter().any(|b| b.ready()))
+    }
+
+    pub(crate) fn require_moderation(&self) -> Result<&crate::moderation::Scanner, ApiError> {
+        self.moderation.as_ref().ok_or_else(|| {
+            ApiError::new(
+                503,
+                "moderation_not_configured",
+                "Model service awaits administrator-provisioned moderation credentials",
+            )
+        })
     }
 
     pub(crate) async fn models(&self, account: usize) -> Value {
@@ -411,7 +422,7 @@ impl Engine {
     pub(crate) fn status(&self) -> Value {
         let mut groups: Vec<_> = self.groups.values().collect();
         groups.sort_by_key(|g| &g.config.name);
-        json!({"ready":self.ready(),"usage_healthy":self.ledger.healthy(),"storage":"memory","initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
+        json!({"ready":self.ready(),"moderation_configured":self.moderation.is_some(),"usage_healthy":self.ledger.healthy(),"storage":"memory","initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
             "in_flight":self.global.used(),
             "models":groups.iter().map(|g| json!({"model":g.config.name,"deployments":g.backends.iter().map(|b| b.status()).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
@@ -604,6 +615,7 @@ impl Engine {
         mut headers: HeaderMap,
         request_id: String,
     ) -> Result<Routed, ApiError> {
+        let scanner = self.require_moderation()?;
         if !config::valid_model_id(alias) {
             return Err(ApiError::new(400, "invalid_model", "Invalid model ID"));
         }
@@ -672,16 +684,14 @@ impl Engine {
                 "Official catalog refresh exceeded request deadline",
             ));
         }
-        if let Some(scanner) = &self.moderation {
-            let report = scanner
-                .check(protocol, &body, deadline, self.config_revision)
-                .await;
-            let error = report.error();
-            ticket.moderation = Some(report);
-            if let Some(error) = error {
-                ticket.finish(error.status);
-                return Err(error);
-            }
+        let report = scanner
+            .check(protocol, &body, deadline, self.config_revision)
+            .await;
+        let error = report.error();
+        ticket.moderation = Some(report);
+        if let Some(error) = error {
+            ticket.finish(error.status);
+            return Err(error);
         }
         let streaming = body["stream"] == true;
         let include_usage = body["stream_options"]["include_usage"] == true;

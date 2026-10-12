@@ -143,7 +143,10 @@ async fn native_oauth_uses_account_backend_and_preserves_usage(
 #[case(Provider::Gemini, false)]
 #[case(Provider::Gemini, true)]
 #[tokio::test]
-async fn chat_bridge_handles_tools_and_replay(#[case] provider: Provider, #[case] streaming: bool) {
+async fn chat_bridge_handles_tools_and_visible_replay(
+    #[case] provider: Provider,
+    #[case] streaming: bool,
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture-access");
@@ -177,7 +180,7 @@ async fn chat_bridge_handles_tools_and_replay(#[case] provider: Provider, #[case
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
     let body = json!({"model":"chat","stream":streaming,"stream_options":{"include_usage":true},
         "messages":[{"role":"system","content":"system instructions"},{"role":"user","content":"weather"},
-        {"role":"assistant","content":"checking","tool_calls":[{"id":"call-before","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Rome\"}"},"extra_content":{"google":{"thought_signature":"signature-before"}}}],"provider_specific_fields":{"thought_signatures":["signature-before"]}},
+        {"role":"assistant","content":"checking","tool_calls":[{"id":"call-before","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Rome\"}"}}]},
         {"role":"tool","tool_call_id":"call-before","content":"{\"weather\":\"sunny\"}"}],
         "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
         "tool_choice":{"type":"function","function":{"name":"lookup"}}});
@@ -222,7 +225,7 @@ async fn chat_bridge_handles_tools_and_replay(#[case] provider: Provider, #[case
         );
         let parts = &sent["request"]["contents"][1]["parts"];
         assert!(parts[0].get("thoughtSignature").is_none());
-        assert_eq!(parts[1]["thoughtSignature"], "signature-before");
+        assert!(parts[1].get("thoughtSignature").is_none());
         assert_eq!(
             sent["request"]["contents"][2]["parts"][0]["functionResponse"]["name"],
             "lookup"

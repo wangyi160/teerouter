@@ -58,11 +58,12 @@
 
 ## 输入审核错误与用户记录
 
-启用 `config.moderation` 后，四种推理协议（包括流式）在首次模型调用之前执行一次 LockLLM 全量文本审核。上游重试复用本次结果；不同客户端请求不做历史缓存。正常通过后沿用原转发和 SSE 行为，不扫描模型输出。
+`config.moderation` 及其独立密钥必须由管理员在初始化/恢复时下发；首次空初始化后可通过 `/admin/apply` 下发。未配置时四种推理协议（包括流式）及 `/v1/models` 拒绝服务，`/health/ready` 返回 503，`/admin/status` 的 `moderation_configured` 为 false，管理接口仍可使用。配置齐全后，在首次模型调用之前执行一次 LockLLM 全量文本审核。上游重试复用本次结果；不同客户端请求不做历史缓存。正常通过后沿用原转发和 SSE 行为，不扫描模型输出。
 
 | HTTP | error.code | 行为 |
 | --- | --- | --- |
 | 403 | `content_policy_violation` | 明确违规，停止转发，用户 blocked_requests 加一 |
+| 503 | `moderation_not_configured` | 管理员尚未下发或已移除审核配置；模型服务不可用，不进入扫描、模型计费或用户违规统计 |
 | 503 | `moderation_unavailable` | 超时、限流、服务故障、异常/不完整结果或未确认故障拒绝能力；停止转发，unavailable_requests 加一，不记违规 |
 | 413 | `moderation_input_too_large` | 全量输入超过本地审核大小限制或服务返回超限；停止转发，rejected_requests 加一 |
 | 400 | `moderation_unsupported_content` | 输入包含不可见历史引用或不支持的非文本内容；停止转发，rejected_requests 加一 |
@@ -100,4 +101,4 @@
 
 `recent_events` 使用相同事件结构，保留最近 20 条 blocked/unavailable/rejected 事件，按旧到新排列；上面的空数组仅用于缩短示例。allowed_requests 在模型请求结束/取消后记入，其他结果立即记入。计数按用户 ID 聚合所有 key，轮换或删除 key、用户资料更新、配置热更新以及 ACK 不清空计数。`moderation` 是只读结果字段，不能通过用户 POST/PUT 修改。
 
-每个调用的 `moderation` 结果也进入 `/admin/logs` 的待同步调用事件和 checkpoint；未开启审核时该字段为 null。完整历史由外部管理服务随调用事件保存，router 用户记录仅保留累计统计、最近一次违规和最近 20 条异常。事件只含固定原因、归一化类别、时间、模型及请求 ID，不含对话原文、工具内容或供应商的 violation_details/自由文本说明。未知类别统一为 other_policy。
+每个已执行审核的调用，其 `moderation` 结果也进入 `/admin/logs` 的待同步调用事件和 checkpoint；在扫描前因其他检查失败的事件以及旧版本历史事件中，该字段可为 null，这不表示允许绕过审核。完整历史由外部管理服务随调用事件保存，router 用户记录仅保留累计统计、最近一次违规和最近 20 条异常。事件只含固定原因、归一化类别、时间、模型及请求 ID，不含对话原文、工具内容或供应商的 violation_details/自由文本说明。未知类别统一为 other_policy。
