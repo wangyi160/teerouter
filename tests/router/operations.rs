@@ -27,7 +27,10 @@ async fn oauth_gateway(proxy: &Mock) -> (Running, Arc<Vault>) {
     let v = Vault::memory().unwrap();
     v.provision(&bundle).unwrap();
     (
-        run(server::app(Engine::from_vault(v.clone()).unwrap())).await,
+        run(server::app_upstream_fixture(
+            Engine::from_vault(v.clone()).unwrap(),
+        ))
+        .await,
         v,
     )
 }
@@ -114,7 +117,10 @@ async fn proxy_secret_bindings_persist_rotate_and_survive_engine_restart() {
         200
     );
     drop(gateway);
-    let reopened = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let reopened = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     assert_eq!(
         post(&reopened, "/v1/messages", message()).await.status(),
         200
@@ -315,7 +321,7 @@ async fn same_oauth_account_shares_rate_limits_across_aliases_and_generations() 
     bundle.config.models.push(other);
     let v = Vault::memory().unwrap();
     v.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(v).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(Engine::from_vault(v).unwrap())).await;
     assert_eq!(
         post(&gateway, "/v1/messages", message()).await.status(),
         200

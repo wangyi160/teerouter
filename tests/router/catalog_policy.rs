@@ -17,7 +17,7 @@ async fn start(provider: Provider, proxies: &[&Mock]) -> (Arc<Engine>, Running) 
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let engine = Engine::from_vault(vault).unwrap();
-    let gateway = run(server::app(engine.clone())).await;
+    let gateway = run(server::app_upstream_fixture(engine.clone())).await;
     (engine, gateway)
 }
 

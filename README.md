@@ -7,7 +7,7 @@
 
 - OpenAI / ChatGPT、Claude / Anthropic、Grok / xAI 三类正式上游，另保留可选的 Workbuddy 测试上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
 - Chat Completions、Responses、Messages 接口；支持流式转发和选定格式转换。
-- 用户、API key、模型权限与用户并发控制；额度、价格和结算由外部管理服务负责。
+- 统一平台 API key、商户授权与用户并发控制。全部上游账号归属商户，平台没有自营池；商户发布费率，外部管理服务结算。
 - 上游拒答审计：识别明确的 refusal / content_filter 信号，将拒答原文、原因、用户标识和元数据写入全局递增 ID 队列；管理员按游标拉取，归档后按 ID 批量删除。请求正文不保存，不再调用 LockLLM。
 - 官方域名固定在代码中；模型与思考参数对照官方目录验证并原值传递；管理员只能屏蔽，不能伪造目录或覆盖请求内容。
 - Phala / dstack Intel TDX 证明与 TLS 1.3 在同一进程中完成；另保留 Linux SNP 取证路径。
@@ -40,9 +40,9 @@ cargo build --release --locked --features dstack-tdx
 
 ## 初始化
 
-读取 `/admin/checkpoint` 中的 `boot_id`，首次调用 `/admin/initialize` 并传入 `state: null`，再通过 `/admin/apply` 导入用户、密钥、账号池和上游配置。重启时恢复已保存的快照。管理凭证和账号数据只应在已经验证的保密通道中发送。
+读取 `/admin/checkpoint` 中的 `boot_id`，首次调用 `/admin/initialize` 并传入 `state: null`，再通过 `/admin/apply` 导入平台用户和 key。平台登记商户后，由商户验证 TEE、解锁并通过 `/merchant/config` 导入账号池和上游凭证。平台根配置禁止上游账号池和凭证；每次调用必须选择商户。重启时恢复平台快照中的商户密文，再由商户解锁。详见 [商户接入](docs/MERCHANTS.md)。
 
-`provision*.example.json` 展示导入结构；`config*.example.toml` 用于说明配置结构与测试，并非磁盘数据库或旧式启动配置。Claude 消费者 token 刷新仍由外部管理，不声称已实现完整登录流程。
+`provision*.example.json` 和 `config*.example.toml` 展示内部上游引擎结构，用于协议测试；含账号池的示例不能作为平台初始化配置。商户使用上述文档的 `/merchant/config` 格式。Claude 消费者 token 刷新仍由商户外部管理，不声称已实现完整登录流程。
 
 ## 文档与验证
 

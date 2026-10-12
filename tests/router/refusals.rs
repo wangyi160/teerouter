@@ -259,7 +259,10 @@ async fn codex_chat_bridge_audits_done_only_refusals(#[case] stream: bool) {
     let bundle = discovery::bundle(Provider::OpenAI, &[&upstream]);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let g = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let g = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let response = post(&g, "/v1/chat/completions", input(stream)).await;
     assert_eq!(response.status(), 200);
     assert!(
@@ -369,7 +372,7 @@ async fn queue_pagination_deletion_and_checkpoint_ack_have_independent_cursors()
     saved["state"]["moderation"] = json!({"test-user":{"blocked_requests":7}});
     let next = engine(config);
     next.vault.require_manager();
-    let rebooted = run(server::app(next)).await;
+    let rebooted = run(server::app_upstream_fixture(next)).await;
     let empty = admin(&rebooted, "/admin/checkpoint").await;
     assert_eq!(
         write_admin(
@@ -581,7 +584,10 @@ async fn stream_refusal_before_first_client_frame_still_prevents_failover() {
     let bundle = discovery::bundle(Provider::OpenAI, &[&upstream]);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let g = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let g = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let response = post(&g, "/v1/chat/completions", input(false)).await;
     assert_eq!(response.status(), 403);
     assert_eq!(record(&g).await["pending"], 1);
@@ -598,7 +604,10 @@ async fn workbuddy_refusal_is_audited_with_the_same_user_permissions() {
     bundle.config.models[0].deployments[0].api_base = None;
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let g = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let g = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     assert_eq!(
         post(&g, "/v1/chat/completions", input(false))
             .await

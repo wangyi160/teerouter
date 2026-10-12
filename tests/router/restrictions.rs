@@ -12,7 +12,10 @@ async fn setup(proxy: &Mock) -> (Arc<Vault>, Running) {
     vault
         .provision(&discovery::bundle(Provider::XAI, &[proxy]))
         .unwrap();
-    let app = run(server::app(Engine::from_vault(vault.clone()).unwrap())).await;
+    let app = run(server::app_upstream_fixture(
+        Engine::from_vault(vault.clone()).unwrap(),
+    ))
+    .await;
     (vault, app)
 }
 async fn read(gateway: &Running, path: &str, admin: bool) -> Value {
@@ -74,7 +77,10 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
         read(&gateway, "/admin/models", true).await["data"][0]["official_models"],
         original
     );
-    let restarted = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let restarted = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     assert_eq!(
         post(&restarted, "/v1/responses", request("official", "low"))
             .await
@@ -172,7 +178,10 @@ async fn blocked_thinking_type_does_not_require_thinking_on_native_messages() {
     .unwrap();
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let body =
         json!({"model":"official","max_tokens":64,"messages":[{"role":"user","content":"hello"}]});
     assert_eq!(
@@ -248,7 +257,7 @@ async fn global_restrictions_cannot_be_bypassed_by_another_account_or_fallback_p
         serde_json::from_value(json!([{"blocked_efforts":["high"]}])).unwrap();
     let v = Vault::memory().unwrap();
     v.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(v).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(Engine::from_vault(v).unwrap())).await;
     for account in ["account-0", "account-1"] {
         let response = client()
             .post(format!("{}/v1/responses", gateway.url))

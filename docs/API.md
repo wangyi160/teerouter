@@ -5,7 +5,7 @@
 
 用户接口使用用户 API key；管理接口使用独立管理密钥。认证头为 `Authorization: Bearer <KEY>`，兼容 `x-api-key`，不接受 URL 中的 key。
 
-`x-router-pool` 选择账号池，`model` 保持目录中的原始 ID。思考参数取目录允许值，省略时不补写。金额和账务属于管理平台。
+`x-router-pool: m_<id>.pool` 选择账号池，`model` 保持目录中的原始 ID。思考参数取目录允许值，省略时不补写。金额和账务属于管理平台。
 
 ## 用户调用
 
@@ -33,21 +33,14 @@
 | GET | `/admin/status` | 就绪状态、内存存储、初始化状态、boot_id、在途请求和账号健康情况。 |
 | GET | `/admin/metrics` | 入口并发、存储、账号、发现与自动维护指标。 |
 | GET | `/admin/usage` | 读取用量统计，不包含用户的问题和回答。 |
-| GET | `/admin/models` | 按池和账号返回上游模型目录、思考能力与刷新结果。 |
-| POST | `/admin/models/refresh` | 从上游重新读取目录。 |
 | GET | `/admin/config` | 返回脱敏配置及 revision。 |
 | PATCH | `/admin/config` | 带 revision 提交配置补丁；过期 revision 被拒绝。 |
-| POST | `/admin/apply` | 管理平台统一下发配置、凭证与账号变更。 |
+| POST | `/admin/apply` | 下发平台用户、key 和资源配置；拒绝平台持有上游账号池、账号及凭证。 |
 | GET | `/admin/users` | 用户、所属 API key、并发权限及旧 moderation 历史；不附带拒答队列。 |
 | POST | `/admin/users` | 创建用户及其访问权限；金额不属于 router 用户属性。 |
 | GET | `/admin/users/{id}` | 读取指定用户及其 key、权限、旧 moderation 历史。 |
 | PUT | `/admin/users/{id}` | 更新指定用户及其权限。 |
 | DELETE | `/admin/users/{id}` | 撤销指定用户及其 API key。 |
-| GET | `/admin/accounts` | 返回账号状态，不包含凭证。 |
-| GET | `/admin/accounts/{name}/credential` | 受管理密钥保护的完整凭证接口；仅用于管理端账号详情。 |
-| PUT | `/admin/accounts/{name}` | 导入或更新账号凭证、代理和启用状态。 |
-| DELETE | `/admin/accounts/{name}` | 删除指定账号。 |
-| POST | `/admin/accounts/{name}/refresh` | 维护接口；正常使用由 router 自动刷新，无需手动操作。 |
 | GET | `/admin/checkpoint` | 管理后端用于加密保存配置、凭证、待确认用量与拒答队列及其游标；响应含敏感数据。 |
 | POST | `/admin/checkpoint/ack` | 持久保存后确认用量消费游标，并续期服务租约；不删除拒答队列。 |
 | POST | `/admin/initialize` | 绑定本次 boot_id 恢复管理平台保存的快照。 |
@@ -57,6 +50,8 @@
 | POST | `/admin/maintenance` | 触发内部维护任务；正常使用由 router 自动执行。 |
 
 ## 上游拒答队列
+
+账号、模型发现和销售费率只通过 [商户管理接口](MERCHANTS.md) 操作。`/admin/accounts*`、`/admin/models*` 返回 404；无商户标识的模型调用返回 `merchant_required`。
 
 管理端统一拉取所有用户的待归档记录，持久保存后显式删除。接口要求管理 Bearer 凭证并返回 `Cache-Control: no-store`。用户 API key 无法读取或删除；用户接口不再返回 `refusals`。
 

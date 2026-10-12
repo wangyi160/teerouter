@@ -98,7 +98,7 @@ async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model
     let v = Vault::memory().unwrap();
     v.provision(&bundle(provider, &[&proxy])).unwrap();
     let e = Engine::from_vault(v).unwrap();
-    let gateway = run(server::app(e)).await;
+    let gateway = run(server::app_upstream_fixture(e)).await;
     let lists = futures_util::future::join_all((0..8).map(|_| listed(&gateway))).await;
     for list in lists {
         assert_eq!(list, ["future-model-not-in-config"]);
@@ -148,7 +148,7 @@ async fn refresh_gates_each_account_without_changing_credentials() {
     let v = Vault::memory().unwrap();
     v.provision(&bundle(Provider::XAI, &[&a, &b])).unwrap();
     let e = Engine::from_vault(v).unwrap();
-    let gateway = run(server::app(e)).await;
+    let gateway = run(server::app_upstream_fixture(e)).await;
     assert_eq!(listed(&gateway).await, ["alpha", "beta"]);
     assert_eq!(
         generate(&gateway, Provider::XAI, "beta").await.status(),
@@ -224,7 +224,7 @@ async fn anthropic_pagination_is_complete_and_failed_refresh_never_replaces_good
     v.provision(&bundle(Provider::Anthropic, &[&proxy]))
         .unwrap();
     let e = Engine::from_vault(v).unwrap();
-    let gateway = run(server::app(e.clone())).await;
+    let gateway = run(server::app_upstream_fixture(e.clone())).await;
     assert_eq!(listed(&gateway).await, ["first", "second"]);
     assert!(
         proxy.calls.lock().unwrap()[1]
@@ -257,7 +257,7 @@ async fn memory_cache_is_reused_but_new_credentials_invalidate_it() {
     drop(e);
     let reopened = v.clone();
     let e = Engine::from_vault(reopened.clone()).unwrap();
-    let gateway = run(server::app(e)).await;
+    let gateway = run(server::app_upstream_fixture(e)).await;
     assert_eq!(listed(&gateway).await, ["PRIVATE_MODEL_SENTINEL"]);
     assert_eq!(proxy.calls.lock().unwrap().len(), 1); // Loaded encrypted cache; no new request.
     proxy
@@ -307,7 +307,7 @@ async fn background_refresh_works_without_list_requests_and_shared_account_limit
     let v = Vault::memory().unwrap();
     v.provision(&data).unwrap();
     let e = Engine::from_vault(v).unwrap();
-    let gateway = run(server::app(e.clone())).await;
+    let gateway = run(server::app_upstream_fixture(e.clone())).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         // Wait for the response to be persisted, not merely for the mock to receive the GET.
         // This read does not trigger discovery, so the test still proves background refresh.
@@ -337,7 +337,7 @@ async fn expired_catalog_blocks_generation_even_when_acl_allows_it() {
     data.config.discovery.max_stale_secs = 1;
     let v = Vault::memory().unwrap();
     v.provision(&data).unwrap();
-    let gateway = run(server::app(Engine::from_vault(v).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(Engine::from_vault(v).unwrap())).await;
     assert_eq!(listed(&gateway).await, ["allowed"]);
     assert_eq!(
         generate(&gateway, Provider::XAI, "denied").await.status(),

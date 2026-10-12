@@ -63,7 +63,10 @@ async fn future_wire_fields_change_live_after_provider_conversion(#[case] provid
         .insert(provider_name(provider).into(), profile);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault.clone()).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault.clone()).unwrap(),
+    ))
+    .await;
     let response = generate(&gateway, provider).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let update = apply(&gateway, json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:{
@@ -149,7 +152,10 @@ async fn codex_catalog_query_version_can_change_without_duplicate_parameters() {
     bundle.config.compatibility.insert("openai".into(), serde_json::from_value(json!({"requests":{"models":{"query":{"client_version":"1.0.1"},"headers":{"x-new-catalog":"enabled"}}}})).unwrap());
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     for (i, version) in ["1.0.1", "1.1.1"].iter().enumerate() {
         if i == 1 {
             assert_eq!(apply(&gateway, json!({"config":{"compatibility":{"openai":{"requests":{"models":{"query":{"client_version":version}}}}}}})).await.status(), 200);
@@ -220,7 +226,10 @@ async fn storage_is_locked_for_native_and_chat_requests_with_both_auth_modes(
         bundle.config.keys[0].models.clear();
         let vault = Vault::memory().unwrap();
         vault.provision(&bundle).unwrap();
-        run(server::app(Engine::from_vault(vault).unwrap())).await
+        run(server::app_upstream_fixture(
+            Engine::from_vault(vault).unwrap(),
+        ))
+        .await
     } else {
         let mut config = configuration(&proxy);
         config.models[0].deployments[0].provider = provider;
@@ -287,7 +296,10 @@ async fn unified_chat_streams_use_the_configured_native_wire_operation(#[case] p
         .insert(provider_name(provider).into(), profile);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let response = post(
         &gateway,
         "/v1/chat/completions",

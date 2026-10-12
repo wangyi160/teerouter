@@ -3,6 +3,7 @@ use crate::{error::ApiError, resources::Gate, router::Engine, vault::operations:
 use std::sync::{Arc, RwLock};
 
 pub(crate) struct Runtime {
+    merchant: bool,
     pub merchants: crate::merchants::Registry,
     current: RwLock<Arc<Engine>>,
     pub ingress: Arc<Gate>,
@@ -11,7 +12,17 @@ pub(crate) struct Runtime {
 }
 impl Runtime {
     pub fn new(engine: Arc<Engine>) -> Arc<Self> {
+        Self::scoped(engine, false)
+    }
+    pub(super) fn merchant(engine: Arc<Engine>) -> Arc<Self> {
+        Self::scoped(engine, true)
+    }
+    pub fn is_platform(&self) -> bool {
+        !self.merchant
+    }
+    fn scoped(engine: Arc<Engine>, merchant: bool) -> Arc<Self> {
         let runtime = Arc::new(Self {
+            merchant,
             merchants: Default::default(),
             current: RwLock::new(engine),
             ingress: Arc::default(),
@@ -31,9 +42,11 @@ impl Runtime {
                     .maintenance_secs
                     .min(engine.config.discovery.refresh_secs);
                 // Refresh jobs hold only this generation for a bounded iteration.
-                engine.refresh_models(false).await;
-                if engine.vault.serving() {
-                    engine.maintain_accounts().await;
+                if runtime.merchant {
+                    engine.refresh_models(false).await;
+                    if engine.vault.serving() {
+                        engine.maintain_accounts().await;
+                    }
                 }
                 let vault = engine.vault.clone();
                 let ops = engine.config.operations.clone();
@@ -92,6 +105,7 @@ impl Runtime {
         }
         let bundle = data.bundle.as_mut().ok_or_else(invalid)?;
         bundle.config.server.bind = old.config.server.bind;
+        self.validate_scope(bundle)?;
         let admin = bundle
             .config
             .server
@@ -198,6 +212,7 @@ impl Runtime {
                 ));
             }
             let candidate = snapshot.updated(&update).map_err(|_| invalid())?;
+            self.validate_scope(&candidate)?;
             if candidate.config.server.bind != old.config.server.bind {
                 return Err(ApiError::new(
                     409,
@@ -236,6 +251,32 @@ impl Runtime {
             "account_changed",
             "Account refresh raced with update; retry with current revision",
         ))
+    }
+
+    fn validate_scope(&self, bundle: &crate::vault::Provision) -> Result<(), ApiError> {
+        if self.merchant {
+            return Ok(());
+        }
+        let allowed: std::collections::BTreeSet<_> = bundle
+            .config
+            .keys
+            .iter()
+            .map(|key| &key.key_env)
+            .chain(bundle.config.server.admin_key_env.iter())
+            .collect();
+        if !bundle.config.models.is_empty()
+            || !bundle.accounts.is_empty()
+            || bundle.config.server.proxy.is_some()
+            || bundle.config.server.no_proxy.is_some()
+            || bundle.secrets.keys().any(|name| !allowed.contains(name))
+        {
+            return Err(ApiError::new(
+                400,
+                "merchant_ownership_required",
+                "Upstream pools and credentials must belong to a merchant",
+            ));
+        }
+        Ok(())
     }
 }
 fn invalid() -> ApiError {

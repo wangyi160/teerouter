@@ -115,7 +115,10 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
     }
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let (path, body) = if chat {
         (
             "/v1/chat/completions".to_owned(),
@@ -246,7 +249,10 @@ async fn pool_is_discovered_from_model_and_continuations_stay_on_the_original_ac
     bundle.config.models.push(second);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
-    let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
+    let gateway = run(server::app_upstream_fixture(
+        Engine::from_vault(vault).unwrap(),
+    ))
+    .await;
     let body = json!({"model":"second-only","input":"hello"});
     let response = post(&gateway, "/v1/responses", body.clone()).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());

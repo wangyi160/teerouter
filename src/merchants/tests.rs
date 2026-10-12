@@ -101,6 +101,62 @@ fn completion() -> Value {
 }
 
 #[tokio::test]
+async fn platform_rejects_upstream_configuration_and_unowned_requests() {
+    let runtime = root();
+    let server = serve(crate::server::app_runtime(runtime.clone())).await;
+    for body in [
+        json!({"config":{"models":[{"name":"legacy","provider":"openai","deployments":[{"id":"a","provider":"openai","api_key_ref":"key","enabled":false}]}]}}),
+        json!({"secrets":{"unowned-upstream":"private"}}),
+    ] {
+        let (status, result) = call(&server, Method::POST, "/admin/apply", ADMIN, body).await;
+        assert_eq!(status, 400, "{result}");
+        assert_eq!(result["error"]["code"], "merchant_ownership_required");
+    }
+    assert!(runtime.engine().config.models.is_empty());
+    for path in [
+        "/admin/accounts",
+        "/admin/accounts/a/credential",
+        "/admin/models",
+    ] {
+        assert_eq!(
+            call(&server, Method::GET, path, ADMIN, Value::Null).await.0,
+            404
+        );
+    }
+    let (status, result) = call(
+        &server,
+        Method::POST,
+        "/v1/chat/completions",
+        "alice-key",
+        json!({"model":"model-test","messages":[{"role":"user","content":"hello"}]}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(result["error"]["code"], "merchant_required");
+    assert!(
+        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
+            .await
+            .1["data"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null)
+            .await
+            .1["data"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let token = "a".repeat(64);
+    let merchant = add(&runtime, &token).await;
+    let _upstream = fixture(&merchant, completion()).await;
+    assert_eq!(call(&server,Method::POST,"/v1/chat/completions","alice-key",
+        json!({"model":format!("{}/model-test",crypto::identity(&token)),"messages":[{"role":"user","content":"hello"}]})).await.0,200);
+}
+
+#[tokio::test]
 async fn unified_platform_rpm_is_shared_across_merchants() {
     let r = root();
     let a = "a".repeat(64);
