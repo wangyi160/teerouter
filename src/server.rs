@@ -24,6 +24,8 @@ use crate::{
 #[path = "server/admin.rs"]
 mod admin;
 use admin::*;
+#[path = "server/refusals.rs"]
+mod refusals;
 #[path = "server/users.rs"]
 mod users;
 
@@ -58,6 +60,10 @@ pub fn app(engine: Arc<Engine>) -> Router {
         )
         .route("/admin/apply", post(admin_apply))
         .route("/admin/users", get(users::list).post(users::create))
+        .route(
+            "/admin/refusals",
+            get(refusals::list).delete(refusals::delete),
+        )
         .route(
             "/admin/users/{id}",
             get(users::get_one)

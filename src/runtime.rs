@@ -80,6 +80,7 @@ impl Runtime {
             Some(data) => data,
             None => old.vault.lock().map_err(storage)?.clone(),
         };
+        crate::refusal::restore(&mut data).map_err(|_| invalid())?;
         let bundle = data.bundle.as_mut().ok_or_else(invalid)?;
         bundle.config.server.bind = old.config.server.bind;
         let admin = bundle
@@ -96,8 +97,6 @@ impl Runtime {
             || data.sequence > u64::MAX / 2
             || data.events.len() > 8192
             || data.moderation.values().any(|m| m.recent_events.len() > 20)
-            || data.refusals.values().any(|r| !r.valid())
-            || crate::refusal::history_bytes(&data.refusals) > crate::refusal::HISTORY_BYTES
             || data.account_revisions.len() != bundle.accounts.len()
             || bundle
                 .accounts
@@ -118,6 +117,47 @@ impl Runtime {
     }
     pub fn maintenance_status(&self) -> serde_json::Value {
         self.maintenance.read().unwrap().clone()
+    }
+    pub async fn delete_refusals(
+        &self,
+        through_id: u64,
+        secret: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        let _lock = self.write.lock().await;
+        let engine = self.engine();
+        if !engine.authenticate_admin(secret) {
+            return Err(ApiError::new(
+                401,
+                "authentication_error",
+                "Admin credential was revoked",
+            ));
+        }
+        if !engine.vault.initialized() {
+            return Err(ApiError::new(
+                409,
+                "not_initialized",
+                "Initialize router first",
+            ));
+        }
+        let mut data = engine.vault.lock().map_err(storage)?;
+        let before = data.refusal_queue.deleted_through;
+        let deleted = data
+            .refusal_queue
+            .delete_through(through_id)
+            .ok_or_else(|| {
+                ApiError::new(
+                    409,
+                    "invalid_refusal_cursor",
+                    "Deletion ID exceeds the last issued refusal ID",
+                )
+            })?;
+        if before != data.refusal_queue.deleted_through {
+            data.changed();
+        }
+        Ok(
+            serde_json::json!({"deleted":deleted,"deleted_through":data.refusal_queue.deleted_through,
+            "last_id":data.refusal_queue.last_id,"pending":data.refusal_queue.events.len(),"instance_id":data.instance}),
+        )
     }
     pub async fn apply(&self, update: Update, secret: &str) -> Result<serde_json::Value, ApiError> {
         let _lock = self.write.lock().await;
