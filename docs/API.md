@@ -38,7 +38,7 @@
 | GET | `/admin/config` | 返回脱敏配置及 revision。 |
 | PATCH | `/admin/config` | 带 revision 提交配置补丁；过期 revision 被拒绝。 |
 | POST | `/admin/apply` | 管理平台统一下发配置、凭证与账号变更。 |
-| GET | `/admin/users` | 用户、所属 API key、并发权限和 moderation 审核统计。 |
+| GET | `/admin/users` | 用户、所属 API key、并发权限、refusals 拒答记录及旧 moderation 历史。 |
 | POST | `/admin/users` | 创建用户及其访问权限；金额不属于 router 用户属性。 |
 | GET | `/admin/users/{id}` | 读取指定用户，包括违规次数、最近一次违规及最近 20 条审核异常事件。 |
 | PUT | `/admin/users/{id}` | 更新指定用户及其权限。 |
@@ -51,52 +51,62 @@
 | GET | `/admin/checkpoint` | 管理后端用于加密保存配置、凭证与待确认用量；响应含敏感数据。 |
 | POST | `/admin/checkpoint/ack` | 管理后端持久保存后确认消费游标，并续期服务租约。 |
 | POST | `/admin/initialize` | 绑定本次 boot_id 恢复管理平台保存的快照。 |
-| GET | `/admin/logs` | 运行元数据，不是问题与回答内容。 |
+| GET | `/admin/logs` | 待同步调用元数据及拒答证据；不包含请求正文或正常回答。 |
 | POST | `/admin/maintenance` | 触发内部维护任务；正常使用由 router 自动执行。 |
 
-## 输入审核错误与用户记录
+## 上游拒答与用户记录
 
-`config.moderation` 及其独立密钥必须由管理员在初始化/恢复时下发；首次空初始化后可通过 `/admin/apply` 下发。未配置时四种推理协议（包括流式）及 `/v1/models` 拒绝服务，`/health/ready` 返回 503，`/admin/status` 的 `moderation_configured` 为 false，管理接口仍可使用。配置齐全后，在首次模型调用之前执行一次 LockLLM 全量文本审核。上游重试复用本次结果；不同客户端请求不做历史缓存。正常通过后沿用原转发和 SSE 行为，不扫描模型输出。
-
-| HTTP | error.code | 行为 |
-| --- | --- | --- |
-| 403 | `content_policy_violation` | 明确违规，停止转发，用户 blocked_requests 加一 |
-| 503 | `moderation_not_configured` | 管理员尚未下发或已移除审核配置；模型服务不可用，不进入扫描、模型计费或用户违规统计 |
-| 503 | `moderation_unavailable` | 超时、限流、服务故障、异常/不完整结果或未确认故障拒绝能力；停止转发，unavailable_requests 加一，不记违规 |
-| 413 | `moderation_input_too_large` | 全量输入超过本地审核大小限制或服务返回超限；停止转发，rejected_requests 加一 |
-| 400 | `moderation_unsupported_content` | 输入包含不可见历史引用或不支持的非文本内容；停止转发，rejected_requests 加一 |
-
-错误沿用 `{"error":{"type":"...","code":"...","message":"..."}}` 格式和 `x-request-id` 响应头。审核拒绝发生在 SSE 开始之前，仍返回普通 JSON 错误。未调用上游时 attempts 和模型 token 用量为零，不记未知模型费用。
-
-管理端通过 `GET /admin/users/{id}` 的 `user.moderation`（或列表中对应用户的 `moderation`）读取：
+管理员使用 `GET /admin/users/{id}` 读取 `user.refusals`，或通过 `GET /admin/users` 的 `data[].refusals` 读取。普通用户凭证不能访问这些接口，响应使用 `Cache-Control: no-store`。用户 POST/PUT 不接受写入 `refusals`。
 
 ```json
 {
-  "allowed_requests": 10,
-  "blocked_requests": 1,
-  "unavailable_requests": 0,
-  "rejected_requests": 0,
-  "last_violation": {
-    "id": 11,
-    "request_id": "req-example",
-    "key": "key-1",
-    "model": "example-model",
+  "refused_requests": 1,
+  "last_refusal_at": 1791763200,
+  "evicted_events": 0,
+  "recent_events": [{
+    "id": 12,
+    "request_id": "router-request-id",
+    "key": "key-name",
+    "model": "requested-model",
+    "pool": "chat",
+    "deployment": "account-1",
     "created_at": 1791763200,
+    "status": 200,
+    "attempts": 1,
     "result": {
-      "decision": "blocked",
-      "reason": "content_policy",
-      "categories": ["sexual_content"],
-      "scanner_request_id": "scan-example",
-      "scanner_status": 403,
-      "input_chars": 1000,
-      "duration_ms": 180,
-      "config_revision": 2
+      "provider": "openai",
+      "protocol": "responses",
+      "streamed": true,
+      "upstream_status": 200,
+      "upstream_request_id": "upstream-request-id",
+      "response_id": "response-id",
+      "response_model": "reported-model",
+      "signals": ["response.refusal.done"],
+      "reasons": [],
+      "parts": [{"output_index": 0, "content_index": 0, "refusal": "Provider refusal text"}],
+      "response_text": null,
+      "stop_details": null,
+      "error": null,
+      "complete": true,
+      "truncated": false
     }
-  },
-  "recent_events": []
+  }]
 }
 ```
 
-`recent_events` 使用相同事件结构，保留最近 20 条 blocked/unavailable/rejected 事件，按旧到新排列；上面的空数组仅用于缩短示例。allowed_requests 在模型请求结束/取消后记入，其他结果立即记入。计数按用户 ID 聚合所有 key，轮换或删除 key、用户资料更新、配置热更新以及 ACK 不清空计数。`moderation` 是只读结果字段，不能通过用户 POST/PUT 修改。
+`key` 是密钥名称，不是密钥值。`protocol` 和 `streamed` 描述实际观察的上游协议；Codex 即使客户端请求 JSON，也可能返回 SSE。`complete` 表示是否读到了完整上游响应；`status` 是 router 最终结算状态，例如流中断 502、超时 504、客户端取消 499，`upstream_status` 保留最初上游 HTTP 状态。上游未提供的元数据为 null。`truncated` 标明审计信息触及存储限制，客户端响应不受该限制影响。
 
-每个已执行审核的调用，其 `moderation` 结果也进入 `/admin/logs` 的待同步调用事件和 checkpoint；在扫描前因其他检查失败的事件以及旧版本历史事件中，该字段可为 null，这不表示允许绕过审核。完整历史由外部管理服务随调用事件保存，router 用户记录仅保留累计统计、最近一次违规和最近 20 条异常。事件只含固定原因、归一化类别、时间、模型及请求 ID，不含对话原文、工具内容或供应商的 violation_details/自由文本说明。未知类别统一为 other_policy。
+| 上游 / 接口 | 明确信号 | 保存内容 |
+| --- | --- | --- |
+| OpenAI / Grok / Workbuddy Chat | `choices[].message.refusal`、`delta.refusal`、`finish_reason: content_filter` | 合并的拒答原文、命中字段、结束原因、响应标识 |
+| OpenAI / Grok Responses（含 Codex 转换） | `type: refusal` 内容块、`response.refusal.delta/done`、`incomplete_details.reason: content_filter` | 按 output/content 索引合并的原文和信号；重复 done/最终快照不重复累计 |
+| Claude Messages（含 Chat 转换） | `stop_reason: refusal`、`stop_details.type: refusal` | `stop_details.type/category/explanation` 与同一响应的可见文本；不保存思考内容 |
+| 上游明确安全错误 | `error.code/type` 为 `content_policy_violation`、`content_filter`、`safety_violation` | 错误 code/type/message 和原 HTTP 状态；单独的 400/403/429 不算拒答 |
+
+普通 HTTP 200 拒答沿原有协议返回；明确安全错误返回 403 / `upstream_refusal`，不会重试其他账号。流已经开始后的传输错误仍走 SSE `stream_interrupted` 路径，同时保留已观察的拒答。一般的拒答文本、logprobs、工具输出或用户输入不用于推断拒答。Grok/Workbuddy 只在实际返回上述字段时记录，不能保证每次拒答都有结构化标志。
+
+累计按用户 ID 聚合所有 key，请求完成或中断时写入一次。用户/密钥更新、配置热更新和 checkpoint ACK 不清空记录。最近明细按旧到新排列，最多 20 条；更早明细与全局容量淘汰见 [保留范围](../OPERATIONS.md#上游拒答审计)。checkpoint 的 `state.refusals[user_id]` 保存相同结构，`state.events[].event.refusal` 保存本次报告，供管理端在 ACK 前归档完整历史。
+
+LockLLM 不再调用，不需要其密钥；旧 `config.moderation` 仅兼容读取且导出时省略。原 `user.moderation` 是旧版历史，不再增长。新统计称为上游拒答，不能直接认定用户违规。
+
+字段来源：[OpenAI Chat](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[OpenAI Responses SSE](https://developers.openai.com/api/reference/resources/responses/streaming-events)、[Claude 拒答格式](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals)、[xAI Chat 兼容响应](https://docs.x.ai/developers/model-capabilities/legacy/chat-completions)。本地测试验证这些协议形状，不声称进行了真实安全违规触发测试。

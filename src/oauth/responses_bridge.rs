@@ -196,6 +196,7 @@ pub(super) struct StreamState {
     tools: HashMap<u64, usize>,
     arguments: std::collections::HashSet<u64>,
     text: std::collections::HashSet<(u64, u64)>,
+    refusals: std::collections::HashSet<(u64, u64)>,
 }
 impl StreamState {
     pub fn event(&mut self, value: &Value, model: &str) -> Result<Option<Value>, Error> {
@@ -219,7 +220,25 @@ impl StreamState {
                 self.text.insert(text_index);
                 json!({"content":value["delta"]})
             }
-            Some("response.refusal.delta") => json!({"refusal":value["delta"]}),
+            Some("response.refusal.delta") => {
+                self.refusals.insert(text_index);
+                json!({"refusal":value["delta"]})
+            }
+            Some("response.refusal.done") if self.refusals.insert(text_index) => {
+                json!({"refusal":value["refusal"]})
+            }
+            Some("response.content_part.done")
+                if value["part"]["type"] == "refusal" && self.refusals.insert(text_index) =>
+            {
+                json!({"refusal":value["part"]["refusal"]})
+            }
+            Some("response.output_item.done") if value["item"]["type"] == "message" => {
+                let refusal = self.item_refusals(index, &value["item"]);
+                if refusal.is_empty() {
+                    return Ok(None);
+                }
+                json!({"refusal":refusal})
+            }
             Some("response.reasoning_summary_text.delta") => {
                 json!({"reasoning_content":value["delta"]})
             }
@@ -252,10 +271,23 @@ impl StreamState {
                 json!({"content":value["text"]})
             }
             Some("response.completed" | "response.incomplete") => {
+                let mut refusal = String::new();
+                for (index, item) in value["response"]["output"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    refusal.push_str(&self.item_refusals(index as u64, item));
+                }
                 return Ok(Some(bridge::chunk(
                     &self.id,
                     model,
-                    json!({}),
+                    if refusal.is_empty() {
+                        json!({})
+                    } else {
+                        json!({"refusal":refusal})
+                    },
                     Some(finish(&value["response"], !self.tools.is_empty())),
                     bridge::usage(Protocol::Responses, value),
                 )));
@@ -263,6 +295,21 @@ impl StreamState {
             _ => return Ok(None),
         };
         Ok(Some(bridge::chunk(&self.id, model, delta, None, None)))
+    }
+    fn item_refusals(&mut self, index: u64, item: &Value) -> String {
+        if item["type"] != "message" {
+            return String::new();
+        }
+        let mut text = String::new();
+        for (content, part) in item["content"].as_array().into_iter().flatten().enumerate() {
+            if part["type"] == "refusal"
+                && self.refusals.insert((index, content as u64))
+                && let Some(refusal) = part["refusal"].as_str()
+            {
+                text.push_str(refusal);
+            }
+        }
+        text
     }
 }
 

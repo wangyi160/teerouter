@@ -18,10 +18,9 @@ fn bundle(provider: Provider, proxies: &[String], base: &str) -> Provision {
     }
     serde_json::from_value(json!({"config":{
         "server":{"proxy":"http://127.0.0.1:9","no_proxy":"*"},
-        "moderation":{"api_key_ref":"moderation", "test_endpoint":format!("{}/fixture/moderation",proxies.last().unwrap())},
         "users":[{"id":"test-user"}],"keys":[{"name":"user","user_id":"test-user","key_ref":"client"}],
         "models":[{"name":"chat","max_attempts":2,"retry_delay_ms":0,"deployments":deployments}]},
-        "secrets":{"client":"client-secret","moderation":"moderation-secret"},"accounts":accounts}))
+        "secrets":{"client":"client-secret"},"accounts":accounts}))
     .unwrap()
 }
 

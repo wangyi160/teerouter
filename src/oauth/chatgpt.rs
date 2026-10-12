@@ -29,20 +29,22 @@ pub(crate) async fn send(
         client.base_url.as_str().trim_end_matches('/'),
         client.profile.path("responses", "responses")
     );
-    checked(
-        client
-            .profile
-            .json(
-                "responses",
-                &client.http,
-                url,
-                client.auth_headers(HeaderMap::new()).await?,
-                request,
-            )?
-            .send()
-            .await?,
-    )
-    .await
+    client
+        .checked(
+            client
+                .profile
+                .json(
+                    "responses",
+                    &client.http,
+                    url,
+                    client.auth_headers(HeaderMap::new()).await?,
+                    request,
+                )?
+                .send()
+                .await?,
+            crate::upstream::Protocol::Responses,
+        )
+        .await
 }
 
 fn transform_request(request: &mut Value, model: &str) -> Result<(), Error> {
@@ -109,7 +111,7 @@ fn transform_request(request: &mut Value, model: &str) -> Result<(), Error> {
 // including for callers requesting JSON. Some completions omit the final output array.
 pub(crate) async fn collect(mut events: crate::upstream::EventStream) -> Result<Value, Error> {
     let mut items = std::collections::BTreeMap::new();
-    let mut texts = std::collections::BTreeMap::new();
+    let mut texts = std::collections::BTreeMap::<(u64, u64), Value>::new();
     while let Some(frame) = events.next().await {
         let Some(mut value) = frame?.value else {
             continue;
@@ -127,7 +129,31 @@ pub(crate) async fn collect(mut events: crate::upstream::EventStream) -> Result<
                         value["output_index"].as_u64().unwrap_or(0),
                         value["content_index"].as_u64().unwrap_or(0),
                     ),
-                    value["text"].clone(),
+                    json!({"type":"output_text","text":value["text"],"annotations":[]}),
+                );
+            }
+            Some("response.refusal.delta" | "response.refusal.done") => {
+                let key = (
+                    value["output_index"].as_u64().unwrap_or(0),
+                    value["content_index"].as_u64().unwrap_or(0),
+                );
+                if value["type"] == "response.refusal.done" {
+                    texts.insert(key, json!({"type":"refusal","refusal":value["refusal"]}));
+                } else if let Some(delta) = value["delta"].as_str() {
+                    let part = texts
+                        .entry(key)
+                        .or_insert_with(|| json!({"type":"refusal","refusal":""}));
+                    let text = part["refusal"].as_str().unwrap_or("").to_owned() + delta;
+                    part["refusal"] = text.into();
+                }
+            }
+            Some("response.content_part.done") if value["part"]["type"] == "refusal" => {
+                texts.insert(
+                    (
+                        value["output_index"].as_u64().unwrap_or(0),
+                        value["content_index"].as_u64().unwrap_or(0),
+                    ),
+                    value["part"].clone(),
                 );
             }
             Some("response.completed" | "response.incomplete") => {
@@ -139,10 +165,7 @@ pub(crate) async fn collect(mut events: crate::upstream::EventStream) -> Result<
                     let mut text_items = std::collections::BTreeMap::new();
                     for ((output_index, _), text) in texts {
                         let item = text_items.entry(output_index).or_insert_with(||json!({"type":"message","role":"assistant","status":"completed","content":[]}));
-                        item["content"]
-                            .as_array_mut()
-                            .unwrap()
-                            .push(json!({"type":"output_text","text":text,"annotations":[]}));
+                        item["content"].as_array_mut().unwrap().push(text);
                     }
                     // Preserve text-only indices alongside actual output items; actual items win.
                     text_items.extend(items);
@@ -161,6 +184,7 @@ pub(crate) async fn decode(
     response: reqwest::Response,
     streaming: bool,
     limits: crate::resources::Limits,
+    refusal: Option<crate::refusal::Observer>,
 ) -> Result<crate::upstream::Output, Error> {
     use crate::upstream::{Output, Protocol, decode_native};
     // The Python implementation also accepts an ordinary JSON response for nonstream callers.
@@ -175,25 +199,16 @@ pub(crate) async fn decode(
                 .trim()
                 .eq_ignore_ascii_case("application/json")
         });
-    let output =
-        decode_native(response, Protocol::Responses, streaming || !is_json, limits).await?;
+    let output = decode_native(
+        response,
+        Protocol::Responses,
+        streaming || !is_json,
+        limits,
+        refusal,
+    )
+    .await?;
     match output {
         Output::Stream(events) if !streaming => collect(events).await.map(Output::Json),
         output => Ok(output),
     }
-}
-
-pub(crate) async fn checked(response: reqwest::Response) -> Result<reqwest::Response, Error> {
-    if !response.status().is_success() {
-        return Err(Error::Api {
-            status: response.status().as_u16(),
-            retry_after_secs: response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse().ok()),
-            body: String::new(),
-        });
-    }
-    Ok(response)
 }

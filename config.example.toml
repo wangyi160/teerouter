@@ -9,16 +9,8 @@ body_timeout_secs = 15
 # Optional, separate credential for GET /admin/status and /admin/usage:
 # admin_key_env = "TEELLM_ADMIN_KEY"
 
-# Required before model service can accept requests. Management provisions the vault secret.
-# Omission/null blocks model requests. See moderation-update.example.json for /admin/apply.
-# [moderation]
-# api_key_ref = "lockllm-key"
-# sensitivity = "medium"
-# timeout_secs = 30
-# max_input_bytes = 16777216
-# max_concurrent = 16
-# rpm = 300
-# proxy = "http://127.0.0.1:7897" # Optional explicit moderation-only proxy.
+# Upstream refusal audit is always enabled and requires no separate API key.
+# Admin user endpoints expose refusal text and metadata; request bodies are not saved.
 
 [[users]]
 id = "test-user"

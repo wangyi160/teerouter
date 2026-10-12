@@ -185,20 +185,7 @@ async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_a
     );
     let c = get(&second, "/admin/checkpoint").await;
     assert_eq!(post(&second,"/admin/checkpoint/ack",json!({"boot_id":c["boot_id"],"generation":c["state"]["generation"],"sequence":c["state"]["sequence"]})).await.status(),200);
-    // Restoring a pre-moderation checkpoint must never reopen unscanned model service.
-    let blocked = reqwest::Client::new()
-        .get(format!("{}/v1/models", second.url))
-        .bearer_auth(key)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(blocked.status(), 503);
-    assert_eq!(
-        blocked.json::<Value>().await.unwrap()["error"]["code"],
-        "moderation_not_configured"
-    );
-    // No model deployments or scan requests here: this key is only a local fixture.
-    assert_eq!(post(&second,"/admin/apply",json!({"config":{"moderation":{"api_key_ref":"moderation"}},"secrets":{"moderation":"fixture-moderation-secret"}})).await.status(),200);
+    // Refusal auditing needs no external scanner key after checkpoint restore.
     assert_eq!(
         reqwest::Client::new()
             .get(format!("{}/v1/models", second.url))

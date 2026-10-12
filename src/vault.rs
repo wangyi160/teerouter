@@ -46,6 +46,10 @@ pub(crate) struct Data {
     pub usage: BTreeMap<String, crate::ledger::Usage>,
     #[serde(default)]
     pub moderation: BTreeMap<String, crate::moderation::UserRecord>,
+    #[serde(default)]
+    pub refusals: BTreeMap<String, crate::refusal::UserRecord>,
+    #[serde(skip)]
+    pub pending_event_bytes: usize,
     pub instance: String,
     pub sequence: u64,
     pub events: VecDeque<Value>,
@@ -150,12 +154,17 @@ impl Vault {
                     .acknowledged
                     .is_some_and(|t| t.elapsed().as_secs() < 30))
     }
-    pub(crate) fn initialize(&self, data: Data) -> Result<()> {
+    pub(crate) fn initialize(&self, mut data: Data) -> Result<()> {
         let mut current = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if sync.initialized {
             return Err(VaultError("router is already initialized"));
         }
+        data.pending_event_bytes = data
+            .events
+            .iter()
+            .map(|v| serde_json::to_vec(v).map_or(0, |b| b.len()))
+            .sum();
         *current = data;
         sync.initialized = true;
         Ok(())
@@ -174,6 +183,11 @@ impl Vault {
         }
         data.events
             .retain(|e| e["seq"].as_u64().unwrap_or(u64::MAX) > sequence);
+        data.pending_event_bytes = data
+            .events
+            .iter()
+            .map(|v| serde_json::to_vec(v).map_or(0, |b| b.len()))
+            .sum();
         sync.acknowledged = Some(Instant::now());
         Ok(())
     }
@@ -359,23 +373,6 @@ impl Vault {
                 return Err(VaultError("admin key must differ from client keys"));
             }
         }
-        if let Some(moderation) = &config.moderation {
-            required(&moderation.api_key_ref)?;
-            let secret = &bundle.secrets[&moderation.api_key_ref];
-            if client_keys.contains(secret)
-                || config
-                    .server
-                    .admin_key_env
-                    .as_ref()
-                    .is_some_and(|name| &bundle.secrets[name] == secret)
-            {
-                return Err(VaultError(
-                    "moderation key must differ from router credentials",
-                ));
-            }
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {secret}"))
-                .map_err(|_| VaultError("invalid moderation credential"))?;
-        }
         for deployment in config.models.iter().flat_map(|m| &m.deployments) {
             if deployment.oauth_file.is_some()
                 || (deployment.enabled && deployment.model.starts_with("env:"))
@@ -491,9 +488,6 @@ impl Provision {
         }
         if let Some(name) = &config.server.admin_key_env {
             import(name)?;
-        }
-        if let Some(moderation) = &config.moderation {
-            import(&moderation.api_key_ref)?;
         }
         for d in config.models.iter_mut().flat_map(|m| &mut m.deployments) {
             if !d.enabled {

@@ -2,44 +2,6 @@ use super::*;
 use teellm::vault::Vault;
 
 #[tokio::test]
-async fn workbuddy_policy_violation_never_reaches_upstream() {
-    let proxy = catalog_mock(vec![Reply::json(json!({"data":[{"id":"lab-chat"}]}))]).await;
-    let scanner = mock(vec![Reply {
-        status: 403,
-        ..Reply::json(json!({"error":{"code":"policy_violation"}}))
-    }])
-    .await;
-    let mut bundle = discovery::bundle(Provider::Workbuddy, &[&proxy]);
-    bundle.config.models[0].provider = Some(Provider::Workbuddy);
-    bundle.config.models[0].deployments[0].api_base = None;
-    bundle.config.moderation.as_mut().unwrap().test_endpoint =
-        Some(format!("{}/v1/scan", scanner.running.url));
-    bundle.accounts.get_mut("account-0").unwrap().credential = json!({"api_key":"lab-fixture"});
-    let vault = Vault::memory().unwrap();
-    vault.provision(&bundle).unwrap();
-    let engine = Engine::from_vault(vault).unwrap();
-    engine.refresh_models(true).await;
-    let gateway = run(server::app(engine)).await;
-    let response = post(
-        &gateway,
-        "/v1/chat/completions",
-        json!({"model":"lab-chat","messages":[{"role":"user","content":"test input"}]}),
-    )
-    .await;
-    assert_eq!(response.status(), 403);
-    assert_eq!(
-        response.json::<Value>().await.unwrap()["error"]["code"],
-        "content_policy_violation"
-    );
-    assert_eq!(scanner.calls.lock().unwrap().len(), 1);
-    assert_eq!(
-        proxy.calls.lock().unwrap().len(),
-        1,
-        "Only discovery may reach upstream"
-    );
-}
-
-#[tokio::test]
 async fn workbuddy_discovers_and_forwards_chat_through_bound_proxy() {
     let proxy = catalog_mock(vec![
         Reply::json(json!({"data":[{"id":"future-local-chat"}]})),

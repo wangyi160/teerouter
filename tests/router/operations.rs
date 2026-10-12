@@ -336,7 +336,7 @@ async fn same_oauth_account_shares_rate_limits_across_aliases_and_generations() 
 }
 
 #[tokio::test]
-async fn explicit_sessions_pin_accounts_and_opaque_continuations_remain_blocked() {
+async fn explicit_sessions_and_known_continuations_pin_the_original_account() {
     let a = mock(vec![Reply::json(native(Provider::OpenAI)); 4]).await;
     let b = mock(vec![Reply::json(native(Provider::OpenAI)); 4]).await;
     let mut config = configuration(&a);
@@ -369,9 +369,9 @@ async fn explicit_sessions_pin_accounts_and_opaque_continuations_remain_blocked(
         )
         .await
         .status(),
-        400
+        200
     );
-    assert_eq!(a.calls.lock().unwrap().len(), 2);
+    assert_eq!(a.calls.lock().unwrap().len(), 3);
     assert_eq!(b.calls.lock().unwrap().len(), 0);
     assert!(
         !a.calls.lock().unwrap()[0]

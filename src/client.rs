@@ -11,6 +11,7 @@ pub struct Client {
     pub(crate) profile: crate::compatibility::Profile,
     pub(crate) provider: Provider,
     pub(crate) http: reqwest::Client,
+    pub(crate) refusal: Option<crate::refusal::Observer>,
     headers: HeaderMap,
     pub(crate) base_url: reqwest::Url,
     pub(crate) oauth: Option<Arc<crate::oauth::TokenStore>>,
@@ -63,6 +64,7 @@ impl Client {
             headers,
             base_url: parse_base_url(provider.base_url())?,
             oauth: None,
+            refusal: None,
         })
     }
 
@@ -87,6 +89,7 @@ impl Client {
             headers,
             base_url: parse_base_url(base)?,
             oauth: Some(account),
+            refusal: None,
         })
     }
 
@@ -162,6 +165,9 @@ impl Client {
     pub async fn completion(&self, request: Value) -> Result<Value, Error> {
         let response = self.send(request, false).await?;
         let body = crate::resources::json(response, self.limits.bytes).await?;
+        if let Some(observer) = &self.refusal {
+            observer.observe(self.chat_protocol(), &body, false);
+        }
         if self.provider == Provider::Anthropic {
             anthropic::response(body)
         } else {
@@ -194,6 +200,7 @@ impl Client {
             self.provider,
             include_usage,
             self.limits,
+            self.refusal.clone(),
         ))
     }
 
@@ -238,18 +245,7 @@ impl Client {
             )?
             .send()
             .await?;
-        if !response.status().is_success() {
-            return Err(Error::Api {
-                status: response.status().as_u16(),
-                retry_after_secs: response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse().ok()),
-                body: crate::resources::error_text(response).await,
-            });
-        }
-        Ok(response)
+        self.checked(response, self.chat_protocol()).await
     }
 
     pub(crate) async fn native(
@@ -285,15 +281,40 @@ impl Client {
             .json(operation, &self.http, url, headers, body)?
             .send()
             .await?;
+        self.checked(response, protocol).await
+    }
+    fn chat_protocol(&self) -> crate::upstream::Protocol {
+        if self.provider == Provider::Anthropic {
+            crate::upstream::Protocol::Messages
+        } else {
+            crate::upstream::Protocol::Chat
+        }
+    }
+    pub(crate) async fn checked(
+        &self,
+        response: reqwest::Response,
+        protocol: crate::upstream::Protocol,
+    ) -> Result<reqwest::Response, Error> {
+        if let Some(observer) = &self.refusal {
+            observer.headers(&response, protocol);
+        }
         if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let retry_after_secs = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok());
+            let body = crate::resources::error_text(response).await;
+            if let Some(observer) = &self.refusal
+                && let Ok(value) = serde_json::from_str(&body)
+            {
+                observer.observe(protocol, &value, false);
+            }
             return Err(Error::Api {
-                status: response.status().as_u16(),
-                retry_after_secs: response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse().ok()),
-                body: crate::resources::error_text(response).await,
+                status,
+                body,
+                retry_after_secs,
             });
         }
         Ok(response)

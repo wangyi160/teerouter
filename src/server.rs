@@ -198,7 +198,7 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
         ApiError::new(
             503,
             "not_ready",
-            "Router awaits moderation configuration, ready deployments or healthy accounting",
+            "Router awaits ready deployments or healthy accounting",
         )
         .into_response()
     }
@@ -211,7 +211,6 @@ async fn models(request: Request) -> Result<Json<Value>, ApiError> {
         .unwrap()
         .engine
         .clone();
-    engine.require_moderation()?;
     Ok(Json(
         engine
             .models(

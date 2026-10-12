@@ -96,6 +96,8 @@ impl Runtime {
             || data.sequence > u64::MAX / 2
             || data.events.len() > 8192
             || data.moderation.values().any(|m| m.recent_events.len() > 20)
+            || data.refusals.values().any(|r| !r.valid())
+            || crate::refusal::history_bytes(&data.refusals) > crate::refusal::HISTORY_BYTES
             || data.account_revisions.len() != bundle.accounts.len()
             || bundle
                 .accounts

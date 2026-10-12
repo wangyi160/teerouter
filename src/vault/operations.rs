@@ -45,21 +45,6 @@ impl Snapshot {
             if bundle.config.server.no_proxy.as_deref() == Some("[redacted]") {
                 bundle.config.server.no_proxy = self.bundle.config.server.no_proxy.clone();
             }
-            if let Some(moderation) = &mut bundle.config.moderation
-                && moderation.proxy.as_deref() == Some("[redacted]")
-            {
-                moderation.proxy = self
-                    .bundle
-                    .config
-                    .moderation
-                    .as_ref()
-                    .and_then(|m| m.proxy.clone());
-                if moderation.proxy.is_none() {
-                    return Err(VaultError(
-                        "no existing moderation proxy for redacted reference",
-                    ));
-                }
-            }
             for deployment in bundle
                 .config
                 .models

@@ -39,8 +39,6 @@ pub struct Engine {
     admin_secret: Option<String>,
     groups: HashMap<String, Group>,
     ledger: Arc<Ledger>,
-    moderation: Option<crate::moderation::Scanner>,
-    moderation_shared: Arc<crate::moderation::Shared>,
     global: Arc<crate::resources::Gate>,
     sequence: Arc<AtomicU64>,
     request_prefix: Arc<str>,
@@ -224,20 +222,6 @@ impl Engine {
             .map(|p| p.ledger.clone())
             .unwrap_or_else(|| Arc::new(Ledger::new(vault.clone())));
         let global = previous.map(|p| p.global.clone()).unwrap_or_default();
-        let moderation_shared = previous
-            .map(|p| p.moderation_shared.clone())
-            .unwrap_or_default();
-        let moderation = config
-            .moderation
-            .as_ref()
-            .map(|options| {
-                crate::moderation::Scanner::new(
-                    options,
-                    &config::secret(&options.api_key_ref, &env)?,
-                    moderation_shared.clone(),
-                )
-            })
-            .transpose()?;
         Ok(Arc::new(Self {
             vault,
             config_revision,
@@ -247,8 +231,6 @@ impl Engine {
             groups,
             ledger,
             global,
-            moderation,
-            moderation_shared,
             sequence: previous
                 .map(|p| p.sequence.clone())
                 .unwrap_or_else(|| Arc::new(AtomicU64::new(1))),
@@ -296,23 +278,12 @@ impl Engine {
         self.admin_secret.is_some()
     }
     pub(crate) fn ready(&self) -> bool {
-        self.moderation.is_some()
-            && self.ledger.healthy()
+        self.ledger.healthy()
             && self.storage_ready()
             && self
                 .groups
                 .values()
                 .any(|g| g.backends.iter().any(|b| b.ready()))
-    }
-
-    pub(crate) fn require_moderation(&self) -> Result<&crate::moderation::Scanner, ApiError> {
-        self.moderation.as_ref().ok_or_else(|| {
-            ApiError::new(
-                503,
-                "moderation_not_configured",
-                "Model service awaits administrator-provisioned moderation credentials",
-            )
-        })
     }
 
     pub(crate) async fn models(&self, account: usize) -> Value {
@@ -407,7 +378,7 @@ impl Engine {
     pub(crate) fn status(&self) -> Value {
         let mut groups: Vec<_> = self.groups.values().collect();
         groups.sort_by_key(|g| &g.config.name);
-        json!({"ready":self.ready(),"moderation_configured":self.moderation.is_some(),"usage_healthy":self.ledger.healthy(),"storage":"memory","initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
+        json!({"ready":self.ready(),"moderation_mode":"upstream_refusal","lockllm_enabled":false,"refusal_audit_enabled":true,"usage_healthy":self.ledger.healthy(),"storage":"memory","initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
             "in_flight":self.global.used(),
             "models":groups.iter().map(|g| json!({"model":g.config.name,"deployments":g.backends.iter().map(|b| b.status()).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
@@ -600,7 +571,6 @@ impl Engine {
         mut headers: HeaderMap,
         request_id: String,
     ) -> Result<Routed, ApiError> {
-        let scanner = self.require_moderation()?;
         if !config::valid_model_id(alias) {
             return Err(ApiError::new(400, "invalid_model", "Invalid model ID"));
         }
@@ -668,15 +638,6 @@ impl Engine {
                 "request_timeout",
                 "Official catalog refresh exceeded request deadline",
             ));
-        }
-        let report = scanner
-            .check(protocol, &body, deadline, self.config_revision)
-            .await;
-        let error = report.error();
-        ticket.moderation = Some(report);
-        if let Some(error) = error {
-            ticket.finish(error.status);
-            return Err(error);
         }
         let streaming = body["stream"] == true;
         let include_usage = body["stream_options"]["include_usage"] == true;
@@ -768,9 +729,13 @@ impl Engine {
             }
             ticket.backend = Some(backend.clone());
             ticket.attempts += 1;
+            let observer = crate::refusal::Observer::new(backend.config.provider);
+            ticket.refusal = Some(observer.clone());
+            let mut request_client = backend.client.clone();
+            request_client.refusal = Some(observer.clone());
             let result = timeout_at(deadline, async {
                 let output = upstream::call(
-                    &backend.client,
+                    &request_client,
                     protocol,
                     alias,
                     body.clone(),
@@ -838,9 +803,17 @@ impl Engine {
                     {
                         account.rejected();
                     }
-                    last_error = ApiError::upstream(&error);
+                    last_error = if observer.detected() {
+                        ApiError::new(
+                            403,
+                            "upstream_refusal",
+                            "Upstream declined the request under its content policy",
+                        )
+                    } else {
+                        ApiError::upstream(&error)
+                    };
                     backend.diagnostic(last_error.code);
-                    let retry = retryable(&error);
+                    let retry = !observer.detected() && retryable(&error);
                     if retry {
                         lease.failure(
                             last_error.retry_after,

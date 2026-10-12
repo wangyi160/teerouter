@@ -47,6 +47,15 @@ fn view(
             .cloned()
             .unwrap_or_default()
     );
+    value["refusals"] = json!(
+        vault
+            .lock()
+            .map_err(storage)?
+            .refusals
+            .get(&user.id)
+            .cloned()
+            .unwrap_or_default()
+    );
     Ok(value)
 }
 pub(super) async fn list(State(runtime): State<Arc<Runtime>>) -> Result<Response, ApiError> {

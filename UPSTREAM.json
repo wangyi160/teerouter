@@ -160,7 +160,7 @@
       "src/resources.rs",
       "tests/router/operations.rs"
     ],
-    "behavior": "Validated configuration generations, atomic in-memory updates, account health, bounded session affinity and shared limits. Checkpoints contain no user prompt/response bodies; management persists then acknowledges them. The router has no money accounting, database or backup file.",
+    "behavior": "Validated configuration generations, atomic in-memory updates, account health, bounded session affinity and shared limits. Checkpoints contain no request bodies or ordinary responses; explicit refusal text and public refusal metadata are retained for administrator audit; management persists then acknowledges them. The router has no money accounting, database or backup file.",
     "compatibility": "Declarative per-operation outbound header/query/JSON/form metadata edits after provider conversion, hot-updatable in memory and checkpointed by management. Official HTTPS hosts are compiled-in. OAuth URLs cannot be configured; OpenAI refresh URL and the xAI discovery URL are constants. Content-Type/Accept and transport headers are router-managed. Caller messages, instructions, tools, attachments, generation controls, model/reasoning values, credentials, identity and HTTP framing remain protected, including nested values and ancestor edits. Responses and OpenAI Chat Completions force store=false. Version/stream/include metadata can be adjusted subject to existing response parsers. Fixed provider adapters still require image review. Major protocol changes may still require upgrades.",
     "excluded": "No full independent platform/KMS audit, strict prepaid billing or zero-loss persistence. Unknown models/reasoning fail closed against authenticated upstream discovery. Claude consumer refresh remains externally managed."
   },
@@ -192,5 +192,15 @@
       "restrictions-update.example.json"
     ],
     "behavior": "Deny-only provider/model blocks and thinking/effort restrictions subtract from authenticated catalog evidence without modifying it. The router does not require callers to supply a token budget."
+  },
+  "refusal_audit": {
+    "implementation": "New Rust integration; LockLLM network scanning removed. Legacy moderation configuration and records are read-only compatibility data.",
+    "files": [
+      "src/refusal.rs",
+      "src/refusal/tests.rs",
+      "tests/router/refusals.rs"
+    ],
+    "behavior": "Observe explicit upstream refusal signals before protocol conversion, merge streaming parts, retain bounded per-user evidence and checkpoint events, preserve partial evidence on stream interruption or client cancellation, and do not retry confirmed policy refusals. No request-body storage or plain-text refusal classification.",
+    "validation": "Local JSON/SSE fixtures for retained providers; no live vendor policy-trigger tests."
   }
 }

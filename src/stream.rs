@@ -19,6 +19,8 @@ struct State {
     anthropic: Option<AnthropicStream>,
     pending: VecDeque<Value>,
     done: bool,
+    refusal: Option<crate::refusal::Observer>,
+    protocol: crate::upstream::Protocol,
 }
 
 pub(crate) fn decode(
@@ -26,6 +28,7 @@ pub(crate) fn decode(
     provider: Provider,
     include_usage: bool,
     limits: crate::resources::Limits,
+    refusal: Option<crate::refusal::Observer>,
 ) -> CompletionStream {
     let input = crate::resources::bytes(response, limits);
     let events = FramedRead::new(StreamReader::new(input), SseCodec::bounded(limits.event)).fuse();
@@ -34,6 +37,12 @@ pub(crate) fn decode(
         anthropic: (provider == Provider::Anthropic).then(|| AnthropicStream::new(include_usage)),
         pending: VecDeque::new(),
         done: false,
+        refusal,
+        protocol: if provider == Provider::Anthropic {
+            crate::upstream::Protocol::Messages
+        } else {
+            crate::upstream::Protocol::Chat
+        },
     };
     Box::pin(futures_util::stream::unfold(
         state,
@@ -66,12 +75,18 @@ impl State {
     fn accept(&mut self, event: SseEvent) -> Result<(), Error> {
         if event.data.trim() == "[DONE]" && self.anthropic.is_none() {
             self.done = true;
+            if let Some(observer) = &self.refusal {
+                observer.complete();
+            }
             return Ok(());
         }
         if event.data.is_empty() {
             return Ok(());
         }
         let value: Value = serde_json::from_str(&event.data)?;
+        if let Some(observer) = &self.refusal {
+            observer.observe(self.protocol, &value, true);
+        }
         if let Some(error) = value.get("error").filter(|v| !v.is_null()) {
             return Err(Error::Stream(error.to_string()));
         }
