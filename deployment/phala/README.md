@@ -54,4 +54,4 @@ phala deploy --help
 
 外部管理服务在验证 router 身份和 TLS 绑定后，通过 `/admin/checkpoint`、`/admin/initialize`、`/admin/apply` 与 `/admin/checkpoint/ack` 初始化和持续同步。停止容器前保存最新快照，重启后根据新的 boot_id 恢复；详见 [运行文档](../../OPERATIONS.md) 和 [API 索引](../../docs/API.md)。管理系统的实现独立维护，不包含在此仓库。
 
-初始化时必须由管理员下发 LockLLM 审核配置及独立密钥。缺少审核配置时，router 保持未就绪并拒绝模型服务；首次空初始化或恢复旧快照后也一样，需通过管理接口补齐配置。密钥存于管理下发的运行时 secrets，不放入源码、镜像或公开部署模板。
+拒答审计默认启用，无需独立审核密钥；LockLLM 不再调用。管理员通过用户接口查询拒答原文和元数据，通过 checkpoint 同步归档，不保存请求正文。恢复旧快照时仍保留旧审核历史。模型服务就绪仍要求可用上游与及时的管理同步。

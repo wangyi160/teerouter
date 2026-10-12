@@ -4,7 +4,7 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 1. 冷启动 `GET /admin/checkpoint` 返回新的 boot_id、initialized=false。
 2. 管理端发送 `POST /admin/initialize`：`{"boot_id":"当前值","state":已保存的state或null}`。null 只用于首次空初始化；已有服务必须恢复管理数据库保存的快照。
-3. 初始化仅允许一次，验证全部配置、凭证、管理员身份与账号版本；失败不激活候选状态。恢复 state 时由管理员在 `state.bundle.config.moderation` 和 `state.bundle.secrets` 下发审核配置及密钥；首次空初始化后通过 `/admin/apply` 下发。缺少审核配置时可继续管理和同步，但拒绝模型请求。
+3. 初始化仅允许一次，验证全部配置、凭证、管理员身份与账号版本；失败不激活候选状态。拒答审计默认启用，无需下发独立审核服务的配置或密钥。
 4. 管理端读取 `/admin/checkpoint`，原子保存 state、用量和计费结果，然后 POST `/admin/checkpoint/ack`，包含同一 boot_id、generation、sequence。
 5. ACK 只清除已同步用量，不清除读取快照之后产生的新用量。每轮同步重复此过程。密码、token 和完整快照必须经经过验证的保密连接传输，不放在日志中。
 
@@ -48,28 +48,18 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 余额、已用金额、额度、价格和结算由外部管理服务负责，不是 router 用户属性。
 
-## LockLLM 输入审核
+## 上游拒答审计
 
-LockLLM 是模型服务的必需配置。管理员在初始化/恢复状态时下发 `config.moderation` 与对应 secrets；首次空初始化后，以管理密钥调用 `POST /admin/apply`，提交 [moderation-update.example.json](moderation-update.example.json)。将示例值换成真实 LockLLM 密钥，可以加 `expected_revision` 做并发控制。密钥只放入 secrets，通过 api_key_ref 引用。不要把密钥写进客户端请求或提交到仓库。
+拒答审计默认启用，无需额外密钥。`/admin/status` 返回 `moderation_mode: "upstream_refusal"`、`lockllm_enabled: false`、`refusal_audit_enabled: true`。模型可用性仍受账号、目录、权限、限流和管理同步约束。缺少 LockLLM 配置不再阻止推理或目录查询；旧快照里的 `config.moderation` 仅在导入时兼容读取，新导出省略，既不会调用扫描服务，也不要求恢复它的密钥。
 
-缺少 `config.moderation`（省略或 null）时，全部模型推理接口（含流式）和 `/v1/models` 返回 503 / `moderation_not_configured`，不发起模型推理；`/health/ready` 返回 503，`/admin/status` 的 `moderation_configured` 为 false。存活检查、管理接口和用量查询仍可使用。该拒绝发生在模型请求计费和扫描之前，不记用户违规或扫描次数。引用不存在或空密钥的初始化/配置更新会原子失败，继续使用原状态；有效配置必须同时包含独立审核密钥。恢复不含审核配置的旧快照也不会开放模型服务。
+`GET /admin/users/{id}` 的 `user.refusals` 保存累计次数、最近拒答时间、已淘汰明细数和最近事件；`GET /admin/users` 也返回这些信息。原 `user.moderation` 只保留已有 LockLLM 历史，新拒答不混入旧违规统计。管理员查询结构见 [API 文档](docs/API.md#上游拒答与用户记录)。
 
-| 配置项 | 默认值 | 含义 |
-| --- | --- | --- |
-| api_key_ref | 必填 | secrets 内的独立 LockLLM 密钥名称 |
-| sensitivity | medium | low / medium / high |
-| timeout_secs | 30 | 审核总时限 1–300 秒，也受 router 整体请求时限约束 |
-| max_input_bytes | 16777216 | 提取后完整文本的 UTF-8 字节上限，不是 token 上限；超限拒绝，不截断 |
-| max_concurrent | 16 | 所有用户共享的审核并发上限 |
-| rpm | 300 | 所有用户共享的每分钟扫描调用上限，按账号实际额度配置 |
-| proxy | null | 可选 http / https / socks5h 显式代理；省略时直连，仅针对审核服务 |
+请求结束、失败、超时或客户端取消时，每个请求最多累计一次拒答。流式未完成也保存已收到的信号和原文，并标记 `complete: false`，事件 `status` 说明 router 最终处理结果。拒答是上游响应，常见 HTTP 200 不会因审计被改成错误；明确安全错误码则返回 403 / `upstream_refusal`，记录中保留实际上游 HTTP 状态。检测到明确拒答后不切换账号或模型重试。
 
-接口固定为 `https://api.lockllm.com/v1/scan`，不接受管理员自定义域名或路径，禁用重定向和系统代理继承。审核始终使用 combined、scan-action=block、policy-action=block、on-unavailable=block；客户端不能覆盖。整个当前请求中的可见文本、角色、顺序、指令、工具定义/调用/结果一起序列化成 input，全量提交，由服务自动分块；不做截断、摘要、逐轮增量或会话缓存。模型请求本身不因审核而改写。
+每用户保留最近 20 条明细（旧到新）；全局明细空间约 2 MiB，超限淘汰最旧明细并增加 `evicted_events`，累计次数不清零。每次记录最多 16 个拒答内容片段，拒答文本合计最多 8 KiB，Claude 随附可见文本、解释及安全错误说明分别最多 8 KiB；报告序列化后最多 16 KiB，超限标记 `truncated: true`。这些是审计存储限制，不截断转发给客户端的回复。
 
-审核不向服务发送 router 用户密钥、上游模型密钥、客户端认证头或管理凭证，也不发送外层 metadata/user 标识字段。当前扫描的是文本，图片、音频、附件、加密推理块、previous_response_id/conversation/cachedContent 或服务端 prompt 模板等不可见内容引用会明确报不支持；不要将其当作已经完整审核。通过后直接调用原上游，本次仅做输入审核，模型回复和 SSE 内容不经过 LockLLM。
+所有已观察的拒答也随调用事件进入 checkpoint / `/admin/logs`。外部管理服务必须先归档这些事件再 ACK，才能保留超过最近窗口的历史；ACK 只移除待同步事件，用户累计和最近记录继续保留。待同步事件达到 4096 条或约 2 MiB 后停止接收新请求，等待管理端同步；在途请求仍完成结算。恢复旧快照缺少 `refusals` 时按空记录处理。
 
-使用 `{"config":{"moderation":null}}` 会停止接受新的模型请求，不能绕过审核；已接受的请求沿用其配置代次完成，历史统计继续保留。配置热更新、移除后重新下发或更换密钥都不会重置本进程的审核并发和 RPM 计数。用户统计及最近事件存在内存并随 checkpoint 导出，管理端恢复旧快照时缺少该字段视为零；重启时仍必须恢复已保存的 state。管理员查询和错误码见 [API 文档](docs/API.md#输入审核错误与用户记录)。
+此方式是在模型上游处理请求之后记录明确拒答，不执行输入预审核，不用文字关键词猜测拒答，也不保证发现所有不当请求。未标明 refusal 的普通自然语言拒答不会统计。上游类别和原因原样记录，不视作已证实的用户违规；用户的长上下文只发给所选模型上游，不再额外发送给 LockLLM。
 
-上线前需要真实账号联调。LockLLM 的 [API 文档](https://www.lockllm.com/docs/api-reference#behaviour-when-a-check-is-unavailable) 说明故障拒绝能力仍按账号逐步开放：通过结果必须带 `X-LockLLM-On-Unavailable: block`，否则本实现返回 503。也会拒绝 degraded、缺失或零置信度等不完整结果。文档目前的 detection_status 只明确覆盖威胁检测，不能把 policy_confidence 的存在当作外部内容政策检查一定成功的证明；供应商内容政策故障的实际行为仍须验证。此集成不保证分类零漏判，也不能检测服务端未报告的故障。
-
-首次部署应验证中文与代码误判、全量长上下文的延迟/大小上限、余额不足、429、超时和故障拒绝。自动分块参考 [官方长文本指南](https://www.lockllm.com/docs/api-reference#scanning-long-documents)。本地测试使用受控服务，不消耗真实 API 额度。审核费用属于外部管理账务，不能计作模型 token 用量。
+本地回归使用受控 HTTP/SSE 服务，覆盖三家正式上游及 Workbuddy 的协议形状；不代表真实账号的拒答触发率验证。旧版本升级还需要更新镜像与客户端认可的 TEE 发布策略。router 仍为内存状态，断电可能丢失尚未同步的拒答事件。

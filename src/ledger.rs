@@ -1,4 +1,4 @@
-//! Usage metadata only. Prices, balances and settlement live in management.
+//! Usage metadata and explicit upstream refusal evidence, never request bodies. Prices, balances and settlement live in management.
 use crate::vault::Vault;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -19,7 +19,10 @@ impl Ledger {
         Self { vault }
     }
     pub fn healthy(&self) -> bool {
-        self.vault.serving() && self.vault.lock().is_ok_and(|d| d.events.len() < 4096)
+        self.vault.serving()
+            && self.vault.lock().is_ok_and(|d| {
+                d.events.len() < 4096 && d.pending_event_bytes < crate::refusal::PENDING_BYTES
+            })
     }
     pub(crate) fn recover(&self) -> Result<(), crate::vault::VaultError> {
         self.vault.verify()?;
@@ -40,7 +43,7 @@ impl Ledger {
         key: &str,
         usage: &Usage,
         audit: &serde_json::Value,
-        moderation: Option<&crate::moderation::Report>,
+        refusal: Option<&crate::refusal::Report>,
     ) {
         let Ok(mut data) = self.vault.lock() else {
             return;
@@ -55,23 +58,42 @@ impl Ledger {
             .saturating_add(usage.unknown_usage_requests);
         data.sequence += 1;
         let seq = data.sequence;
-        if let Some(result) = moderation
+        if let Some(result) = refusal
             && let Some(user) = audit["user_id"].as_str()
         {
-            data.moderation
+            data.refusals
                 .entry(user.into())
                 .or_default()
-                .observe(crate::moderation::Event {
+                .observe(crate::refusal::Event {
                     id: seq,
                     request_id: audit["request_id"].as_str().unwrap_or_default().into(),
                     key: key.into(),
                     model: audit["model"].as_str().unwrap_or_default().into(),
                     created_at: audit["created_at"].as_u64().unwrap_or_default(),
+                    pool: audit["pool"].as_str().map(str::to_owned),
+                    deployment: audit["deployment"].as_str().map(str::to_owned),
+                    status: audit["status"].as_u64().unwrap_or_default() as u16,
+                    attempts: audit["attempts"].as_u64().unwrap_or_default(),
                     result: result.clone(),
                 });
+            // Recent detail is bounded globally; pending checkpoint events retain the archive copy.
+            while crate::refusal::history_bytes(&data.refusals) > crate::refusal::HISTORY_BYTES {
+                let oldest = data
+                    .refusals
+                    .iter()
+                    .filter_map(|(user, record)| {
+                        record.recent_events.front().map(|e| (e.id, user.clone()))
+                    })
+                    .min();
+                let Some((_, user)) = oldest else {
+                    break;
+                };
+                data.refusals.get_mut(&user).unwrap().evict();
+            }
         }
-        data.events
-            .push_back(serde_json::json!({"seq":seq,"event":audit}));
+        let event = serde_json::json!({"seq":seq,"event":audit});
+        data.pending_event_bytes += serde_json::to_vec(&event).unwrap().len();
+        data.events.push_back(event);
         data.changed();
     }
 }

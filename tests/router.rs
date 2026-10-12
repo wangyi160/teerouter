@@ -29,8 +29,6 @@ mod catalog_policy;
 mod compatibility;
 #[path = "router/discovery.rs"]
 mod discovery;
-#[path = "router/moderation.rs"]
-mod moderation;
 #[path = "router/oauth.rs"]
 mod oauth;
 #[path = "router/operations.rs"]
@@ -39,6 +37,8 @@ mod operations;
 mod pools;
 #[path = "router/proxy.rs"]
 mod proxy;
+#[path = "router/refusals.rs"]
+mod refusals;
 #[path = "router/restrictions.rs"]
 mod restrictions;
 #[path = "router/trust.rs"]
@@ -165,11 +165,6 @@ async fn mock_inner(replies: Vec<Reply>, automatic_catalog: bool) -> Mock {
         async move {
             let (parts, body) = request.into_parts();
             let bytes = to_bytes(body, 2_000_000).await.unwrap();
-            // Routing tests still run the real moderation adapter with a local scan service.
-            // Dedicated moderation tests use /v1/scan and their own captured reply queue.
-            if parts.uri.path() == "/fixture/moderation" {
-                return moderation_fixture().into_response();
-            }
             if automatic_catalog
                 && (parts.uri.path().ends_with("/models")
                     || parts.uri.path().ends_with("/language-models"))
@@ -259,19 +254,7 @@ api_key_env = "UPSTREAM_KEY"
     .unwrap();
     config.models[0].deployments[0].api_base = Some(format!("{}/v1", mock.running.url));
     config.models[0].deployments[0].proxy = Some(mock.running.url.clone());
-    config.moderation = Some(crate::moderation::Config {
-        api_key_ref: "LOCKLLM_KEY".into(),
-        test_endpoint: Some(format!("{}/fixture/moderation", mock.running.url)),
-        ..Default::default()
-    });
     config
-}
-
-fn moderation_fixture() -> impl IntoResponse {
-    (
-        [("x-lockllm-on-unavailable", "block")],
-        axum::Json(json!({"safe":true,"label":0,"confidence":100,"policy_confidence":100})),
-    )
 }
 
 fn engine(config: Config) -> Arc<Engine> {
@@ -280,7 +263,6 @@ fn engine(config: Config) -> Arc<Engine> {
             match name {
                 "CLIENT_KEY" => "client-secret",
                 "ADMIN_KEY" => "admin-secret",
-                "LOCKLLM_KEY" => "moderation-secret",
                 _ => "provider-secret",
             }
             .into(),

@@ -165,7 +165,7 @@ impl Account {
             tokens: Tokens::default(),
             backend: None,
             attempts: 0,
-            moderation: None,
+            refusal: None,
             settled: false,
         })
     }
@@ -187,7 +187,7 @@ pub(crate) struct Ticket {
     pub tokens: Tokens,
     pub backend: Option<Arc<Backend>>,
     pub attempts: usize,
-    pub moderation: Option<crate::moderation::Report>,
+    pub refusal: Option<crate::refusal::Observer>,
     settled: bool,
 }
 
@@ -212,8 +212,7 @@ impl Ticket {
             input_tokens: self.tokens.input,
             output_tokens: self.tokens.output,
             unknown_usage_requests: u64::from(
-                !(self.attempts == 0 && self.moderation.is_some())
-                    && (!self.tokens.known || status >= 400 || self.attempts > 1),
+                !self.tokens.known || status >= 400 || self.attempts > 1,
             ),
         };
         let mut meter = self.account.meter.lock().unwrap();
@@ -222,13 +221,17 @@ impl Ticket {
             .tokens
             .saturating_add(self.tokens.input)
             .saturating_add(self.tokens.output);
+        let refusal = self
+            .refusal
+            .as_ref()
+            .and_then(crate::refusal::Observer::report);
         self.ledger.record(&self.account.config.name, &usage,
             &serde_json::json!({"event":"request", "request_id":self.request_id,
             "key":self.account.config.name, "user_id":self.account.config.user_id, "model":self.model, "pool":self.pool,"provider":self.provider,"created_at":self.created_at,"started_at_ms": self.started_at_ms,
             "deployment":self.backend.as_ref().map(|b| &b.config.id), "status":status,
             "attempts":self.attempts, "duration_ms":self.start.elapsed().as_millis(), "usage":usage,
             "cache_usage":{"read":self.tokens.cache_read,"write":self.tokens.cache_write,"write_hour":self.tokens.cache_write_hour},
-            "moderation":self.moderation}), self.moderation.as_ref()
+            "refusal":refusal}), refusal.as_ref()
         );
     }
 }

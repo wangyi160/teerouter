@@ -11,8 +11,8 @@ use crate::Provider;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// None blocks model requests until management provisions moderation credentials.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Retired configuration accepted on import, never executed or exported.
+    #[serde(default, skip_serializing)]
     pub moderation: Option<crate::moderation::Config>,
     #[serde(default)]
     pub server: Server,
@@ -264,9 +264,6 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(config) = &self.moderation {
-            config.validate()?;
-        }
         crate::policy::validate(&self.restrictions)?;
         let ops = &self.operations;
         if !(1..=3600).contains(&ops.maintenance_secs)

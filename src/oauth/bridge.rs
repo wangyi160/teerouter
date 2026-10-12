@@ -18,7 +18,8 @@ pub(crate) async fn call(
     let response = client
         .native(Protocol::Responses, model, body, HeaderMap::new())
         .await?;
-    let output = super::chatgpt::decode(response, streaming, client.limits).await?;
+    let output =
+        super::chatgpt::decode(response, streaming, client.limits, client.refusal.clone()).await?;
     if !streaming {
         let value = match output {
             Output::Json(value) => value,

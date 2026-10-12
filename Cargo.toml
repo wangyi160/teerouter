@@ -9,7 +9,7 @@ rust-version = "1.88"
 description = "Standalone Rust LLM router for OpenAI, Claude and Grok"
 license = "MIT"
 readme = "README.md"
-include = ["/src/**", "/tests/**", "/docs/**", "/config.example.toml", "/config.oauth.example.toml", "/provision*.json", "/protocol-update.example.json", "/restrictions-update.example.json", "/moderation-update.example.json", "/Cargo.toml", "/Cargo.lock", "/README.md", "/ARCHITECTURE.md", "/SECURITY-TEE.md", "/OPERATIONS.md", "/LICENSE", "/LICENSES/**", "/NOTICE", "/UPSTREAM.json"]
+include = ["/src/**", "/tests/**", "/docs/**", "/config.example.toml", "/config.oauth.example.toml", "/provision*.json", "/protocol-update.example.json", "/restrictions-update.example.json", "/Cargo.toml", "/Cargo.lock", "/README.md", "/ARCHITECTURE.md", "/SECURITY-TEE.md", "/OPERATIONS.md", "/LICENSE", "/LICENSES/**", "/NOTICE", "/UPSTREAM.json"]
 
 [features]
 # Intel TDX evidence from the measured dstack guest over its local Unix socket.
