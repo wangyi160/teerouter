@@ -4,6 +4,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY tests/memory_cli.rs ./tests/memory_cli.rs
 ARG ROUTER_FEATURES=dstack-tdx
+ARG TEEROUTER_WORKBUDDY_BASE_URL=http://127.0.0.1:8001/v1
+ENV TEEROUTER_WORKBUDDY_BASE_URL=${TEEROUTER_WORKBUDDY_BASE_URL}
 RUN cargo build --release --locked --no-default-features --features ${ROUTER_FEATURES} -j 2 && \
     cargo test --release --locked --no-default-features --features ${ROUTER_FEATURES} --test memory_cli -j 2
 # Copy only the router and its ELF runtime; no shell, package manager or SSH.

@@ -30,7 +30,10 @@ impl Provider {
             Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
             Self::XAI => "https://api.x.ai/v1",
             #[cfg(feature = "workbuddy-lab")]
-            Self::Workbuddy => "http://127.0.0.1:8001/v1",
+            Self::Workbuddy => match option_env!("TEEROUTER_WORKBUDDY_BASE_URL") {
+                Some(url) => url,
+                None => "http://127.0.0.1:8001/v1",
+            },
         }
     }
 
