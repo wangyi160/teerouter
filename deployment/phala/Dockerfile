@@ -20,7 +20,6 @@ COPY --from=build /runtime/ /
 COPY --from=build /usr/share/doc/libc6/copyright /usr/share/doc/libc6/copyright
 COPY --from=build /usr/share/doc/libgcc-s1/copyright /usr/share/doc/libgcc-s1/copyright
 COPY LICENSE NOTICE /usr/share/doc/teellm/
-COPY LICENSES /usr/share/doc/teellm/LICENSES
 # Root is required by dstack's guest-agent socket on some production releases.
 # The compose removes all capabilities; there is no Docker socket or host mount.
 USER 0:0
