@@ -77,7 +77,7 @@ impl Config {
     }
 }
 
-/// Kept across all config generations, including disable/re-enable and key rotation.
+/// Kept across all config generations, including removal/restoration and key rotation.
 #[derive(Default)]
 pub(crate) struct Shared {
     gate: Arc<crate::resources::Gate>,

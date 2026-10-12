@@ -11,7 +11,7 @@ use crate::Provider;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// None leaves input moderation disabled; credentials come from the vault.
+    /// None blocks model requests until management provisions moderation credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moderation: Option<crate::moderation::Config>,
     #[serde(default)]

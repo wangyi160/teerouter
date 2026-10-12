@@ -166,7 +166,7 @@ async fn automatic_pool_selection_preserves_explicit_selection_and_acl() {
 }
 
 #[tokio::test]
-async fn pool_is_discovered_from_model_and_response_continuations_keep_their_account() {
+async fn pool_is_discovered_from_model_but_opaque_response_continuations_are_rejected() {
     let a = catalog_mock(vec![Reply::json(
         json!({"models":[{"id":"first-only"},{"id":"shared"}]}),
     )])
@@ -189,18 +189,25 @@ async fn pool_is_discovered_from_model_and_response_continuations_keep_their_acc
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let gateway = run(server::app(Engine::from_vault(vault).unwrap())).await;
-    for body in [
-        json!({"model":"second-only","input":"hello"}),
+    let body = json!({"model":"second-only","input":"hello"});
+    let response = post(&gateway, "/v1/responses", body.clone()).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let mut expected = body;
+    expected["store"] = false.into();
+    assert_eq!(b.calls.lock().unwrap().last().unwrap().body, expected);
+    let continuation = post(
+        &gateway,
+        "/v1/responses",
         json!({"model":"shared","previous_response_id":"reply","input":"continue"}),
-    ] {
-        let response = post(&gateway, "/v1/responses", body.clone()).await;
-        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-        let mut expected = body;
-        expected["store"] = false.into();
-        assert_eq!(b.calls.lock().unwrap().last().unwrap().body, expected);
-    }
+    )
+    .await;
+    assert_eq!(continuation.status(), 400);
+    assert_eq!(
+        continuation.json::<Value>().await.unwrap()["error"]["code"],
+        "moderation_unsupported_content"
+    );
     assert_eq!(a.calls.lock().unwrap().len(), 1); // Discovery only, never the user's prompt.
-    assert_eq!(b.calls.lock().unwrap().len(), 3);
+    assert_eq!(b.calls.lock().unwrap().len(), 2);
     // Automatic routing must not guess the account of a foreign response ID.
     assert_eq!(
         post(
@@ -212,7 +219,7 @@ async fn pool_is_discovered_from_model_and_response_continuations_keep_their_acc
         .status(),
         409
     );
-    assert_eq!(b.calls.lock().unwrap().len(), 3);
+    assert_eq!(b.calls.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

@@ -9,8 +9,8 @@ body_timeout_secs = 15
 # Optional, separate credential for GET /admin/status and /admin/usage:
 # admin_key_env = "TEELLM_ADMIN_KEY"
 
-# Optional full-text input moderation. Runtime uses the referenced vault secret.
-# Omit this section to disable. See moderation-update.example.json for /admin/apply.
+# Required before model service can accept requests. Management provisions the vault secret.
+# Omission/null blocks model requests. See moderation-update.example.json for /admin/apply.
 # [moderation]
 # api_key_ref = "lockllm-key"
 # sensitivity = "medium"
