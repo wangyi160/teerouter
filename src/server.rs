@@ -71,6 +71,10 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
         .route("/v1/messages", post(generate))
         .route("/v1/responses", post(generate))
         .route("/admin/status", get(status))
+        .route(
+            "/admin/pricing",
+            get(crate::pricing::get).put(crate::pricing::put),
+        )
         .route("/admin/usage", get(usage))
         .route("/admin/models", get(discovery_status))
         .route("/admin/models/refresh", post(refresh_models))
@@ -302,8 +306,10 @@ async fn user_merchants(request: Request) -> Result<Json<Value>, ApiError> {
     Ok(Json(
         json!({"data":crate::merchants::routing::selections(&identity.runtime,user).await?.into_iter().map(|s| {
             let settings=&s.settings;
+            let quotes=crate::pricing::quotes(settings,&s.engine.config,&s.price_book);
             json!({"id":s.item.id,"name":s.item.name,"price_version":settings.revision,
-                "prices":settings.prices.iter().filter(|p|s.engine.model_allowed(s.account,&p.pool,&p.model) && crate::merchants::routing::platform_allows(&identity.engine,identity.account.unwrap(),&format!("{}.{}",s.item.id,p.pool),&p.model)).collect::<Vec<_>>()})
+                "official_price_revision":s.price_book.revision,
+                "prices":quotes.iter().filter(|q|s.engine.model_allowed(s.account,&q.price.pool,&q.price.model) && crate::merchants::routing::platform_allows(&identity.engine,identity.account.unwrap(),&format!("{}.{}",s.item.id,q.price.pool),&q.price.model)).collect::<Vec<_>>()})
         }).collect::<Vec<_>>()}),
     ))
 }
@@ -331,6 +337,7 @@ async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Val
     if runtime.is_platform() {
         status["platform_ready"] = engine.vault.serving().into();
         status["merchant_only"] = true.into();
+        status["pool_multiplier_pricing"] = true.into();
     }
     Json(status)
 }

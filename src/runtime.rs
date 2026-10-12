@@ -96,6 +96,7 @@ impl Runtime {
             None => old.vault.lock().map_err(storage)?.clone(),
         };
         crate::refusal::restore(&mut data).map_err(|_| invalid())?;
+        crate::pricing::validate(&data.official_pricing)?;
         if data
             .merchants
             .iter()

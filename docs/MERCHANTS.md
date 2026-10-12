@@ -31,7 +31,7 @@
 | `GET /merchant/refusals?after_id=0&limit=500` | 本商户递增 ID 的拒答队列 |
 | `DELETE /merchant/refusals?through_id=123` | 删除该 ID 及以前的拒答记录 |
 
-完整配置包含 `pools`、`prices`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
+完整配置包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
 
 ```json
 {
@@ -39,12 +39,16 @@
   "pools":[{"name":"openai","provider":"openai","deployments":[{"id":"account1","provider":"openai","api_key_ref":"upstream1","proxy":"socks5h://YOUR_ACCOUNT_PROXY:1080"}]}],
   "customer_defaults":{"enabled":true,"models":[],"max_concurrent":4,"rpm":30,"tpm":50000},
   "customers":[],
-  "prices":[{"pool":"openai","model":"OFFICIAL_MODEL_ID","input":1000000,"output":2000000,"cache_read":500000}],
+  "pool_pricing":[{"pool":"openai","multiplier_millionths":200000}],
   "secrets":{"upstream1":"ADMINISTER_THROUGH_ATTESTED_CHANNEL"}
 }
 ```
 
-价格为**整数 micro-USD / 百万 tokens**：`1000000` 表示 $1 / 百万 tokens。支持 `input`、`output`、`cache_read`、`cache_write`、`cache_write_hour`。可选 `long_context: {"above_input_tokens":200000,"rates":{"input":2000000,"output":4000000}}` 保留长上下文阶梯；用量输入 tokens 严格超过阈值时采用该阶梯。可选 `valid_until` 是 Unix 秒，到期后拒绝新调用。这是商户销售费率，非官方成本。缺少价格时拒绝模型调用，缺少实际使用的缓存类别费率时，外部账务保留待结算记录。每次配置更新递增版本，调用的用量事件记录当时的商户、价格版本和完整费率快照。
+商户只设置**每个账号池的倍率**：`multiplier_millionths: 1000000` 表示 1×，`200000` 表示 0.2×。支持 0 至 1,000,000,000×，精确到 6 位小数。输入、输出、缓存、长上下文阶梯统一乘以此倍率，账务在汇总用量后只做一次整数向上取整。非空旧 `prices` 更新将被拒绝。
+
+平台管理员通过 `GET/PUT /admin/pricing` 维护官方基准价格。PUT 包含 `expected_revision` 和 `providers`；每项包含 `provider`、递增 `version`、官方 `source`、`checked_at` 和 `models`。模型包含 `model`、`rates`（整数 micro-USD / 百万 tokens）、可选 `long_context` 和 `valid_until`。价格内容有变化必须提升版本；不能回退版本或删除整个供应商价格簿。Workbuddy 的 source 必须为 `local-test:workbuddy`，仅为测试基准。平台需跟随官方调价更新价格簿。
+
+调用事件的 `merchant_pricing` 包含 `basis: official_pool_multiplier`、**未经倍率乘算的基准费率**、`multiplier_millionths`、`official_price_revision`、`official_version`、`official_source`、`official_checked_at`。外部账务使用这份不可变快照；不能把基准费率直接视为销售费率。缺少池倍率、模型基准价或基准价过期时拒绝模型调用；缺少实际使用的缓存类别费率时保留待结算记录。恢复旧商户胶囊时，平台须先加载匹配的官方价格簿；只有全池所有模型、缓存、长上下文费率都能精确还原为同一倍率时才自动迁移，否则拒绝解锁。
 
 每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 账号在 deployment 的 `proxy` 中配置；OAuth 账号在 `accounts` 对象内配置 `proxy`。代理仅提供网络出口，模型请求目标仍固定为官方服务。仅获授权的 Workbuddy 测试账号允许 `direct://`。
 
@@ -52,7 +56,7 @@
 
 `GET /v1/models` 返回 `m_<id>/官方模型ID`，并附商户、价格和 `m_<id>.账号池` 信息。可直接将返回的模型 ID 交给 agent；有多个可用池时，显式设置 `x-router-pool: m_<id>.账号池`。也可配合该请求头使用原始官方模型 ID。router 在请求上游前移除商户命名空间，上游响应保留官方模型 ID。
 
-`GET /v1/merchants` 只返回当前用户有资格访问的商户及其 key 可见价格；`GET /v1/pools` 返回允许的账号池状态。可选 `x-router-price-version` 固定报价版本，不一致返回 `409 price_changed`。请求与响应头中均可追踪商户和版本。
+`GET /v1/merchants` 只返回当前用户有资格访问的商户及其 key 可见价格；`GET /v1/pools` 返回允许的账号池状态、商户名称、`pool_name` 和 `multiplier_millionths`。可选 `x-router-price-version` 固定商户倍率版本；可选 `x-router-official-price-revision` 固定平台基准价版本，不一致返回 `409 price_changed`。请求与响应头中均可追踪商户和版本。
 
 不带商户标识的模型调用返回 `400 merchant_required`，不会走平台直连或隐式兜底。`/admin/accounts*` 和 `/admin/models*` 已关闭；账号操作与发现只在商户通道执行。商户配置可提交 `compatibility` 和 `restrictions`，沿用相同的官方域名、请求内容保护及只能收紧权限的校验。
 
