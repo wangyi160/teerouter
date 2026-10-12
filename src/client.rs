@@ -12,6 +12,7 @@ pub struct Client {
     pub(crate) provider: Provider,
     pub(crate) http: reqwest::Client,
     pub(crate) refusal: Option<crate::refusal::Observer>,
+    pub(crate) activity: Option<crate::ledger::Activity>,
     headers: HeaderMap,
     pub(crate) base_url: reqwest::Url,
     pub(crate) oauth: Option<Arc<crate::oauth::TokenStore>>,
@@ -65,6 +66,7 @@ impl Client {
             base_url: parse_base_url(provider.base_url())?,
             oauth: None,
             refusal: None,
+            activity: None,
         })
     }
 
@@ -90,6 +92,7 @@ impl Client {
             base_url: parse_base_url(base)?,
             oauth: Some(account),
             refusal: None,
+            activity: None,
         })
     }
 
@@ -295,6 +298,11 @@ impl Client {
         response: reqwest::Response,
         protocol: crate::upstream::Protocol,
     ) -> Result<reqwest::Response, Error> {
+        // Response headers prove that the model request reached the upstream.
+        // Catalog discovery, local validation and connection failures never call this hook.
+        if let Some(activity) = &self.activity {
+            activity.observed();
+        }
         if let Some(observer) = &self.refusal {
             observer.headers(&response, protocol);
         }

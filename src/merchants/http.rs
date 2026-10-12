@@ -86,9 +86,30 @@ pub(crate) async fn dispatch(
                 .events
                 .iter()
                 .filter(|v| v["seq"].as_u64().is_some_and(|seq| seq > after))
+                .filter(|v| {
+                    v["event"]["user_id"]
+                        .as_str()
+                        .is_some_and(|id| data.upstream_users.contains(id))
+                })
                 .take(limit)
                 .collect();
-            json!({"data":rows,"last_seq":data.sequence,"instance_id":data.instance,"merchant_id":item.id,"usage":data.usage})
+            let through = if rows.len() == limit {
+                rows.last().and_then(|r| r["seq"].as_u64()).unwrap_or(0)
+            } else if data
+                .events
+                .iter()
+                .any(|v| v["seq"].as_u64().is_some_and(|s| s > after))
+            {
+                data.sequence
+            } else {
+                0
+            };
+            let usage: BTreeMap<_, _> = data
+                .usage
+                .iter()
+                .filter(|(key, _)| data.upstream_users.contains(*key))
+                .collect();
+            json!({"data":rows,"ack_through_seq":through,"last_seq":data.sequence,"instance_id":data.instance,"merchant_id":item.id,"usage":usage})
         }
         ("POST", "/merchant/usage/ack") => {
             #[derive(Deserialize)]

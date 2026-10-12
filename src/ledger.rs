@@ -14,7 +14,32 @@ pub(crate) struct Usage {
 pub(crate) struct Ledger {
     vault: Arc<Vault>,
 }
+#[derive(Clone)]
+pub(crate) struct Activity {
+    ledger: Arc<Ledger>,
+    user: String,
+}
+impl Activity {
+    pub fn observed(&self) {
+        if let Ok(mut data) = self.ledger.vault.lock()
+            && data.upstream_users.insert(self.user.clone())
+        {
+            data.changed();
+        }
+    }
+}
 impl Ledger {
+    pub fn activity(self: &Arc<Self>, user: &str) -> Activity {
+        Activity {
+            ledger: self.clone(),
+            user: user.into(),
+        }
+    }
+    pub fn has_upstream_user(&self, user: &str) -> bool {
+        self.vault
+            .lock()
+            .is_ok_and(|data| data.upstream_users.contains(user))
+    }
     pub fn new(vault: Arc<Vault>) -> Self {
         Self { vault }
     }

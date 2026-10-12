@@ -24,7 +24,7 @@ fn registration(token: &str) -> Registration {
     serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["alice"]})).unwrap()
 }
 fn update(revision: u64) -> Value {
-    json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[{"user_id":"alice","enabled":true,"models":[],"max_concurrent":16}],"prices":[{"pool":"official","model":"model-test","input":1000000,"output":2000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
+    json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[],"prices":[{"pool":"official","model":"model-test","input":1000000,"output":2000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
 }
 async fn add(root: &Runtime, token: &str) -> Arc<Live> {
     register(root, registration(token), ADMIN).await.unwrap();
@@ -332,7 +332,7 @@ async fn updates_cannot_select_foreign_users_internal_secrets_or_untrusted_endpo
     add(&r, &a).await;
     let mut cases = vec![];
     let mut v = update(2);
-    v["customers"][0]["user_id"] = "bob".into();
+    v["customers"] = json!([{"user_id":"bob","enabled":true,"models":[],"max_concurrent":16}]);
     cases.push(v);
     let mut v = update(2);
     v["secrets"]["merchant_internal_admin"] = "overwrite".into();
@@ -385,7 +385,7 @@ async fn recovery_rejects_tampering_wrong_identity_and_revision_rollback() {
     assert!(unlock(&r, &a, 3).await.is_err());
     let restored = unlock(&r, &a, 2).await.unwrap();
     assert_eq!(restored["settings"]["revision"], 2);
-    assert_eq!(restored["settings"]["customers"][0]["user_id"], "alice");
+    assert_eq!(restored["settings"]["customers"], json!([]));
     assert_eq!(
         live(&r, &id)
             .unwrap()
@@ -576,4 +576,189 @@ async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
         .find(|v| v["id"] == crypto::identity(&b))
         .unwrap();
     assert!(other["prices"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_and_restore() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let la = add(&r, &a).await;
+    add(&r, &b).await;
+    let mut reg = registration(&a);
+    reg.users.insert("bob".into());
+    register(&r, reg.clone(), ADMIN).await.unwrap();
+    let mut config = update(2);
+    config["customer_defaults"] = json!({"max_concurrent":3,"rpm":7});
+    apply(&r, &a, serde_json::from_value(config).unwrap())
+        .await
+        .unwrap();
+    let _mock = fixture(&la, completion()).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    // Discovery may build internal admission entries; neither user becomes visible.
+    for key in ["alice-key", "bob-key"] {
+        for path in ["/v1/models", "/v1/pools", "/v1/merchants"] {
+            assert_eq!(
+                call(&server, Method::GET, path, key, Value::Null).await.0,
+                200
+            );
+        }
+    }
+    let state = state(&r, &reg).unwrap();
+    assert!(state["merchant"].get("users").is_none());
+    assert_eq!(state["settings"]["customers"], json!([]));
+    assert!(!state.to_string().contains("bob"));
+    // Guessing a preauthorized but unused ID has the same denial as a foreign ID.
+    for id in ["bob", "unknown"] {
+        let mut v = update(3);
+        v["customers"] = json!([{"user_id":id,"enabled":true,"models":[],"max_concurrent":16}]);
+        assert_eq!(
+            apply(&r, &a, serde_json::from_value(v).unwrap())
+                .await
+                .unwrap_err()
+                .status,
+            403
+        );
+    }
+    let id = crypto::identity(&a);
+    let bad = json!({"model":format!("{id}/model-test"),"messages":"invalid local request"});
+    assert!(
+        call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "bob-key",
+            bad
+        )
+        .await
+        .0 >= 400
+    );
+    let (_, usage) = call(&server, Method::GET, "/merchant/usage", &a, Value::Null).await;
+    assert!(!usage.to_string().contains("bob"));
+    let request =
+        json!({"model":format!("{id}/model-test"),"messages":[{"role":"user","content":"Hello"}]});
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            request.clone()
+        )
+        .await
+        .0,
+        200
+    );
+    let visible = super::state(&r, &reg).unwrap();
+    assert_eq!(
+        visible["settings"]["customers"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(visible["settings"]["customers"][0]["user_id"], "alice");
+    assert_eq!(visible["settings"]["customers"][0]["max_concurrent"], 3);
+    assert_eq!(visible["settings"]["customers"][0]["rpm"], 7);
+    assert_eq!(
+        super::state(&r, &registration(&b)).unwrap()["settings"]["customers"],
+        json!([])
+    );
+    // A stale empty customer list cannot erase the explicit stop, even on unrelated edits.
+    let mut v = update(3);
+    v["customers"] = visible["settings"]["customers"].clone();
+    v["customers"][0]["enabled"] = false.into();
+    apply(&r, &a, serde_json::from_value(v).unwrap())
+        .await
+        .unwrap();
+    apply(&r, &a, serde_json::from_value(update(4)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            request
+        )
+        .await
+        .0,
+        403
+    );
+    let (_, usage) = call(&server, Method::GET, "/merchant/usage", &a, Value::Null).await;
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/merchant/usage/ack",
+            &a,
+            json!({"instance_id":usage["instance_id"],"through_seq":usage["last_seq"]})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::DELETE,
+            "/merchant/refusals?through_id=1",
+            &a,
+            Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+    checkpoint_all(&r).await.unwrap();
+    r.merchants.live.lock().unwrap().clear();
+    let restored = unlock(&r, &a, 5).await.unwrap();
+    assert_eq!(
+        restored["settings"]["customers"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(restored["settings"]["customers"][0]["user_id"], "alice");
+    assert_eq!(restored["settings"]["customers"][0]["enabled"], false);
+    // Revoking platform access does not erase the merchant's existing relationship.
+    reg.users.clear();
+    register(&r, reg.clone(), ADMIN).await.unwrap();
+    assert_eq!(
+        super::state(&r, &reg).unwrap()["settings"]["customers"][0]["user_id"],
+        "alice"
+    );
+    assert!(
+        routing::selections(&r, "alice")
+            .await
+            .unwrap()
+            .iter()
+            .all(|s| s.item.id != id)
+    );
+}
+
+#[tokio::test]
+async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
+    let r = root();
+    let token = "a".repeat(64);
+    let live = add(&r, &token).await;
+    let engine = live.runtime.engine();
+    customers::ensure(&live, "alice").await.unwrap();
+    customers::ensure(&live, "bob").await.unwrap();
+    let mut data = engine.vault.lock().unwrap();
+    data.usage.insert(
+        "alice".into(),
+        crate::ledger::Usage {
+            requests: 2,
+            errors: 1,
+            ..Default::default()
+        },
+    );
+    data.usage.insert(
+        "bob".into(),
+        crate::ledger::Usage {
+            requests: 1,
+            errors: 1,
+            ..Default::default()
+        },
+    );
+    assert!(data.upstream_users.is_empty());
+    customers::restore(&mut data);
+    assert_eq!(data.upstream_users, BTreeSet::from(["alice".into()]));
 }
