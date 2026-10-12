@@ -124,7 +124,10 @@ pub(crate) struct Settings {
     pub customers: Vec<Customer>,
     #[serde(default)]
     pub customer_defaults: customers::Defaults,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prices: Vec<Price>,
+    #[serde(default)]
+    pub pool_pricing: Vec<crate::pricing::PoolPrice>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -136,6 +139,7 @@ impl Default for Settings {
             customers: vec![],
             customer_defaults: customers::Defaults::default(),
             prices: vec![],
+            pool_pricing: vec![],
         }
     }
 }
@@ -300,6 +304,11 @@ pub(crate) async fn unlock(
         crate::refusal::restore(&mut recovery.state).map_err(|_| invalid())?;
         customers::restore(&mut recovery.state);
         let bundle = recovery.state.bundle.as_ref().ok_or_else(invalid)?;
+        crate::pricing::migrate(
+            &mut recovery.settings,
+            &bundle.config,
+            &crate::pricing::book(runtime)?,
+        )?;
         validate_bundle(bundle, &item, &recovery.settings)?;
         let admin = bundle
             .secrets
@@ -414,6 +423,7 @@ fn validate_bundle(
     item: &Registration,
     settings: &Settings,
 ) -> Result<(), ApiError> {
+    crate::pricing::validate_pools(settings, &bundle.config)?;
     if settings.revision == 0
         || !(1..=4096).contains(&settings.max_concurrent)
         || settings.rpm > 10_000_000
@@ -525,7 +535,9 @@ pub(crate) struct MerchantUpdate {
     pub pools: Vec<Model>,
     pub customers: Vec<Customer>,
     pub customer_defaults: Option<customers::Defaults>,
+    #[serde(default)]
     pub prices: Vec<Price>,
+    pub pool_pricing: Vec<crate::pricing::PoolPrice>,
     pub max_concurrent: usize,
     #[serde(default)]
     pub rpm: u64,
@@ -550,6 +562,13 @@ pub(crate) async fn apply(
     let _write = runtime.merchants.write.lock().await;
     let item = authenticate(runtime, token)?;
     let live = live(runtime, &item.id)?;
+    if !input.prices.is_empty() {
+        return Err(ApiError::new(
+            400,
+            "pool_multiplier_required",
+            "Set a multiplier per pool; official model prices are platform managed",
+        ));
+    }
     let old = live.settings.lock().unwrap().clone();
     if old.revision != input.expected_revision {
         return Err(ApiError::new(
@@ -590,7 +609,8 @@ pub(crate) async fn apply(
         tpm: input.tpm,
         customers: overrides,
         customer_defaults: input.customer_defaults.unwrap_or(old.customer_defaults),
-        prices: input.prices,
+        prices: vec![],
+        pool_pricing: input.pool_pricing,
     };
     let snapshot = live.runtime.engine().vault.snapshot().map_err(storage)?;
     for deployment in input.pools.iter_mut().flat_map(|p| &mut p.deployments) {
@@ -674,8 +694,16 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     settings.customers = customers::visible(&live, &settings)?;
     let mut merchant = item.public(true);
     merchant.as_object_mut().unwrap().remove("users");
+    let mut book = crate::pricing::book(runtime)?;
+    book.providers.retain(|p| {
+        engine
+            .config
+            .models
+            .iter()
+            .any(|m| m.provider == Some(p.provider))
+    });
     Ok(
         json!({"merchant":merchant,"settings":settings,"pools":pools,
-        "accounts":engine.account_status()?,"status":engine.status(),"catalog":engine.discovery_status()}),
+        "official_pricing":book,"accounts":engine.account_status()?,"status":engine.status(),"catalog":engine.discovery_status()}),
     )
 }

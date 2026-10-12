@@ -13,6 +13,7 @@ mod network;
 pub mod oauth;
 mod official;
 pub mod policy;
+mod pricing;
 mod provider;
 mod reasoning;
 mod refusal;

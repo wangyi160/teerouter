@@ -13,11 +13,13 @@ pub(crate) struct Selection {
     pub engine: Arc<Engine>,
     pub account: usize,
     pub settings: Settings,
+    pub price_book: Arc<crate::pricing::Book>,
 }
 
 pub(crate) async fn selections(runtime: &Runtime, user: &str) -> Result<Vec<Selection>, ApiError> {
     let _read = runtime.merchants.write.lock().await;
     let mut selected = Vec::new();
+    let price_book = Arc::new(crate::pricing::book(runtime)?);
     for item in records(runtime)? {
         if !item.enabled || !item.users.contains(user) {
             continue;
@@ -45,6 +47,7 @@ pub(crate) async fn selections(runtime: &Runtime, user: &str) -> Result<Vec<Sele
             engine,
             account,
             settings,
+            price_book: price_book.clone(),
         });
     }
     Ok(selected)
@@ -73,6 +76,8 @@ pub(crate) async fn models(
     for selection in selections(runtime, user).await? {
         let mut list = selection.engine.models(selection.account).await;
         let settings = selection.settings;
+        let quotes =
+            crate::pricing::quotes(&settings, &selection.engine.config, &selection.price_book);
         for row in list["data"].as_array_mut().into_iter().flatten() {
             let original = row["id"].as_str().unwrap_or("").to_owned();
             let pools: Vec<String> = row["router_pools"]
@@ -116,7 +121,7 @@ pub(crate) async fn models(
                     .map(|p| format!("{}.{}", selection.item.id, p))
                     .collect::<Vec<_>>()
             );
-            row["router_pricing"] = json!({"version":settings.revision,"currency":"USD","unit":"micro_usd_per_million_tokens", "rates":settings.prices.iter().filter(|p|p.model==original && pools.contains(&p.pool)).collect::<Vec<_>>()});
+            row["router_pricing"] = json!({"version":settings.revision,"official_price_revision":selection.price_book.revision,"currency":"USD","unit":"micro_usd_per_million_tokens", "rates":quotes.iter().filter(|q|q.price.model==original && pools.contains(&q.price.pool)).collect::<Vec<_>>()});
             result.push(row.clone());
         }
     }
@@ -153,6 +158,16 @@ pub(crate) async fn pools(
             pool["id"] = qualified.into();
             pool["merchant_id"] = s.item.id.clone().into();
             pool["merchant_name"] = s.item.name.clone().into();
+            pool["pool_name"] = name.clone().into();
+            pool["multiplier_millionths"] = json!(
+                s.settings
+                    .pool_pricing
+                    .iter()
+                    .find(|p| p.pool == name)
+                    .map(|p| p.multiplier_millionths)
+            );
+            pool["price_version"] = s.settings.revision.into();
+            pool["official_price_revision"] = s.price_book.revision.into();
             rows.push(pool.clone());
         }
     }
@@ -213,6 +228,7 @@ pub(crate) async fn execute(
         .find(|s| s.item.id == merchant)
         .ok_or_else(forbidden)?;
     let settings = selection.settings;
+    let quotes = crate::pricing::quotes(&settings, &selection.engine.config, &selection.price_book);
     let pool = if let Some(qualified) = qualified_pool {
         let (id, pool) = qualified.split_once('.').ok_or_else(forbidden)?;
         if id != merchant {
@@ -236,10 +252,9 @@ pub(crate) async fn execute(
                     .any(|d| d.enabled && protocol.supports(d.provider))
             })
             .filter(|p| {
-                settings
-                    .prices
+                quotes
                     .iter()
-                    .any(|rate| rate.pool == p.name && rate.model == model)
+                    .any(|q| q.price.pool == p.name && q.price.model == model)
             })
             .collect();
         if candidates.len() != 1 {
@@ -264,15 +279,14 @@ pub(crate) async fn execute(
     if group.deployments.iter().any(|d| d.provider.is_local_test()) && !selection.item.allow_test {
         return Err(forbidden());
     }
-    let price = settings
-        .prices
+    let price = quotes
         .iter()
-        .find(|p| p.pool == pool && p.model == model)
+        .find(|q| q.price.pool == pool && q.price.model == model)
         .ok_or_else(|| {
             ApiError::new(
                 409,
                 "merchant_price_missing",
-                "Merchant must publish a price for this model",
+                "Official model price and merchant pool multiplier are required",
             )
         })?;
     if let Some(version) = headers.remove("x-router-price-version")
@@ -284,7 +298,18 @@ pub(crate) async fn execute(
             "Reload the merchant price before requesting",
         ));
     }
+    if let Some(version) = headers.remove("x-router-official-price-revision")
+        && version.to_str().ok().and_then(|s| s.parse::<u64>().ok())
+            != Some(selection.price_book.revision)
+    {
+        return Err(ApiError::new(
+            409,
+            "price_changed",
+            "Reload the official price book before requesting",
+        ));
+    }
     if price
+        .price
         .valid_until
         .is_some_and(|t| t <= crate::oauth::tokens::now() as u64)
     {

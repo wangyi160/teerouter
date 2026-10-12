@@ -4,9 +4,152 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+
+#[tokio::test]
+async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
+    let r = root();
+    let token = "a".repeat(64);
+    let live = add(&r, &token).await;
+    let mut change = update(2);
+    change["pool_pricing"][0]["multiplier_millionths"] = json!(200000);
+    apply(&r, &token, serde_json::from_value(change).unwrap())
+        .await
+        .unwrap();
+    let _mock = fixture(&live, completion()).await;
+    let frozen = routing::selections(&r, "alice").await.unwrap().remove(0);
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    assert_eq!(pools["data"][0]["multiplier_millionths"], 200000);
+    let (_, models) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let quote = &models["data"][0]["router_pricing"]["rates"][0];
+    assert_eq!(quote["basis"], "official_pool_multiplier");
+    assert_eq!(quote["input"], 1000000);
+    assert_eq!(quote["multiplier_millionths"], 200000);
+    let mut update =
+        json!({"expected_revision":1,"providers":crate::pricing::book(&r).unwrap().providers});
+    update["providers"][0]["version"] = json!(2);
+    update["providers"][0]["models"][0]["rates"]["input"] = json!(3000000);
+    for key in ["alice-key", token.as_str()] {
+        assert_eq!(
+            call(&server, Method::PUT, "/admin/pricing", key, update.clone())
+                .await
+                .0,
+            401
+        );
+    }
+    assert_eq!(
+        call(
+            &server,
+            Method::PUT,
+            "/admin/pricing",
+            ADMIN,
+            update.clone()
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::PUT,
+            "/admin/pricing",
+            ADMIN,
+            update.clone()
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        crate::pricing::quotes(&frozen.settings, &frozen.engine.config, &frozen.price_book)[0]
+            .price
+            .input,
+        1000000
+    );
+    update["expected_revision"] = json!(2);
+    update["providers"][0]["version"] = json!(1);
+    assert_eq!(
+        call(&server, Method::PUT, "/admin/pricing", ADMIN, update)
+            .await
+            .0,
+        400
+    );
+    let id = crypto::identity(&token);
+    let body =
+        json!({"model":format!("{id}/model-test"),"messages":[{"role":"user","content":"hello"}]});
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-router-official-price-revision", "1".parse().unwrap());
+    let result = routing::execute(
+        &r,
+        r.engine(),
+        0,
+        crate::router::Protocol::Chat,
+        &format!("{id}/model-test"),
+        body.clone(),
+        headers,
+        "stale-book".into(),
+    )
+    .await;
+    assert!(matches!(result,Err(e) if e.status==409));
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            body
+        )
+        .await
+        .0,
+        200
+    );
+    let data = r.engine().vault.lock().unwrap().clone();
+    let event = serde_json::to_value(data.events.back().unwrap()).unwrap();
+    let quote = &event["event"]["merchant_pricing"];
+    assert_eq!(quote["input"], 3000000, "{event}");
+    assert_eq!(quote["multiplier_millionths"], 200000);
+    assert_eq!(quote["official_price_revision"], 2);
+}
+
+#[tokio::test]
+async fn legacy_prices_migrate_only_when_the_whole_pool_has_one_exact_multiplier() {
+    let r = root();
+    let token = "a".repeat(64);
+    let live = add(&r, &token).await;
+    let config = live.runtime.engine().config.clone();
+    let book = crate::pricing::book(&r).unwrap();
+    let mut settings = live.settings.lock().unwrap().clone();
+    settings.pool_pricing.clear();
+    settings.prices = vec![
+        serde_json::from_value(
+            json!({"pool":"official","model":"model-test","input":200000,"output":400000}),
+        )
+        .unwrap(),
+    ];
+    let mut invalid = settings.clone();
+    invalid.prices[0].output = 500000;
+    assert!(crate::pricing::migrate(&mut invalid, &config, &book).is_err());
+    assert!(crate::pricing::migrate(&mut settings.clone(), &config, &Default::default()).is_err());
+    crate::pricing::migrate(&mut settings, &config, &book).unwrap();
+    assert!(settings.prices.is_empty());
+    assert_eq!(settings.pool_pricing[0].multiplier_millionths, 200000);
+    let mut bad = update(2);
+    bad["prices"] = json!([{"pool":"official","model":"model-test","input":0,"output":0}]);
+    assert!(
+        apply(&r, &token, serde_json::from_value(bad).unwrap())
+            .await
+            .is_err()
+    );
+    settings.pool_pricing.push(settings.pool_pricing[0].clone());
+    assert!(crate::pricing::validate_pools(&settings, &config).is_err());
+    settings.pool_pricing.pop();
+    settings.pool_pricing[0].multiplier_millionths = 1_000_000_000_000_001;
+    assert!(crate::pricing::validate_pools(&settings, &config).is_err());
+}
 fn root() -> Arc<Runtime> {
     let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":"alice"},{"id":"bob"}],"keys":[{"name":"alice-key","user_id":"alice","key_ref":"ALICE"},{"name":"bob-key","user_id":"bob","key_ref":"BOB"}],"models":[]})).unwrap();
-    Runtime::new(
+    let runtime = Runtime::new(
         Engine::new(config, |k| {
             Some(
                 match k {
@@ -18,13 +161,15 @@ fn root() -> Arc<Runtime> {
             )
         })
         .unwrap(),
-    )
+    );
+    runtime.engine().vault.lock().unwrap().official_pricing = serde_json::from_value(json!({"revision":1,"providers":[{"provider":"openai","version":1,"source":"https://developers.openai.com/api/docs/pricing","checked_at":1,"models":[{"model":"model-test","rates":{"input":1000000,"output":2000000}}]}]})).unwrap();
+    runtime
 }
 fn registration(token: &str) -> Registration {
     serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["alice"]})).unwrap()
 }
 fn update(revision: u64) -> Value {
-    json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[],"prices":[{"pool":"official","model":"model-test","input":1000000,"output":2000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
+    json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[],"pool_pricing":[{"pool":"official","multiplier_millionths":1000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
 }
 async fn add(root: &Runtime, token: &str) -> Arc<Live> {
     register(root, registration(token), ADMIN).await.unwrap();
