@@ -4,14 +4,91 @@ use teellm::vault::Vault;
 const MODEL: &str = "vendor/Future-v99:preview";
 const EFFORT: &str = "future-ULTRA-v99";
 
+#[tokio::test]
+async fn removed_provider_routes_and_configuration_cannot_reach_upstream() {
+    let upstream = mock(vec![]).await;
+    let config = configuration(&upstream);
+    let g = gateway(config.clone()).await;
+    for path in [
+        "/v1beta/models/chat:generateContent",
+        "/v1beta/models/chat:streamGenerateContent",
+    ] {
+        assert_eq!(
+            post(&g, path, json!({"contents":[{"parts":[{"text":"hello"}]}]}))
+                .await
+                .status(),
+            404
+        );
+    }
+    for provider in ["gemini", "gemini_cli", "antigravity"] {
+        assert!(serde_json::from_value::<Provider>(json!(provider)).is_err());
+        assert!(
+            teellm::compatibility::Profile::default()
+                .validate(provider)
+                .is_err()
+        );
+        let mut removed = serde_json::to_value(&config).unwrap();
+        removed["models"][0]["deployments"][0]["provider"] = json!(provider);
+        assert!(serde_json::from_value::<Config>(removed).is_err());
+    }
+    for host in [
+        "generativelanguage.googleapis.com",
+        "cloudcode-pa.googleapis.com",
+        "oauth2.googleapis.com",
+    ] {
+        let mut foreign = config.clone();
+        foreign.models[0].deployments[0].api_base = Some(format!("https://{host}/v1"));
+        assert!(foreign.validate().is_err());
+    }
+    assert!(upstream.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn legacy_empty_provider_fields_restore_without_reenabling_removed_features() {
+    let upstream = mock(vec![]).await;
+    let mut legacy = serde_json::to_value(configuration(&upstream)).unwrap();
+    legacy["models"][0]["deployments"][0]["gemini_project"] = Value::Null;
+    legacy["compatibility"] = json!({"openai":{"client_secret_ref":null,"requests":{"oauth_refresh":{"client_secret_ref":null}}}});
+    let config: Config = serde_json::from_value(legacy.clone()).unwrap();
+    config.validate().unwrap();
+    let encoded = serde_json::to_value(config).unwrap();
+    assert!(
+        encoded["models"][0]["deployments"][0]
+            .get("gemini_project")
+            .is_none()
+    );
+    assert!(
+        encoded["compatibility"]["openai"]
+            .get("client_secret_ref")
+            .is_none()
+    );
+    assert!(
+        encoded["compatibility"]["openai"]["requests"]["oauth_refresh"]
+            .get("client_secret_ref")
+            .is_none()
+    );
+    for path in [
+        "/models/0/deployments/0/gemini_project",
+        "/compatibility/openai/client_secret_ref",
+        "/compatibility/openai/requests/oauth_refresh/client_secret_ref",
+    ] {
+        let mut invalid = legacy.clone();
+        *invalid.pointer_mut(path).unwrap() = json!("legacy-value");
+        assert!(
+            serde_json::from_value::<Config>(invalid)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+}
+
 #[rstest]
 #[case(Provider::OpenAI, false)]
 #[case(Provider::Anthropic, false)]
-#[case(Provider::Gemini, false)]
 #[case(Provider::XAI, false)]
 #[case(Provider::OpenAI, true)]
 #[case(Provider::Anthropic, true)]
-#[case(Provider::Gemini, true)]
 #[case(Provider::XAI, true)]
 #[tokio::test]
 async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchanged(
@@ -19,14 +96,8 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
     #[case] chat: bool,
 ) {
     let mut replies = Vec::new();
-    if provider == Provider::Gemini {
-        replies.push(Reply::json(
-            json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"fixture-project"}),
-        ));
-    }
-    replies.push(Reply::json(if provider == Provider::Gemini {
-        json!({"response":native(provider)})
-    } else if provider == Provider::XAI && chat {
+
+    replies.push(Reply::json(if provider == Provider::XAI && chat {
         completion()
     } else {
         native(provider)
@@ -37,7 +108,7 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
     bundle.config.models[0].deployments[0].model = "must-not-substitute-this-model".into();
     // Future field locations are configurable, but accepted values still come
     // exclusively from the authenticated catalog fixture, not from this config.
-    if matches!(provider, Provider::Gemini | Provider::Anthropic) {
+    if provider == Provider::Anthropic {
         bundle.config.compatibility.insert(crate::compatibility::name(provider).into(), serde_json::from_value(json!({
             "catalog_capabilities":{"effort":"/fixture_levels", "budget_min":"/fixture_budget_min", "budget_max":"/fixture_budget_max"}
         })).unwrap());
@@ -55,10 +126,6 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
             Provider::Anthropic => (
                 "/v1/messages".into(),
                 json!({"model":MODEL,"max_tokens":8,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":EFFORT},"thinking":{"type":"future-mode","budget_tokens":12345}}),
-            ),
-            Provider::Gemini => (
-                format!("/v1beta/models/{MODEL}:generateContent"),
-                json!({"contents":[{"parts":[{"text":"hello"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":EFFORT,"thinkingBudget":12345}}}),
             ),
             _ => (
                 "/v1/responses".into(),
@@ -82,9 +149,6 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
     let effort = match provider {
         Provider::OpenAI => &call.body["reasoning"]["effort"],
         Provider::Anthropic => &call.body["output_config"]["effort"],
-        Provider::Gemini => {
-            &call.body["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"]
-        }
         Provider::XAI if chat => &call.body["reasoning_effort"],
         Provider::XAI => &call.body["reasoning"]["effort"],
         #[cfg(feature = "workbuddy-lab")]
@@ -93,12 +157,6 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
     assert_eq!(effort, EFFORT);
     if !chat && provider == Provider::Anthropic {
         assert_eq!(call.body["thinking"], body["thinking"]);
-    }
-    if !chat && provider == Provider::Gemini {
-        assert_eq!(
-            call.body["request"]["generationConfig"],
-            body["generationConfig"]
-        );
     }
 }
 

@@ -17,7 +17,6 @@
         "models": [
           "chatgpt/*",
           "claude/*",
-          "gemini/*",
           "grok/*"
         ],
         "user_id": "test-user"
@@ -43,17 +42,6 @@
             "id": "claude-1",
             "provider": "anthropic",
             "oauth_account": "claude-1"
-          }
-        ]
-      },
-      {
-        "name": "gemini",
-        "discover": true,
-        "deployments": [
-          {
-            "id": "gemini-1",
-            "provider": "gemini",
-            "oauth_account": "gemini-1"
           }
         ]
       },
@@ -96,15 +84,6 @@
       "credential": {
         "access_token": "sk-ant-oat-REPLACE_WITH_ACCESS_TOKEN",
         "expires_at": 1
-      }
-    },
-    "gemini-1": {
-      "provider": "gemini",
-      "proxy": "socks5h://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18083",
-      "credential": {
-        "access_token": "REPLACE_WITH_ACCESS_TOKEN",
-        "refresh_token": "REPLACE_WITH_REFRESH_TOKEN",
-        "expiry_date": 1
       }
     },
     "grok-1": {

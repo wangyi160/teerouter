@@ -10,15 +10,6 @@ const HOSTS: &[(Provider, &[&str])] = &[
         Provider::Anthropic,
         &["api.anthropic.com", "console.anthropic.com", "claude.ai"],
     ),
-    (
-        Provider::Gemini,
-        &[
-            "generativelanguage.googleapis.com",
-            "cloudcode-pa.googleapis.com",
-            "oauth2.googleapis.com",
-            "accounts.google.com",
-        ],
-    ),
     (Provider::XAI, &["api.x.ai", "auth.x.ai"]),
 ];
 

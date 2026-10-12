@@ -9,26 +9,6 @@ use axum::{
 use rstest::rstest;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn google_fixture(store: &mut Arc<TokenStore>) {
-    let store = Arc::get_mut(store).unwrap();
-    if store.provider == Provider::Gemini {
-        if !store
-            .profile
-            .requests
-            .get("oauth_refresh")
-            .is_some_and(|p| p.body_set.contains_key("/client_id"))
-        {
-            store
-                .profile
-                .client_id
-                .get_or_insert_with(|| "fixture-google-client".into());
-        }
-        store
-            .client_secret
-            .get_or_insert_with(|| "fixture-google-secret".into());
-    }
-}
-
 fn jwt(exp: f64, account: &str) -> String {
     format!(
         "e30.{}.test",
@@ -73,20 +53,15 @@ async fn failed_refresh_is_persistently_quarantined_until_recovery(
     vault
         .put_account(
             "test",
-            Provider::Gemini,
-            &json!({"access_token":"old","refresh_token":"old-refresh","expiry_date":1}),
+            Provider::XAI,
+            &json!({"access_token":"old","refresh_token":"old-refresh"}),
         )
         .unwrap();
     let mock = endpoint(json!({"error":"invalid_grant"}), status).await;
     vault
-        .set_account_proxy(
-            "test",
-            Provider::Gemini,
-            mock.url.trim_end_matches("/token"),
-        )
+        .set_account_proxy("test", Provider::XAI, mock.url.trim_end_matches("/token"))
         .unwrap();
-    let mut store = TokenStore::open(Provider::Gemini, vault.clone(), "test").unwrap();
-    google_fixture(&mut store);
+    let mut store = TokenStore::open(Provider::XAI, vault.clone(), "test").unwrap();
     Arc::get_mut(&mut store).unwrap().test_token_endpoint =
         Some("http://token.fixture.invalid/token".into());
     assert!(store.credential().await.is_err());
@@ -94,35 +69,41 @@ async fn failed_refresh_is_persistently_quarantined_until_recovery(
     assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
     let revision = store.revision().unwrap();
     assert_eq!(vault.health("test", revision).unwrap()["state"], state);
-    let reopened = TokenStore::open(Provider::Gemini, vault.clone(), "test").unwrap();
+    let reopened = TokenStore::open(Provider::XAI, vault.clone(), "test").unwrap();
     assert!(reopened.credential().await.is_err());
     assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
-    vault.import_account("test",Provider::Gemini,&json!({"access_token":"new","refresh_token":"new-refresh","expiry_date":4102444800000u64})).unwrap();
+    vault
+        .import_account(
+            "test",
+            Provider::XAI,
+            &json!({"access_token":"new","refresh_token":"new-refresh","expires_at":4102444800u64}),
+        )
+        .unwrap();
     assert_eq!(reopened.credential().await.unwrap().access_token, "new");
 }
 
 #[tokio::test]
 async fn proactive_refresh_and_configured_client_metadata_use_the_account_proxy() {
     let vault = crate::vault::Vault::memory().unwrap();
-    vault.put_account("test",Provider::Gemini,&json!({"access_token":"old","refresh_token":"refresh","expiry_date":((now()+450.0)*1000.0) as u64})).unwrap();
+    vault
+        .put_account(
+            "test",
+            Provider::XAI,
+            &json!({"access_token":"old","refresh_token":"refresh","expires_at":now()+450.0}),
+        )
+        .unwrap();
     let mock = endpoint(
         json!({"access_token":"early-new","refresh_token":"rotated","expires_in":3600}),
         200,
     )
     .await;
     vault
-        .set_account_proxy(
-            "test",
-            Provider::Gemini,
-            mock.url.trim_end_matches("/token"),
-        )
+        .set_account_proxy("test", Provider::XAI, mock.url.trim_end_matches("/token"))
         .unwrap();
-    let mut store = TokenStore::open(Provider::Gemini, vault.clone(), "test").unwrap();
-    google_fixture(&mut store);
+    let mut store = TokenStore::open(Provider::XAI, vault.clone(), "test").unwrap();
     let mutable = Arc::get_mut(&mut store).unwrap();
     mutable.test_token_endpoint = Some("http://token.fixture.invalid/token".into());
     mutable.profile.client_id = Some("new-official-client".into());
-    mutable.client_secret = Some("public-installed-app-secret".into());
     mutable.refresh_ahead = 600;
     mutable.profile.requests.insert(
         "oauth_refresh".into(),
@@ -132,7 +113,7 @@ async fn proactive_refresh_and_configured_client_metadata_use_the_account_proxy(
         }))
         .unwrap(),
     );
-    mutable.profile.validate("gemini").unwrap();
+    mutable.profile.validate("xai").unwrap();
     assert_eq!(store.credential().await.unwrap().access_token, "old");
     assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
     assert_eq!(store.maintain().await.unwrap().access_token, "early-new");
@@ -141,71 +122,16 @@ async fn proactive_refresh_and_configured_client_metadata_use_the_account_proxy(
     assert!(captured[0].1.contains("version=1.1.1"));
     assert!(captured[0].1.contains("new_flag=true"));
     assert!(captured[0].1.contains("client_id=new-official-client"));
-    assert!(
-        captured[0]
-            .1
-            .contains("client_secret=public-installed-app-secret")
-    );
+    assert!(!captured[0].1.contains("client_secret="));
     assert_eq!(
-        vault.account("test", Provider::Gemini).unwrap().0["refresh_token"],
+        vault.account("test", Provider::XAI).unwrap().0["refresh_token"],
         "rotated"
     );
 }
 
 #[tokio::test]
-async fn imported_account_refreshes_through_engine_with_operation_secret_reference() {
-    let mock = endpoint(
-        json!({"access_token":"renewed","refresh_token":"rotated","expires_in":3600}),
-        200,
-    )
-    .await;
-    let vault = crate::vault::Vault::memory().unwrap();
-    let mut bundle: crate::vault::Provision = serde_json::from_value(json!({
-        "config": {
-            "users":[{"id":"test-user"}],"keys":[{"name":"client","user_id":"test-user","key_ref":"client"}],
-            "models":[{"name":"gemini","deployments":[{"id":"g","provider":"gemini","oauth_account":"g"}]}],
-            "compatibility":{"gemini":{
-                "requests":{"oauth_refresh":{"client_secret_ref":"refresh-secret","body_set":{"/client_id":"fixture-google-client"}}}}}
-        },
-        "secrets":{"client":"fixture-client"},
-        "accounts":{"g":{"provider":"gemini","proxy":mock.url.trim_end_matches("/token"),
-            "credential":{"access_token":"expired","refresh_token":"imported-refresh","expiry_date":1}}}
-    })).unwrap();
-    assert!(vault.provision(&bundle).is_err());
-    bundle
-        .secrets
-        .insert("refresh-secret".into(), "fixture-refresh-secret".into());
-    vault.provision(&bundle).unwrap();
-    let engine = crate::router::Engine::from_vault(vault.clone()).unwrap();
-    assert_eq!(
-        engine.token_stores()[0].client_secret.as_deref(),
-        Some("fixture-refresh-secret")
-    );
-    let mut store = TokenStore::open(Provider::Gemini, vault.clone(), "g").unwrap();
-    google_fixture(&mut store);
-    Arc::get_mut(&mut store).unwrap().test_token_endpoint =
-        Some("http://token.fixture.invalid/token".into());
-    store.maintain().await.unwrap();
-    assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
-    let captured = mock.bodies.lock().await;
-    assert!(captured[0].1.contains("grant_type=refresh_token"));
-    assert!(captured[0].1.contains("refresh_token=imported-refresh"));
-    assert!(
-        captured[0]
-            .1
-            .contains("client_secret=fixture-refresh-secret")
-    );
-    let stored = vault.account("g", Provider::Gemini).unwrap().0;
-    assert_eq!(stored["access_token"], "renewed");
-    assert_eq!(stored["refresh_token"], "rotated");
-}
-
-#[tokio::test]
 async fn refresh_urls_are_compiled_in_and_ignore_imported_endpoint_metadata() {
-    for (provider, expected) in [
-        (Provider::OpenAI, "https://auth.openai.com/oauth/token"),
-        (Provider::Gemini, "https://oauth2.googleapis.com/token"),
-    ] {
+    for (provider, expected) in [(Provider::OpenAI, "https://auth.openai.com/oauth/token")] {
         let vault = crate::vault::Vault::memory().unwrap();
         vault.put_account("test", provider, &json!({"access_token":"fixture", "refresh_token":"fixture", "token_endpoint":"https://other.invalid/token"})).unwrap();
         vault
@@ -260,7 +186,7 @@ async fn chatgpt_compatibility_headers_override_defaults_and_keep_server_auth() 
         .unwrap();
     let store = TokenStore::open(Provider::OpenAI, vault, "chat").unwrap();
     let http = crate::network::http_client(Provider::OpenAI, "http://127.0.0.1:9", 30).unwrap();
-    let mut client = crate::Client::with_oauth(store, http, None).unwrap();
+    let mut client = crate::Client::with_oauth(store, http).unwrap();
     client
         .profile
         .headers
@@ -331,15 +257,13 @@ async fn endpoint(payload: Value, status: u16) -> Mock {
 #[case(Provider::OpenAI, true)]
 #[case(Provider::XAI, false)]
 #[case(Provider::XAI, true)]
-#[case(Provider::Gemini, false)]
-#[case(Provider::Gemini, true)]
 #[tokio::test]
 async fn refresh_is_single_flight_and_preserves_or_rotates_tokens(
     #[case] provider: Provider,
     #[case] rotate: bool,
 ) {
     let vault = crate::vault::Vault::memory().unwrap();
-    vault.put_account("test", provider, &json!({"access_token":"old","refresh_token":"previous-refresh","expires_at":1,"expiry_date":1,"token_endpoint":"https://auth.x.ai/token"})).unwrap();
+    vault.put_account("test", provider, &json!({"access_token":"old","refresh_token":"previous-refresh","expires_at":1,"token_endpoint":"https://auth.x.ai/token"})).unwrap();
     let access = if provider == Provider::OpenAI {
         jwt(now() + 3600.0, "acct-a")
     } else {
@@ -355,7 +279,6 @@ async fn refresh_is_single_flight_and_preserves_or_rotates_tokens(
         .set_account_proxy("test", provider, mock.url.trim_end_matches("/token"))
         .unwrap();
     let mut store = TokenStore::open(provider, vault.clone(), "test").unwrap();
-    google_fixture(&mut store);
     Arc::get_mut(&mut store).unwrap().test_token_endpoint =
         Some("http://token.fixture.invalid/token".into());
     let results = futures_util::future::join_all((0..12).map(|_| store.credential())).await;
@@ -378,9 +301,7 @@ async fn refresh_is_single_flight_and_preserves_or_rotates_tokens(
             Some("acct-a")
         );
     }
-    if provider == Provider::Gemini {
-        assert!(record["expiry_date"].as_u64().unwrap() > (now() * 1000.0) as u64);
-    }
+
     let bodies = mock.bodies.lock().await;
     let (headers, body) = &bodies[0];
     if provider == Provider::OpenAI {
@@ -403,10 +324,7 @@ async fn refresh_is_single_flight_and_preserves_or_rotates_tokens(
         );
         assert!(body.contains("grant_type=refresh_token"));
         assert!(body.contains("refresh_token=previous-refresh"));
-        assert_eq!(
-            body.contains("client_secret="),
-            provider == Provider::Gemini
-        );
+        assert!(!body.contains("client_secret="));
     }
     drop(bodies);
     drop(store);
@@ -421,24 +339,17 @@ async fn refresh_is_single_flight_and_preserves_or_rotates_tokens(
 #[tokio::test]
 async fn refresh_rejection_preserves_vault_record_and_does_not_expose_response_secrets() {
     let vault = crate::vault::Vault::memory().unwrap();
-    let record = json!({"access_token":"old","refresh_token":"keep-me","expiry_date":1});
-    vault
-        .put_account("test", Provider::Gemini, &record)
-        .unwrap();
+    let record = json!({"access_token":"old","refresh_token":"keep-me"});
+    vault.put_account("test", Provider::XAI, &record).unwrap();
     let mock = endpoint(
         json!({"error":"invalid_grant","secret":"NEVER_EXPOSE"}),
         400,
     )
     .await;
     vault
-        .set_account_proxy(
-            "test",
-            Provider::Gemini,
-            mock.url.trim_end_matches("/token"),
-        )
+        .set_account_proxy("test", Provider::XAI, mock.url.trim_end_matches("/token"))
         .unwrap();
-    let mut store = TokenStore::open(Provider::Gemini, vault.clone(), "test").unwrap();
-    google_fixture(&mut store);
+    let mut store = TokenStore::open(Provider::XAI, vault.clone(), "test").unwrap();
     Arc::get_mut(&mut store).unwrap().test_token_endpoint =
         Some("http://token.fixture.invalid/token".into());
     let error = store.credential().await.err().unwrap().to_string();
@@ -512,7 +423,7 @@ fn invalid_payload_does_not_replace_a_valid_record() {
     );
     assert!(
         build_record(
-            Provider::Gemini,
+            Provider::XAI,
             &json!({"access_token":"a","refresh_token":"r"}),
             None
         )
@@ -567,65 +478,4 @@ async fn workbuddy_static_key_is_replaceable_without_expiry_or_refresh_requests(
             )
             .is_err()
     );
-}
-
-#[tokio::test]
-async fn google_refresh_requires_external_app_credentials_before_any_network_call() {
-    let mock = endpoint(
-        json!({"access_token":"renewed","refresh_token":"rotated","expires_in":3600}),
-        200,
-    )
-    .await;
-    let vault = crate::vault::Vault::memory().unwrap();
-    vault
-        .put_account(
-            "external",
-            Provider::Gemini,
-            &json!({"access_token":"expired","refresh_token":"refresh","expiry_date":1}),
-        )
-        .unwrap();
-    vault
-        .set_account_proxy(
-            "external",
-            Provider::Gemini,
-            mock.url.trim_end_matches("/token"),
-        )
-        .unwrap();
-    let mut store = TokenStore::open(Provider::Gemini, vault, "external").unwrap();
-    Arc::get_mut(&mut store).unwrap().test_token_endpoint =
-        Some("http://token.fixture.invalid/token".into());
-    assert!(
-        store
-            .force_refresh()
-            .await
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("client_id missing")
-    );
-    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
-    Arc::get_mut(&mut store)
-        .unwrap()
-        .profile
-        .requests
-        .entry("oauth_refresh".into())
-        .or_default()
-        .body_set
-        .insert("/client_id".into(), json!("external-app-client"));
-    assert!(
-        store
-            .force_refresh()
-            .await
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("client secret missing")
-    );
-    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
-    Arc::get_mut(&mut store).unwrap().client_secret = Some("external-app-secret".into());
-    assert_eq!(store.force_refresh().await.unwrap().access_token, "renewed");
-    assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
-    let calls = mock.bodies.lock().await;
-    assert!(calls[0].1.contains("client_id=external-app-client"));
-    assert!(calls[0].1.contains("client_secret=external-app-secret"));
 }

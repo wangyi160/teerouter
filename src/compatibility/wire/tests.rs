@@ -43,22 +43,16 @@ fn refresh_metadata_is_isolated_from_model_interfaces() {
         body,
         json!({"client_id":"refresh-app","scope":"openid","grant_type":"refresh_token","refresh_token":"private"})
     );
-    let gemini = profile(
+    let xai = profile(
         "oauth_refresh",
-        json!({"client_secret_ref":"refresh-secret","body_set":{"/client_id":"gemini-app"}}),
+        json!({"body_set":{"/client_id":"xai-app"}}),
     );
-    gemini.validate("gemini").unwrap();
-    assert_eq!(
-        gemini
-            .client_secret_for("oauth_refresh")
-            .map(String::as_str),
-        Some("refresh-secret")
-    );
-    let request = gemini
+    xai.validate("xai").unwrap();
+    let request = xai
         .form(
             "oauth_refresh",
             &reqwest::Client::new(),
-            "https://oauth2.googleapis.com/token",
+            "https://auth.x.ai/oauth/token",
             &[("client_id", "old"), ("refresh_token", "private")],
         )
         .unwrap()
@@ -69,13 +63,13 @@ fn refresh_metadata_is_isolated_from_model_interfaces() {
         request.headers()["content-type"],
         "application/x-www-form-urlencoded"
     );
-    assert!(form.contains("client_id=gemini-app"));
+    assert!(form.contains("client_id=xai-app"));
     assert!(form.contains("refresh_token=private"));
 }
 
 #[test]
 fn removed_login_operations_and_protected_refresh_fields_are_rejected() {
-    for provider in ["openai", "anthropic", "gemini", "xai"] {
+    for provider in ["openai", "anthropic", "xai"] {
         for operation in [
             "oauth_device_code",
             "oauth_device_poll",
@@ -119,7 +113,7 @@ fn oauth_urls_and_transport_headers_are_not_configurable() {
     ] {
         assert!(serde_json::from_value::<Profile>(value).is_err());
     }
-    for provider in ["openai", "anthropic", "gemini", "xai"] {
+    for provider in ["openai", "anthropic", "xai"] {
         for header in [
             "content-type",
             "Content-Type",
@@ -231,7 +225,7 @@ fn protected_fields_and_ambiguous_rules_are_rejected_before_activation() {
     assert!(profile("respones", json!({})).validate("openai").is_err());
     assert!(
         profile("oauth_refresh", json!({"body_set":{"/meta/version":"v1"}}))
-            .validate("gemini")
+            .validate("xai")
             .is_err()
     );
     assert!(profile("responses", json!({})).validate("gemini").is_err());
@@ -260,12 +254,12 @@ fn oauth_form_metadata_is_encoded_and_generated_security_fields_are_retained() {
         "oauth_refresh",
         json!({"body_set":{"/version":"1.1.1","/new_flag":true},"query":{"revision":"next"},"headers":{"x-client-version":"1.1.1"}}),
     );
-    profile.validate("gemini").unwrap();
+    profile.validate("xai").unwrap();
     let request = profile
         .form(
             "oauth_refresh",
             &reqwest::Client::new(),
-            "https://oauth2.googleapis.com/token",
+            "https://auth.x.ai/oauth/token",
             &[
                 ("refresh_token", "private & token"),
                 ("grant_type", "refresh_token"),
@@ -351,8 +345,6 @@ fn user_content_cannot_be_injected_replaced_or_deleted_by_protocol_rules() {
         ("openai", "responses", ""),
         ("openai", "chat_completions", ""),
         ("anthropic", "messages", ""),
-        ("gemini", "generate_content", "/request"),
-        ("gemini", "stream_generate_content", "/request"),
         ("xai", "responses", ""),
         ("xai", "chat_completions", ""),
     ] {

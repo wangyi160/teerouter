@@ -36,9 +36,6 @@ fn catalog(provider: Provider, names: &[&str]) -> Reply {
         Provider::Anthropic => {
             json!({"data":names.iter().map(|id| json!({"id":id})).collect::<Vec<_>>(),"has_more":false})
         }
-        Provider::Gemini => {
-            json!({"buckets":names.iter().map(|id| json!({"modelId":id,"remainingFraction":0})).collect::<Vec<_>>()})
-        }
         Provider::XAI => {
             json!({"models":names.iter().map(|id| json!({"id":id})).collect::<Vec<_>>()})
         }
@@ -75,14 +72,6 @@ async fn generate(gateway: &Running, provider: Provider, id: &str) -> reqwest::R
             )
             .await
         }
-        Provider::Gemini => {
-            post(
-                gateway,
-                &format!("/v1beta/models/{id}:generateContent"),
-                json!({"contents":[{"parts":[{"text":"hello"}]}]}),
-            )
-            .await
-        }
         _ => {
             post(
                 gateway,
@@ -97,24 +86,15 @@ async fn generate(gateway: &Running, provider: Provider, id: &str) -> reqwest::R
 #[rstest]
 #[case(Provider::OpenAI)]
 #[case(Provider::Anthropic)]
-#[case(Provider::Gemini)]
 #[case(Provider::XAI)]
 #[tokio::test]
 async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model(
     #[case] provider: Provider,
 ) {
-    let mut replies = Vec::new();
-    if provider == Provider::Gemini {
-        replies.push(Reply::json(
-            json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"fixture-project"}),
-        ));
-    }
-    replies.push(catalog(provider, &["future-model-not-in-config"]));
-    replies.push(Reply::json(if provider == Provider::Gemini {
-        json!({"response":native(provider)})
-    } else {
-        native(provider)
-    }));
+    let replies = vec![
+        catalog(provider, &["future-model-not-in-config"]),
+        Reply::json(native(provider)),
+    ];
     let proxy = catalog_mock(replies).await;
     let v = Vault::memory().unwrap();
     v.provision(&bundle(provider, &[&proxy])).unwrap();
@@ -135,15 +115,9 @@ async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model
         .json()
         .await
         .unwrap();
-    assert_eq!(
-        status["data"][0]["catalog"]["complete_catalog"],
-        provider != Provider::Gemini
-    );
+    assert_eq!(status["data"][0]["catalog"]["complete_catalog"], true);
     let calls = proxy.calls.lock().unwrap();
-    assert_eq!(
-        calls.len(),
-        if provider == Provider::Gemini { 3 } else { 2 }
-    );
+    assert_eq!(calls.len(), 2);
     for call in calls.iter() {
         assert!(call.uri.starts_with("http://provider.fixture.invalid/"));
         assert_eq!(call.headers["authorization"], "Bearer sk-ant-oat-fixture-0");
@@ -157,10 +131,6 @@ async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model
         Provider::Anthropic => {
             assert!(calls[0].path.starts_with("/v1/models?limit="));
             assert!(calls[0].headers.contains_key("anthropic-beta"));
-        }
-        Provider::Gemini => {
-            assert_eq!(calls[1].path, "/v1:retrieveUserQuota");
-            assert_eq!(calls[1].body["project"], "fixture-project");
         }
         Provider::XAI => assert_eq!(calls[0].path, "/v1/language-models"),
         #[cfg(feature = "workbuddy-lab")]
@@ -386,22 +356,4 @@ async fn expired_catalog_blocks_generation_even_when_acl_allows_it() {
         generate(&gateway, Provider::XAI, "allowed").await.status(),
         503
     );
-}
-
-#[tokio::test]
-async fn google_api_key_discovery_paginates_and_filters_non_generation_models() {
-    let proxy = catalog_mock(vec![Reply::json(json!({"models":[{"name":"models/text-new","supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-new","supportedGenerationMethods":["embedContent"]}],"nextPageToken":"page two"})),
-        Reply::json(json!({"models":[{"name":"models/text-next","supportedGenerationMethods":["generateContent"]}]}))]).await;
-    let mut config = configuration(&proxy);
-    config.models[0].discover = true;
-    config.models[0].deployments[0].model.clear();
-    config.models[0].deployments[0].provider = Provider::Gemini;
-    let gateway = gateway(config).await;
-    assert_eq!(listed(&gateway).await, ["text-new", "text-next"]);
-    let calls = proxy.calls.lock().unwrap();
-    assert_eq!(calls.len(), 2);
-    assert!(calls[0].path.starts_with("/v1/models?pageSize="));
-    assert!(calls[1].path.contains("pageToken=page+two"));
-    assert_eq!(calls[0].headers["x-goog-api-key"], "provider-secret");
-    assert!(!calls[0].headers.contains_key("authorization"));
 }

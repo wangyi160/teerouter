@@ -14,7 +14,6 @@ fn provider_name(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAI => "openai",
         Provider::Anthropic => "anthropic",
-        Provider::Gemini => "gemini",
         Provider::XAI => "xai",
         #[cfg(feature = "workbuddy-lab")]
         Provider::Workbuddy => "workbuddy",
@@ -24,25 +23,18 @@ async fn generate(gateway: &Running, provider: Provider) -> reqwest::Response {
     let metadata = json!({"caller":"kept","obsolete":"remove-me"});
     match provider {
         Provider::Anthropic => post(gateway, "/v1/messages", json!({"model":"chat","max_tokens":8,"messages":[{"role":"user","content":"hello"}],"metadata":metadata})).await,
-        Provider::Gemini => post(gateway, "/v1beta/models/chat:generateContent", json!({"contents":[{"parts":[{"text":"hello"}]}],"metadata":metadata})).await,
         _ => post(gateway, "/v1/responses", json!({"model":"chat","input":"hello","metadata":metadata,"store":true})).await,
     }
 }
 #[rstest]
 #[case(Provider::OpenAI)]
 #[case(Provider::Anthropic)]
-#[case(Provider::Gemini)]
 #[case(Provider::XAI)]
 #[tokio::test]
 async fn future_wire_fields_change_live_after_provider_conversion(#[case] provider: Provider) {
     let mut replies = Vec::new();
     for _ in 0..2 {
-        if provider == Provider::Gemini {
-            replies.push(Reply::json(json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"fixture-project"})));
-            replies.push(Reply::json(json!({"response":native(provider)})));
-        } else {
-            replies.push(Reply::json(native(provider)));
-        }
+        replies.push(Reply::json(native(provider)));
     }
     let proxy = mock(replies).await;
     let mut bundle = discovery::bundle(provider, &[&proxy]);
@@ -52,14 +44,9 @@ async fn future_wire_fields_change_live_after_provider_conversion(#[case] provid
     bundle.config.keys[0].models.clear();
     let operation = match provider {
         Provider::Anthropic => "messages",
-        Provider::Gemini => "generate_content",
         _ => "responses",
     };
-    let prefix = if provider == Provider::Gemini {
-        "/request"
-    } else {
-        ""
-    };
+    let prefix = "";
     let rule = json!({
         "headers":{"x-future-version":"1.0.1"}, "query":{"revision":"1.0.1"},
         "body_set":{format!("{prefix}/version"):"1.0.1",format!("{prefix}/metadata/new_feature"):true},
@@ -130,17 +117,12 @@ async fn future_wire_fields_change_live_after_provider_conversion(#[case] provid
         assert!(call.path.ends_with(&format!("?revision={version}")));
         assert_eq!(call.headers["authorization"], "Bearer sk-ant-oat-fixture-0");
         assert_eq!(call.body["model"], "chat");
-        let body = if provider == Provider::Gemini {
-            &call.body["request"]
-        } else {
-            &call.body
-        };
+        let body = &call.body;
         assert_eq!(body["version"], version);
         match provider {
             Provider::Anthropic => {
                 assert_eq!(body["messages"], json!([{"role":"user","content":"hello"}]))
             }
-            Provider::Gemini => assert_eq!(body["contents"], json!([{"parts":[{"text":"hello"}]}])),
             _ => assert_eq!(body["input"], "hello"),
         }
         assert_eq!(body["metadata"]["caller"], "kept");
@@ -156,9 +138,6 @@ async fn future_wire_fields_change_live_after_provider_conversion(#[case] provid
             assert_eq!(body["store"], false);
         } else {
             assert!(body.get("store").is_none());
-        }
-        if provider == Provider::Gemini {
-            assert_eq!(call.body["project"], "fixture-project");
         }
     }
 }
@@ -284,53 +263,24 @@ async fn storage_is_locked_for_native_and_chat_requests_with_both_auth_modes(
 
 #[rstest]
 #[case(Provider::OpenAI)]
-#[case(Provider::Gemini)]
 #[tokio::test]
 async fn unified_chat_streams_use_the_configured_native_wire_operation(#[case] provider: Provider) {
     let mut replies = Vec::new();
-    if provider == Provider::Gemini {
-        replies.push(Reply::json(
-            json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"fixture-project"}),
-        ));
-        replies.push(Reply::sse(format!(
-            "data: {}\n\n",
-            json!({"response":native(provider)})
-        )));
-    } else {
-        replies.push(Reply::sse(format!(
-            "data: {}\n\ndata: {}\n\n",
-            json!({"type":"response.output_text.delta","output_index":0,"delta":"ok"}),
-            json!({"type":"response.completed","response":native(provider)})
-        )));
-    }
+    replies.push(Reply::sse(format!(
+        "data: {}\n\ndata: {}\n\n",
+        json!({"type":"response.output_text.delta","output_index":0,"delta":"ok"}),
+        json!({"type":"response.completed","response":native(provider)})
+    )));
     let proxy = mock(replies).await;
     let mut bundle = discovery::bundle(provider, &[&proxy]);
     bundle.config.models[0].name = "chat".into();
     bundle.config.models[0].discover = false;
     bundle.config.models[0].deployments[0].model = "chosen-model".into();
     bundle.config.keys[0].models.clear();
-    let operation = if provider == Provider::Gemini {
-        "stream_generate_content"
-    } else {
-        "responses"
-    };
-    let path = if provider == Provider::Gemini {
-        "/request/version"
-    } else {
-        "/version"
-    };
-    let mut profile: teellm::compatibility::Profile = serde_json::from_value(json!({"requests":{operation:{"body_set":{path:"1.1.1"},"headers":{"x-stream-version":"1.1.1"}}}})).unwrap();
-    if provider == Provider::Gemini {
-        profile.paths.insert(
-            "stream_generate_content".into(),
-            "futureStreamGenerate".into(),
-        );
-        profile.requests.insert(
-            "gemini_load".into(),
-            serde_json::from_value(json!({"body_set":{"/metadata/clientVersion":"1.1.1"}}))
-                .unwrap(),
-        );
-    }
+    let operation = "responses";
+    let path = "/version";
+    let profile: teellm::compatibility::Profile = serde_json::from_value(json!({"requests":{operation:{"body_set":{path:"1.1.1"},"headers":{"x-stream-version":"1.1.1"}}}})).unwrap();
+
     bundle
         .config
         .compatibility
@@ -351,11 +301,6 @@ async fn unified_chat_streams_use_the_configured_native_wire_operation(#[case] p
     let generation = calls.last().unwrap();
     assert_eq!(generation.body.pointer(path).unwrap(), "1.1.1");
     assert_eq!(generation.headers["x-stream-version"], "1.1.1");
-    if provider == Provider::Gemini {
-        assert_eq!(calls[0].body["metadata"]["clientVersion"], "1.1.1");
-        assert!(generation.path.ends_with(":futureStreamGenerate?alt=sse"));
-    } else {
-        assert_eq!(generation.body["stream"], true);
-        assert_eq!(generation.body["store"], false);
-    }
+    assert_eq!(generation.body["stream"], true);
+    assert_eq!(generation.body["store"], false);
 }

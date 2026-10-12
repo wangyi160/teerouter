@@ -193,46 +193,6 @@ async fn unavailable_catalog_never_falls_back_to_a_static_hint() {
 }
 
 #[tokio::test]
-async fn gemini_cli_quota_does_not_claim_to_publish_reasoning_levels() {
-    let proxy = catalog_mock(vec![
-        Reply::json(
-            json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"fixture-project"}),
-        ),
-        Reply::json(json!({"buckets":[{"modelId":"official"}]})),
-        Reply::json(json!({"response":native(Provider::Gemini)})),
-    ])
-    .await;
-    let (_, gateway) = start(Provider::Gemini, &[&proxy]).await;
-    for request in [
-        json!({"model":"official","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}),
-        json!({"model":"official","messages":[{"role":"user","content":"hi"}],"generationConfig":{"thinkingConfig":{"thinkingBudget":1024}}}),
-    ] {
-        assert_eq!(
-            post(&gateway, "/v1/chat/completions", request)
-                .await
-                .status(),
-            503
-        );
-    }
-    assert_eq!(proxy.calls.lock().unwrap().len(), 2);
-    assert_eq!(
-        post(
-            &gateway,
-            "/v1beta/models/official:generateContent",
-            json!({"contents":[{"parts":[{"text":"hi"}]}]})
-        )
-        .await
-        .status(),
-        200
-    );
-    assert!(
-        proxy.calls.lock().unwrap()[2].body["request"]
-            .get("generationConfig")
-            .is_none()
-    );
-}
-
-#[tokio::test]
 async fn official_aliases_are_accepted_without_resolving_them_to_other_ids() {
     let proxy = catalog_mock(vec![Reply::json(json!({"models":[{"id":"versioned-id","aliases":["official-alias"],"capabilities":{"reasoning_effort":["high"]}}]})), Reply::json(native(Provider::XAI))]).await;
     let (_, gateway) = start(Provider::XAI, &[&proxy]).await;

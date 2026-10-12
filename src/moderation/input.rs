@@ -34,16 +34,6 @@ pub(super) fn extract(protocol: Protocol, body: &Value, max: usize) -> Result<St
             "tool_choice",
             "output_config",
         ],
-        Protocol::Gemini => &[
-            "contents",
-            "systemInstruction",
-            "system_instruction",
-            "tools",
-            "toolConfig",
-            "tool_config",
-            "generationConfig",
-            "generation_config",
-        ],
     };
     let mut content = Map::new();
     for key in fields {

@@ -185,7 +185,7 @@ impl Capabilities {
             Ok(())
         };
         // Do not let alternate casing/snake_case or a misplaced native control
-        // bypass validation (protobuf JSON accepts multiple spellings).
+        // bypass validation, including controls from removed protocols.
         for (node, allowed) in [
             (
                 Some(body),
@@ -200,11 +200,6 @@ impl Capabilities {
             (body.get("reasoning"), &["effort"][..]),
             (body.get("output_config"), &["effort"][..]),
             (body.get("thinking"), &["budget_tokens"][..]),
-            (body.get("generationConfig"), &["thinkingConfig"][..]),
-            (
-                body.pointer("/generationConfig/thinkingConfig"),
-                &["thinkingLevel", "thinkingBudget"][..],
-            ),
         ] {
             for key in node
                 .and_then(Value::as_object)
@@ -243,7 +238,7 @@ impl Capabilities {
             ),
             ("output_config", provider == Provider::Anthropic),
             ("thinking", provider == Provider::Anthropic),
-            ("generationConfig", provider == Provider::Gemini),
+            ("generationConfig", false),
         ] {
             if body.get(key).is_some() && !accepted {
                 return Err(bad());
@@ -254,7 +249,6 @@ impl Capabilities {
             body.get("reasoning_effort"),
             body.pointer("/reasoning/effort"),
             body.pointer("/output_config/effort"),
-            body.pointer("/generationConfig/thinkingConfig/thinkingLevel"),
         ]
         .into_iter()
         .flatten()
@@ -265,7 +259,7 @@ impl Capabilities {
             check(value, &self.effort)?;
             effort = Some(value);
         }
-        for key in ["reasoning", "output_config", "generationConfig"] {
+        for key in ["reasoning", "output_config"] {
             if body.get(key).is_some_and(|v| !v.is_object()) {
                 return Err(bad());
             }
@@ -274,19 +268,7 @@ impl Capabilities {
             let object = thinking.as_object().ok_or_else(bad)?;
             check(object.get("type").ok_or_else(bad)?, &self.thinking_types)?;
         }
-        if body
-            .pointer("/generationConfig/thinkingConfig")
-            .is_some_and(|v| !v.is_object())
-        {
-            return Err(bad());
-        }
-        for budget in [
-            body.pointer("/thinking/budget_tokens"),
-            body.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        if let Some(budget) = body.pointer("/thinking/budget_tokens") {
             let value = budget.as_i64().ok_or_else(bad)?;
             let (min, max) = self.budget.ok_or_else(missing)?;
             if !(min..=max).contains(&value) {

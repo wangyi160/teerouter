@@ -5,13 +5,6 @@
       "repository": "https://github.com/BerriAI/litellm",
       "revision": "98465fe2ba4fc26ab9e6ab366c7f90f8e4d9c685",
       "license": "MIT"
-    },
-    "gemini_cli": {
-      "repository": "https://github.com/google-gemini/gemini-cli",
-      "revision": "44d764ee579610bf73c43107f5e0422cd92588b9",
-      "license": "Apache-2.0",
-      "license_file": "LICENSES/Gemini-CLI.txt",
-      "reason": "Gemini CLI Google-account/Code Assist support was absent from the inspected LiteLLM provider trees. Vertex OAuth is a different integration."
     }
   },
   "ports": [
@@ -76,24 +69,6 @@
       "adaptations": "HeaderMap replaces upstream header types. Read-only Claude Code JSON import is integration code. Full Claude consumer login/refresh was not found in the audited modules and is not claimed as implemented."
     },
     {
-      "source": "gemini_cli:packages/core/src/code_assist/{oauth2,setup,server,converter,types}.ts",
-      "functions": [
-        "getOauthClient",
-        "loadCodeAssist",
-        "onboardUser",
-        "generateContent",
-        "generateContentStream",
-        "toGenerateContentRequest",
-        "fromGenerateContentResponse"
-      ],
-      "target": [
-        "src/oauth/tokens.rs",
-        "src/oauth/gemini.rs"
-      ],
-      "retained": "Google credentials schema with expiry_date in milliseconds, loadCodeAssist/onboardUser/free-tier project rules, operation polling, Code Assist method URLs, project/model/request wrapper and response unwrapping.",
-      "adaptations": "Externally imported credentials are refreshed using reqwest form requests; no browser authorization or callback listener. Explicit per-account vault names, a 2-minute onboarding polling limit, malformed-response rejection and per-deployment project cache. Keychain, workload identity, paid credits and CLI UI are omitted. Published source does not embed Google OAuth application credentials. Configure client_id and a client_secret_ref externally for oauth_refresh; missing values fail before network access."
-    },
-    {
       "source": "litellm:litellm/completion_extras/litellm_responses_transformation/transformation.py",
       "functions": [
         "LiteLLMResponsesTransformationHandler._convert_chat_completion_messages_to_responses_input",
@@ -106,20 +81,6 @@
       ],
       "retained": "Leading system messages as instructions; message roles; text/images; function call/output mapping; tool-choice flattening; reasoning item replay; usage/finish mapping.",
       "adaptations": "Selected common Chat subset. One assistant choice aggregates text and function calls; streaming adapter is router integration code. Custom/built-in tools and advanced Responses content use the native endpoint."
-    },
-    {
-      "source": "litellm:litellm/llms/vertex_ai/gemini/transformation.py",
-      "functions": [
-        "gemini_convert_messages_with_history",
-        "_collect_tool_call_thought_signatures",
-        "transform_system_message"
-      ],
-      "target": [
-        "src/oauth/gemini_bridge.rs",
-        "src/oauth/bridge.rs"
-      ],
-      "retained": "Selected common message conversion: user/model roles, merged consecutive turns, system instruction, function calls/results, tool signature replay without duplicate text signatures.",
-      "adaptations": "Used as format-conversion reference only; authentication is Gemini CLI, not Vertex. Selected Chat parameters and base64/gs images; unsupported input returns 400. Native Gemini fields bypass Chat conversion. Streaming envelopes and token settlement are router integration code."
     },
     {
       "source": "litellm:litellm-rust/crates/{framer,llms,core-utils}",
@@ -153,7 +114,7 @@
   },
   "proxy_adaptation": {
     "implementation": "New Rust network/storage integration; upstream OAuth algorithms retained.",
-    "behavior": "Mandatory explicit HTTP/HTTPS/SOCKS5H account proxy for official providers; credentials/configuration are kept in router memory and exported through authenticated checkpoints for encrypted persistence by an external management service. Model, discovery, refresh and onboarding calls use the same binding. No environment proxy or direct fallback. The optional Workbuddy lab provider may explicitly use direct:// for its compiled localhost endpoint."
+    "behavior": "Mandatory explicit HTTP/HTTPS/SOCKS5H account proxy for official providers; credentials/configuration are kept in router memory and exported through authenticated checkpoints for encrypted persistence by an external management service. Model, discovery, and refresh calls use the same binding. No environment proxy or direct fallback. The optional Workbuddy lab provider may explicitly use direct:// for its compiled localhost endpoint."
   },
   "discovery_adaptation": {
     "implementation": "New Rust catalog refresh, cache and dynamic routing integration, using upstream/provider wire formats; no hardcoded model IDs.",
@@ -170,14 +131,12 @@
       "codex_default_catalog_version": "https://github.com/openai/codex/releases/tag/rust-v0.162.0",
       "claude": "litellm:litellm/llms/anthropic/common_utils.py (_list_models, _oauth_bearer_header); https://platform.claude.com/docs/en/api/models/list",
       "grok": "https://docs.x.ai/developers/rest-api-reference/inference/models",
-      "gemini_cli": "gemini_cli:packages/core/src/code_assist/server.ts (retrieveUserQuota), types.ts (RetrieveUserQuotaResponse, BucketInfo)",
-      "gemini_api": "litellm:litellm/llms/gemini/common_utils.py (get_models); https://ai.google.dev/api/models",
       "openai_api": "litellm:litellm/llms/openai/chat/gpt_transformation.py (get_models)",
       "chatgpt_capabilities": "https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs",
       "claude_capabilities": "https://platform.claude.com/docs/en/api/http/models"
     },
     "behavior": "Mandatory account-scoped official catalog admission for every deployment, including legacy discover=false. Exact model IDs/aliases and explicit reasoning values must be supported by fresh authenticated metadata; missing evidence fails closed. Dynamic capability parsing with configurable official response pointers, no local allowlists or value rewrites. Fresh snapshots only, in memory and bound to credential revision, proxy, endpoint and profile. Scheduling, retries and pinning use each selected account catalog. Model listing exposes capabilities separately per deployment.",
-    "limitations": "Gemini CLI quota IDs are incomplete and do not publish reasoning levels/budget ranges. OpenAI/Gemini API-key catalogs and Claude manual budgets may lack required capability metadata; explicit controls fail closed without it. Omitted reasoning parameters remain omitted. Catalogs do not prove runtime model execution or all parameter combinations. Pricing imports live in the independent management platform; fixtures are not live vendor validation."
+    "limitations": "OpenAI API-key catalogs and Claude manual budgets may lack required capability metadata; explicit controls fail closed without it. Omitted reasoning parameters remain omitted. Catalogs do not prove runtime model execution or all parameter combinations. Pricing imports live in the independent management platform; fixtures are not live vendor validation."
   },
   "storage_adaptation": {
     "implementation": "New Rust integration; all router state is now memory-only.",
@@ -202,7 +161,7 @@
       "tests/router/operations.rs"
     ],
     "behavior": "Validated configuration generations, atomic in-memory updates, account health, bounded session affinity and shared limits. Checkpoints contain no user prompt/response bodies; management persists then acknowledges them. The router has no money accounting, database or backup file.",
-    "compatibility": "Declarative per-operation outbound header/query/JSON/form metadata edits after provider conversion, hot-updatable in memory and checkpointed by management. Official HTTPS hosts are compiled-in. OAuth URLs cannot be configured; OpenAI/Google refresh URLs and the xAI discovery URL are constants. Content-Type/Accept and transport headers are router-managed. Caller messages, instructions, tools, attachments, generation controls, model/reasoning values, credentials, identity and HTTP framing remain protected, including nested values and ancestor edits. Responses and OpenAI Chat Completions force store=false. Version/stream/include metadata can be adjusted subject to existing response parsers. Fixed provider adapters still require image review. Major protocol changes may still require upgrades.",
+    "compatibility": "Declarative per-operation outbound header/query/JSON/form metadata edits after provider conversion, hot-updatable in memory and checkpointed by management. Official HTTPS hosts are compiled-in. OAuth URLs cannot be configured; OpenAI refresh URL and the xAI discovery URL are constants. Content-Type/Accept and transport headers are router-managed. Caller messages, instructions, tools, attachments, generation controls, model/reasoning values, credentials, identity and HTTP framing remain protected, including nested values and ancestor edits. Responses and OpenAI Chat Completions force store=false. Version/stream/include metadata can be adjusted subject to existing response parsers. Fixed provider adapters still require image review. Major protocol changes may still require upgrades.",
     "excluded": "No full independent platform/KMS audit, strict prepaid billing or zero-loss persistence. Unknown models/reasoning fail closed against authenticated upstream discovery. Claude consumer refresh remains externally managed."
   },
   "official_passthrough_adaptation": {
@@ -222,7 +181,7 @@
       "tests/router/compatibility.rs",
       "protocol-update.example.json"
     ],
-    "validation": "Local fixtures verify all four OAuth providers' version/header/query/nested-body updates, live replacement, protected-field rejection, JSON-pointer behavior, form encoding, refresh, catalog queries and native operations beneath streaming Chat bridges. Example version numbers describe fixture behavior, not vendor-required live versions."
+    "validation": "Local fixtures verify the three retained OAuth providers' version/header/query/nested-body updates, live replacement, protected-field rejection, JSON-pointer behavior, form encoding, refresh, catalog queries and native operations beneath streaming Chat bridges. Example version numbers describe fixture behavior, not vendor-required live versions."
   },
   "administrator_restrictions": {
     "implementation": "New Rust deny-only policy, independent of immutable authenticated official catalog evidence.",

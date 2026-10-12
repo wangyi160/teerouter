@@ -93,7 +93,6 @@ impl Restrictions {
             body.get("reasoning_effort"),
             body.pointer("/reasoning/effort"),
             body.pointer("/output_config/effort"),
-            body.pointer("/generationConfig/thinkingConfig/thinkingLevel"),
         ]
         .into_iter()
         .flatten()

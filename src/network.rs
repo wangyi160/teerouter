@@ -90,12 +90,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "workbuddy-lab")]
     async fn only_workbuddy_can_explicitly_connect_directly() {
-        for provider in [
-            Provider::OpenAI,
-            Provider::Anthropic,
-            Provider::Gemini,
-            Provider::XAI,
-        ] {
+        for provider in [Provider::OpenAI, Provider::Anthropic, Provider::XAI] {
             assert!(http_client(provider, "direct://", 3).is_err());
         }
         assert!(http_client(Provider::Workbuddy, "direct://other", 3).is_err());

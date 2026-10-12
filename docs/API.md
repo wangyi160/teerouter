@@ -3,7 +3,7 @@
 
 路径相对于 router 地址；业务请求须先由独立客户端验证 TLS / TEE。
 
-用户接口使用用户 API key；管理接口使用独立管理密钥。认证头为 `Authorization: Bearer <KEY>`，兼容 `x-api-key` / `x-goog-api-key`，不接受 URL 中的 key。
+用户接口使用用户 API key；管理接口使用独立管理密钥。认证头为 `Authorization: Bearer <KEY>`，兼容 `x-api-key`，不接受 URL 中的 key。
 
 `x-router-pool` 选择账号池，`model` 保持目录中的原始 ID。思考参数取目录允许值，省略时不补写。金额和账务属于管理平台。
 
@@ -17,8 +17,6 @@
 | POST | `/v1/chat/completions` | messages 请求格式，可使用 stream；思考强度字段为 reasoning_effort。 |
 | POST | `/v1/responses` | input 请求格式，可使用 stream；思考强度字段为 reasoning.effort。不支持 background=true。 |
 | POST | `/v1/messages` | messages 请求格式，需 max_tokens；thinking 选项以模型目录为准。 |
-| POST | `/v1beta/models/{model}:generateContent` | 模型名在 URL 中，请求体使用 contents。 |
-| POST | `/v1beta/models/{model}:streamGenerateContent` | 模型名在 URL 中，返回流式数据。 |
 
 ## 健康检查与 TEE 验证
 

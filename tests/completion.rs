@@ -70,7 +70,6 @@ fn native_response() -> Value {
 
 #[rstest]
 #[case::openai(Provider::OpenAI)]
-#[case::gemini(Provider::Gemini)]
 #[case::grok(Provider::XAI)]
 #[case::claude(Provider::Anthropic)]
 #[tokio::test]
@@ -188,7 +187,6 @@ fn sse(events: &[Value]) -> String {
 
 #[rstest]
 #[case::openai(Provider::OpenAI)]
-#[case::gemini(Provider::Gemini)]
 #[case::grok(Provider::XAI)]
 #[tokio::test]
 async fn compatible_streams_preserve_tools_signatures_and_usage(#[case] provider: Provider) {

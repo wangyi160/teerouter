@@ -210,27 +210,15 @@ impl RequestProfile {
             "chat_completions" => provider != "anthropic",
             "messages" => provider == "anthropic",
             "responses" => matches!(provider, "openai" | "xai"),
-            "generate_content"
-            | "stream_generate_content"
-            | "gemini_load"
-            | "gemini_onboard"
-            | "gemini_quota"
-            | "gemini_operation" => provider == "gemini",
             "oauth_discovery" => provider == "xai",
-            "oauth_refresh" => matches!(provider, "openai" | "gemini" | "xai"),
+            "oauth_refresh" => matches!(provider, "openai" | "xai"),
             _ => false,
         };
         if !supported {
             return Err("unsupported provider request operation".into());
         }
-        if let Some(reference) = &self.client_secret_ref
-            && (provider != "gemini"
-                || operation != "oauth_refresh"
-                || reference.is_empty()
-                || reference.len() > 4096
-                || reference.chars().any(char::is_control))
-        {
-            return Err("invalid operation client secret reference".into());
+        if self.client_secret_ref.is_some() {
+            return Err("OAuth client secret references are no longer supported".into());
         }
         validate_headers(&self.headers, &self.remove_headers)?;
         if self.query.len() + self.remove_query.len() > 64 {
@@ -261,9 +249,7 @@ impl RequestProfile {
             + self.body_defaults.len()
             + self.body_remove.len()
             + self.body_null.len();
-        if count > 64
-            || (count > 0 && matches!(operation, "models" | "gemini_operation" | "oauth_discovery"))
-        {
+        if count > 64 || (count > 0 && matches!(operation, "models" | "oauth_discovery")) {
             return Err("body rules exceed limit or target a bodyless operation".into());
         }
         let mut paths: Vec<Vec<String>> = Vec::new();

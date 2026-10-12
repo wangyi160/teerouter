@@ -1,8 +1,5 @@
 //! Ports of LiteLLM ChatGPT Authenticator and XAIOAuthAuthenticator token routines.
-//! Gemini credentials use the official CLI's access_token/refresh_token/expiry_date schema.
-use super::{
-    CHATGPT_CLIENT_ID, CHATGPT_TOKEN_URL, GOOGLE_TOKEN_URL, XAI_CLIENT_ID, XAI_DISCOVERY_URL,
-};
+use super::{CHATGPT_CLIENT_ID, CHATGPT_TOKEN_URL, XAI_CLIENT_ID, XAI_DISCOVERY_URL};
 use crate::{Error, Provider};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
@@ -25,7 +22,6 @@ pub(crate) struct TokenStore {
     http: reqwest::Client,
     refresh_lock: Arc<Mutex<()>>,
     pub(crate) profile: crate::compatibility::Profile,
-    pub(crate) client_secret: Option<String>,
     pub(crate) refresh_ahead: u64,
     #[cfg(test)]
     pub test_token_endpoint: Option<String>,
@@ -49,17 +45,6 @@ impl TokenStore {
                 .get(crate::compatibility::name(provider))
                 .cloned()
                 .unwrap_or_default();
-            store.client_secret = store
-                .profile
-                .client_secret_for("oauth_refresh")
-                .map(|s| {
-                    vault
-                        .secret(s)
-                        .ok()
-                        .flatten()
-                        .ok_or(Error::OAuth("OAuth client secret missing"))
-                })
-                .transpose()?;
             store.refresh_ahead = config.operations.refresh_ahead_secs;
         }
         let data = store.read()?;
@@ -86,7 +71,6 @@ impl TokenStore {
             http,
             proxy,
             profile: Default::default(),
-            client_secret: None,
             refresh_ahead: 300,
             #[cfg(test)]
             test_token_endpoint: None,
@@ -129,15 +113,6 @@ impl TokenStore {
             if serde_json::to_value(current).ok() != serde_json::to_value(&self.profile).ok() {
                 return Err(Error::OAuth("provider profile changed; old client retired"));
             }
-            if let Some(reference) = self.profile.client_secret_for("oauth_refresh")
-                && self
-                    .vault
-                    .secret(reference)
-                    .map_err(|_| Error::OAuth("cannot read client secret"))?
-                    != self.client_secret
-            {
-                return Err(Error::OAuth("client secret changed; old client retired"));
-            }
         }
         if !self
             .vault
@@ -160,16 +135,11 @@ impl TokenStore {
         let Some(access) = token(data) else {
             return false;
         };
-        let expiry = if self.provider == Provider::Gemini {
-            data["expiry_date"].as_f64().map(|n| n / 1000.0)
-        } else {
-            data["expires_at"]
-                .as_f64()
-                .or_else(|| claims(access)["exp"].as_f64())
-        };
+        let expiry = data["expires_at"]
+            .as_f64()
+            .or_else(|| claims(access)["exp"].as_f64());
         let skew = match self.provider {
             Provider::XAI => 120.0,
-            Provider::Gemini => 300.0,
             _ => 60.0,
         };
         // Upstream Claude accepts externally managed opaque OAuth tokens without an expiry claim.
@@ -248,13 +218,9 @@ impl TokenStore {
                 account_id: None,
             });
         }
-        let expiry = if self.provider == Provider::Gemini {
-            data["expiry_date"].as_f64().map(|v| v / 1000.0)
-        } else {
-            data["expires_at"]
-                .as_f64()
-                .or_else(|| token(&data).and_then(|t| claims(t)["exp"].as_f64()))
-        };
+        let expiry = data["expires_at"]
+            .as_f64()
+            .or_else(|| token(&data).and_then(|t| claims(t)["exp"].as_f64()));
         let early = early
             && self.provider != Provider::Anthropic
             && expiry.is_some_and(|t| t <= now() + self.refresh_ahead as f64);
@@ -360,8 +326,6 @@ impl TokenStore {
             Provider::OpenAI => self.profile.json("oauth_refresh", &self.http, endpoint, reqwest::header::HeaderMap::new(), json!({"client_id":client_id,
                 "grant_type":"refresh_token","refresh_token":refresh,"scope":self.profile.scope.as_deref().unwrap_or("openid profile email")}))?.send().await?,
             Provider::XAI => self.profile.form("oauth_refresh", &self.http, endpoint, &[("grant_type","refresh_token"),("refresh_token",refresh),("client_id",client_id)])?.send().await?,
-            Provider::Gemini => self.profile.form("oauth_refresh", &self.http, endpoint, &[("grant_type","refresh_token"),("refresh_token",refresh),
-                ("client_id",client_id),("client_secret",self.client_secret.as_deref().filter(|value| !value.is_empty()).ok_or(Error::OAuth("Google OAuth client secret missing; configure oauth_refresh client_secret_ref"))?)])?.send().await?,
             Provider::Anthropic => unreachable!(),
             #[cfg(feature = "workbuddy-lab")]
             Provider::Workbuddy => return Err(Error::OAuth("API keys use external replacement")),
@@ -397,7 +361,6 @@ impl TokenStore {
         }
         match self.provider {
             Provider::OpenAI => Ok(CHATGPT_TOKEN_URL.into()),
-            Provider::Gemini => Ok(GOOGLE_TOKEN_URL.into()),
             // Read the official discovery document; imported credential metadata
             // is not trusted to select the refresh endpoint.
             Provider::XAI => discover_xai_at(&self.http, XAI_DISCOVERY_URL, &self.profile).await,
@@ -497,16 +460,6 @@ pub(crate) fn build_record(
                         .filter(|n| *n > 0.0)
                         .unwrap_or(3600.0)
             );
-        }
-        Provider::Gemini => {
-            let expires = payload["expires_in"]
-                .as_f64()
-                .filter(|n| *n > 0.0)
-                .ok_or(Error::OAuth("Google token response missing expires_in"))?;
-            record["expiry_date"] = json!(((now() + expires) * 1000.0) as u64);
-            record["token_type"] = "Bearer".into();
-            record["scope"] = payload["scope"].clone();
-            record["id_token"] = payload["id_token"].clone();
         }
         Provider::Anthropic => {
             return Err(Error::OAuth(

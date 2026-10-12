@@ -233,8 +233,8 @@ impl Catalog {
     pub fn status(&self) -> Value {
         let fetched_at = self.snapshot.read().unwrap().as_ref().map(|s| s.fetched_at);
         let state = self.refresh.try_lock();
-        json!({"source": if self.client.gemini.is_some() { "gemini_cli_quota" } else { "provider_catalog" },
-            "complete_catalog": self.client.gemini.is_none(),
+        json!({"source": "provider_catalog",
+            "complete_catalog": true,
             "fetched_at":fetched_at,
             "models":self.models().len(),
             "refreshing":state.is_err(),

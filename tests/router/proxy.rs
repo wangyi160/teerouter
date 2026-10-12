@@ -31,12 +31,6 @@ fn replies(provider: Provider) -> Vec<Reply> {
             "data: {}\n\n",
             json!({"type":"response.completed","response":native(provider)})
         ))],
-        Provider::Gemini => vec![
-            Reply::json(
-                json!({"currentTier":{"id":"free-tier"},"cloudaicompanionProject":"test-project"}),
-            ),
-            Reply::json(json!({"response":native(provider)})),
-        ],
         _ => vec![Reply::json(native(provider))],
     }
 }
@@ -47,10 +41,6 @@ async fn generate(gateway: &Running, provider: Provider) -> reqwest::Response {
             "/v1/messages",
             json!({"model":"chat","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}),
         ),
-        Provider::Gemini => (
-            "/v1beta/models/chat:generateContent",
-            json!({"contents":[{"parts":[{"text":"hello"}]}]}),
-        ),
         _ => ("/v1/responses", json!({"model":"chat","input":"hello"})),
     };
     post(gateway, path, body).await
@@ -59,7 +49,6 @@ async fn generate(gateway: &Running, provider: Provider) -> reqwest::Response {
 #[rstest]
 #[case(Provider::OpenAI)]
 #[case(Provider::Anthropic)]
-#[case(Provider::Gemini)]
 #[case(Provider::XAI)]
 #[tokio::test]
 async fn each_account_uses_its_own_authenticated_proxy_for_every_request(
@@ -90,10 +79,7 @@ async fn each_account_uses_its_own_authenticated_proxy_for_every_request(
     }
     for (i, proxy) in proxies.iter().enumerate() {
         let calls = proxy.calls.lock().unwrap();
-        assert_eq!(
-            calls.len(),
-            if provider == Provider::Gemini { 2 } else { 1 }
-        );
+        assert_eq!(calls.len(), 1);
         for call in calls.iter() {
             assert!(call.uri.starts_with("http://upstream.fixture.invalid/"));
             assert_eq!(

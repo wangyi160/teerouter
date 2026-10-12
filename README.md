@@ -5,8 +5,8 @@
 
 ## 能力
 
-- OpenAI / ChatGPT、Claude、Gemini / Gemini CLI、Grok 上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
-- Chat Completions、Responses、Messages 与 Gemini 原生接口；支持流式转发和选定格式转换。
+- OpenAI / ChatGPT、Claude / Anthropic、Grok / xAI 三类正式上游，另保留可选的 Workbuddy 测试上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
+- Chat Completions、Responses、Messages 接口；支持流式转发和选定格式转换。
 - 用户、API key、模型权限与用户并发控制；额度、价格和结算由外部管理服务负责。
 - 必需的 LockLLM 全量文本输入审核：管理员下发审核配置和密钥之前拒绝模型请求；违规立即拒绝，上游不接收该请求；用户违规统计和近期事件通过管理员用户接口查询，并随 checkpoint 同步。
 - 官方域名固定在代码中；模型与思考参数对照官方目录验证并原值传递；管理员只能屏蔽，不能伪造目录或覆盖请求内容。
@@ -44,7 +44,7 @@ cargo build --release --locked --features dstack-tdx
 
 读取 `/admin/checkpoint` 中的 `boot_id`，首次调用 `/admin/initialize` 并传入 `state: null`，再通过 `/admin/apply` 导入用户、密钥、账号池和上游配置。重启时恢复已保存的快照。管理凭证和账号数据只应在已经验证的保密通道中发送。
 
-`provision*.example.json` 展示导入结构；`config*.example.toml` 用于说明配置结构与测试，并非磁盘数据库或旧式启动配置。Gemini CLI 刷新需要外部配置与原 refresh token 对应的 OAuth 应用 `client_id` 和 `client_secret_ref`，源码不内置 Google 应用凭证。Claude 消费者 token 刷新仍由外部管理，不声称已实现完整登录流程。
+`provision*.example.json` 展示导入结构；`config*.example.toml` 用于说明配置结构与测试，并非磁盘数据库或旧式启动配置。Claude 消费者 token 刷新仍由外部管理，不声称已实现完整登录流程。
 
 ## 文档与验证
 
@@ -60,4 +60,4 @@ python -m unittest discover -s deployment/phala -p test_prepare.py
 
 本地测试使用受控上游和模拟证据，不代表真实服务账号验证或生产安全审计。内存状态的周期同步存在崩溃丢失窗口，详见运行文档。
 
-许可证：MIT 与所保留 Gemini CLI 衍生部分的 Apache-2.0；依赖各自适用其许可证。
+许可证：MIT；依赖各自适用其许可证。

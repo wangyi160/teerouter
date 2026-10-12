@@ -195,13 +195,7 @@ impl Vault {
             let provider = provider_id(account.provider);
             let profile_changed =
                 serde_json::to_value(old.bundle.config.compatibility.get(provider)).ok()
-                    != serde_json::to_value(candidate.config.compatibility.get(provider)).ok()
-                    || candidate
-                        .config
-                        .compatibility
-                        .get(provider)
-                        .and_then(|p| p.client_secret_for("oauth_refresh"))
-                        .is_some_and(|r| old.bundle.secrets.get(r) != candidate.secrets.get(r));
+                    != serde_json::to_value(candidate.config.compatibility.get(provider)).ok();
             if changed.contains(name) || profile_changed {
                 *data.account_revisions.entry(name.clone()).or_default() += 1;
                 data.health.remove(name);

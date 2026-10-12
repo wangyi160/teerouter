@@ -14,7 +14,7 @@ max_concurrent = 16
 user_id = "test-user"
 name = "local"
 key_env = "TEELLM_API_KEY" # Router access key, not a provider API key.
-models = ["chat/*", "claude/*", "gemini/*", "grok/*"] # Pool ACLs; model is passed unchanged.
+models = ["chat/*", "claude/*", "grok/*"] # Pool ACLs; model is passed unchanged.
 max_concurrent = 16
 
 [[models]]
@@ -47,20 +47,6 @@ model = "env:ANTHROPIC_MODEL"
 # Claude Code manages login/refresh; import renewed credentials into the vault.
 oauth_file = "accounts/claude-1.json"
 proxy = "http://127.0.0.1:18083"
-enabled = false
-
-[[models]]
-name = "gemini"
-[[models.deployments]]
-id = "gemini-cli-account-1"
-provider = "gemini"
-model = "env:GEMINI_MODEL"
-oauth_file = "accounts/gemini-1.json"
-proxy = "socks5h://127.0.0.1:18084"
-# Or point directly to Gemini CLI's ~/.gemini/oauth_creds.json.
-# gemini_project = "your-project-id" # For accounts requiring a project.
-# Default OAuth API: https://cloudcode-pa.googleapis.com/v1internal
-timeout_secs = 150
 enabled = false
 
 [[models]]

@@ -94,6 +94,8 @@ pub(crate) fn content_field(key: &str) -> bool {
 pub struct Profile {
     pub headers: BTreeMap<String, String>,
     pub client_id: Option<String>,
+    /// Legacy null-only field retained for checkpoints written before provider removal.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret_ref: Option<String>,
     pub scope: Option<String>,
     pub paths: BTreeMap<String, String>,
@@ -105,24 +107,20 @@ pub(crate) fn name(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAI => "openai",
         Provider::Anthropic => "anthropic",
-        Provider::Gemini => "gemini",
         Provider::XAI => "xai",
         #[cfg(feature = "workbuddy-lab")]
         Provider::Workbuddy => "workbuddy",
     }
 }
 impl Profile {
-    pub(crate) fn client_secret_for(&self, operation: &str) -> Option<&String> {
-        self.requests
-            .get(operation)
-            .and_then(|r| r.client_secret_ref.as_ref())
-            .or(self.client_secret_ref.as_ref())
-    }
     pub fn validate(&self, provider: &str) -> Result<(), String> {
-        if !matches!(provider, "openai" | "anthropic" | "gemini" | "xai")
+        if !matches!(provider, "openai" | "anthropic" | "xai")
             && !(cfg!(feature = "workbuddy-lab") && provider == "workbuddy")
         {
             return Err("unknown compatibility provider".into());
+        }
+        if self.client_secret_ref.is_some() {
+            return Err("OAuth client secret references are no longer supported".into());
         }
         wire::validate_headers(&self.headers, &[])?;
         self.catalog_capabilities.validate()?;
@@ -136,10 +134,7 @@ impl Profile {
         for (operation, request) in &self.requests {
             request.validate(provider, operation)?;
         }
-        for value in [&self.client_id, &self.client_secret_ref, &self.scope]
-            .into_iter()
-            .flatten()
-        {
+        for value in [&self.client_id, &self.scope].into_iter().flatten() {
             if value.is_empty() || value.len() > 4096 || value.bytes().any(|b| b.is_ascii_control())
             {
                 return Err("invalid OAuth metadata".into());
@@ -162,16 +157,7 @@ impl Profile {
         for (key, path) in &self.paths {
             if !matches!(
                 key.as_str(),
-                "responses"
-                    | "messages"
-                    | "chat_completions"
-                    | "models"
-                    | "language_models"
-                    | "generate_content"
-                    | "stream_generate_content"
-                    | "gemini_load"
-                    | "gemini_onboard"
-                    | "gemini_quota"
+                "responses" | "messages" | "chat_completions" | "models" | "language_models"
             ) || path.is_empty()
                 || path.len() > 512
                 || path.starts_with('/')
@@ -183,17 +169,6 @@ impl Profile {
                     .any(|p| p.is_empty() || p == "." || p == "..")
             {
                 return Err("invalid vendor relative path".into());
-            }
-            if matches!(
-                key.as_str(),
-                "generate_content"
-                    | "stream_generate_content"
-                    | "gemini_load"
-                    | "gemini_onboard"
-                    | "gemini_quota"
-            ) && !path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            {
-                return Err("Gemini method must be an identifier".into());
             }
         }
         Ok(())

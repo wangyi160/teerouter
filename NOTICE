@@ -13,7 +13,8 @@ Compatible-provider parameter mapping follows litellm-rust/crates/llms/src/
 openai_like/chat/transformation.rs.
 
 Modifications remove the surrounding workspace and platform dependencies,
-restrict providers to four, introduce a standalone HTTP client, and implement
+restrict official providers to OpenAI, Claude and Grok, retain an optional Workbuddy
+test provider, introduce a standalone HTTP client, and implement
 tool, image and streaming support missing from the upstream Rust chat path.
 
 The standalone HTTP server, authentication, configuration, multi-deployment
@@ -25,22 +26,13 @@ OAuth ports added from the same LiteLLM revision:
 - litellm/llms/xai/oauth.py and its Chat/Responses integration
 - litellm-rust/crates/llms/src/anthropic/common_utils.rs (Rust extraction)
 - litellm/completion_extras/litellm_responses_transformation/transformation.py
-- litellm/llms/vertex_ai/gemini/transformation.py (selected message conversions)
 The ChatGPT default instruction text is retained in src/oauth/chatgpt_instructions.txt.
 Selected upstream authentication test cases were adapted into Rust tests.
-
-Gemini CLI OAuth and Code Assist code derives from google-gemini/gemini-cli.
-Copyright 2025 Google LLC. Licensed under Apache-2.0; see LICENSES/Gemini-CLI.txt.
-Upstream: https://github.com/google-gemini/gemini-cli
-Revision: 44d764ee579610bf73c43107f5e0422cd92588b9
-Sources: packages/core/src/code_assist/{oauth2,setup,server,converter,types}.ts
-Modified into Rust with revision-controlled named accounts, reqwest transport and a
-standalone router integration. No Google TypeScript runtime is required.
 
 UPSTREAM.json records ported functions, integration changes and validation.
 
 Automatic model discovery is a new Rust integration using provider REST schemas,
-LiteLLM model-list/OAuth header behavior, Gemini CLI retrieveUserQuota types, and
+LiteLLM model-list/OAuth header behavior and
 the Codex model endpoint/query schema. It does not copy Codex implementation code
 or a static model catalog. Pinned protocol references are recorded in UPSTREAM.json.
 
