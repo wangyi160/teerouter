@@ -1,0 +1,523 @@
+use super::*;
+use crate::router::Engine;
+use axum::{Json, Router, routing::any};
+use reqwest::Method;
+
+const ADMIN: &str = "platform-admin";
+fn root() -> Arc<Runtime> {
+    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":"alice"},{"id":"bob"}],"keys":[{"name":"alice-key","user_id":"alice","key_ref":"ALICE"},{"name":"bob-key","user_id":"bob","key_ref":"BOB"}],"models":[]})).unwrap();
+    Runtime::new(
+        Engine::new(config, |k| {
+            Some(
+                match k {
+                    "ADMIN" => ADMIN,
+                    "ALICE" => "alice-key",
+                    _ => "bob-key",
+                }
+                .into(),
+            )
+        })
+        .unwrap(),
+    )
+}
+fn registration(token: &str) -> Registration {
+    serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["alice"]})).unwrap()
+}
+fn update(revision: u64) -> Value {
+    json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[{"user_id":"alice","enabled":true,"models":[],"max_concurrent":16}],"prices":[{"pool":"official","model":"model-test","input":1000000,"output":2000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
+}
+async fn add(root: &Runtime, token: &str) -> Arc<Live> {
+    register(root, registration(token), ADMIN).await.unwrap();
+    unlock(root, token, 0).await.unwrap();
+    apply(root, token, serde_json::from_value(update(1)).unwrap())
+        .await
+        .unwrap();
+    live(root, &crypto::identity(token)).unwrap()
+}
+struct Server {
+    url: String,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+async fn serve(app: Router) -> Server {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    Server { url, task }
+}
+async fn call(s: &Server, method: Method, path: &str, token: &str, body: Value) -> (u16, Value) {
+    let r = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .request(method, format!("{}{path}", s.url))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let value = r.json().await.unwrap();
+    (status, value)
+}
+// HTTP fixture is injected only inside this cfg(test) module, never through a merchant API.
+async fn fixture(live: &Live, reply: Value) -> Server {
+    let mock = serve(
+        Router::new()
+            .route(
+                "/v1/models",
+                any(|| async { Json(json!({"data":[{"id":"model-test"}]})) }),
+            )
+            .fallback(any(move || {
+                let r = reply.clone();
+                async move { Json(r) }
+            })),
+    )
+    .await;
+    let mut config = live.runtime.engine().config.clone();
+    let d = &mut config.models[0].deployments[0];
+    d.api_base = Some(format!("{}/v1", mock.url));
+    d.proxy = Some(mock.url.clone());
+    d.enabled = true;
+    live.runtime
+        .apply(
+            Update {
+                config: Some(serde_json::to_value(config).unwrap()),
+                ..Update::default()
+            },
+            &live.admin,
+        )
+        .await
+        .unwrap();
+    mock
+}
+fn completion() -> Value {
+    json!({"id":"reply","model":"model-test","choices":[{"index":0,"message":{"role":"assistant","content":null,"refusal":"Provider declined this request"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}})
+}
+
+#[tokio::test]
+async fn unified_platform_rpm_is_shared_across_merchants() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let la = add(&r, &a).await;
+    let lb = add(&r, &b).await;
+    let _ma = fixture(&la, completion()).await;
+    let _mb = fixture(&lb, completion()).await;
+    let mut config = r.engine().config.clone();
+    config.keys[0].rpm = 1;
+    r.apply(
+        Update {
+            config: Some(serde_json::to_value(config).unwrap()),
+            ..Update::default()
+        },
+        ADMIN,
+    )
+    .await
+    .unwrap();
+    let server = serve(crate::server::app_runtime(r)).await;
+    for (token, expected) in [(&a, 200), (&b, 429)] {
+        let body = json!({"model":format!("{}/model-test",crypto::identity(token)),"messages":[{"role":"user","content":"hello"}]});
+        let (status, result) = call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            body,
+        )
+        .await;
+        assert_eq!(status, expected, "{result}");
+    }
+}
+
+#[tokio::test]
+async fn merchant_concurrency_cap_is_enforced_and_released() {
+    let r = root();
+    let a = "a".repeat(64);
+    let l = add(&r, &a).await;
+    let _mock = fixture(&l, completion()).await;
+    let mut registration = registration(&a);
+    registration.max_concurrent = 1;
+    register(&r, registration, ADMIN).await.unwrap();
+    let held = l.gate.acquire(1).unwrap();
+    let server = serve(crate::server::app_runtime(r)).await;
+    let body = json!({"model":format!("{}/model-test",crypto::identity(&a)),"messages":[{"role":"user","content":"hello"}]});
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            body.clone()
+        )
+        .await
+        .0,
+        429
+    );
+    drop(held);
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            body
+        )
+        .await
+        .0,
+        200
+    );
+}
+
+#[tokio::test]
+async fn namespaced_model_acl_accepts_only_its_merchant() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let la = add(&r, &a).await;
+    let lb = add(&r, &b).await;
+    let _ma = fixture(&la, completion()).await;
+    let _mb = fixture(&lb, completion()).await;
+    let mut config = r.engine().config.clone();
+    config.keys[0].models = vec![format!("{}/model-test", crypto::identity(&a))];
+    r.apply(
+        Update {
+            config: Some(serde_json::to_value(config).unwrap()),
+            ..Update::default()
+        },
+        ADMIN,
+    )
+    .await
+    .unwrap();
+    let server = serve(crate::server::app_runtime(r)).await;
+    for (token, expected) in [(&a, 200), (&b, 403)] {
+        let (status, result) = call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            json!({"model":format!("{}/model-test",crypto::identity(token)),"messages":[{"role":"user","content":"hello"}]}),
+        )
+        .await;
+        assert_eq!(status, expected, "{result}");
+    }
+}
+
+#[cfg(feature = "workbuddy-lab")]
+#[tokio::test]
+async fn workbuddy_needs_merchant_permission_and_cannot_be_an_official_fallback() {
+    let r = root();
+    let a = "a".repeat(64);
+    add(&r, &a).await;
+    let mut v = update(2);
+    v["pools"][0]["provider"] = "workbuddy".into();
+    v["pools"][0]["deployments"][0]["provider"] = "workbuddy".into();
+    assert!(
+        apply(&r, &a, serde_json::from_value(v.clone()).unwrap())
+            .await
+            .is_err()
+    );
+    let mut reg = registration(&a);
+    reg.allow_test = true;
+    register(&r, reg, ADMIN).await.unwrap();
+    apply(&r, &a, serde_json::from_value(v).unwrap())
+        .await
+        .unwrap();
+    let l = live(&r, &crypto::identity(&a)).unwrap();
+    let mut config = l.runtime.engine().config.clone();
+    let mut official = config.models[0].clone();
+    official.name = "other".into();
+    official.provider = Some(crate::Provider::OpenAI);
+    official.deployments[0].id = "other".into();
+    official.deployments[0].provider = crate::Provider::OpenAI;
+    official.fallbacks = vec!["official".into()];
+    config.models.push(official);
+    assert!(config.validate().is_err());
+}
+
+#[tokio::test]
+async fn merchant_credentials_are_separate_and_root_backups_are_opaque() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    add(&r, &a).await;
+    add(&r, &b).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    for (token, path) in [
+        (&a, "/admin/checkpoint"),
+        (&a, "/admin/accounts/account/credential"),
+        (&a, "/v1/models"),
+        (&ADMIN.to_owned(), "/merchant/state"),
+        (&"alice-key".to_owned(), "/merchant/state"),
+    ] {
+        assert!(call(&server, Method::GET, path, token, Value::Null).await.0 >= 400);
+    }
+    let (status, value) = call(&server, Method::GET, "/merchant/state", &a, Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(value["merchant"]["id"], crypto::identity(&a));
+    assert!(!value.to_string().contains("MERCHANT_PRIVATE"));
+    assert!(!value.to_string().contains(&crypto::identity(&b)));
+    checkpoint_all(&r).await.unwrap();
+    let serialized = serde_json::to_string(&*r.engine().vault.lock().unwrap()).unwrap();
+    assert!(!serialized.contains("MERCHANT_PRIVATE"));
+    assert!(!serialized.contains(&a));
+    assert!(serialized.contains("ciphertext"));
+}
+
+#[tokio::test]
+async fn updates_cannot_select_foreign_users_internal_secrets_or_untrusted_endpoints() {
+    let r = root();
+    let a = "a".repeat(64);
+    add(&r, &a).await;
+    let mut cases = vec![];
+    let mut v = update(2);
+    v["customers"][0]["user_id"] = "bob".into();
+    cases.push(v);
+    let mut v = update(2);
+    v["secrets"]["merchant_internal_admin"] = "overwrite".into();
+    cases.push(v);
+    let mut v = update(2);
+    v["pools"][0]["deployments"][0]["api_key_ref"] = "merchant_internal_admin".into();
+    cases.push(v);
+    let mut v = update(2);
+    v["pools"][0]["deployments"][0]["api_base"] = "https://third-party.example/v1".into();
+    cases.push(v);
+    let mut v = update(2);
+    v["pools"][0]["fallbacks"] = json!(["another-merchant"]);
+    cases.push(v);
+    for v in cases {
+        assert!(
+            apply(&r, &a, serde_json::from_value(v).unwrap())
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        live(&r, &crypto::identity(&a))
+            .unwrap()
+            .settings
+            .lock()
+            .unwrap()
+            .revision,
+        2
+    );
+    assert!(
+        apply(&r, &a, serde_json::from_value(update(1)).unwrap())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn recovery_rejects_tampering_wrong_identity_and_revision_rollback() {
+    let r = root();
+    let a = "a".repeat(64);
+    add(&r, &a).await;
+    let id = crypto::identity(&a);
+    let backup = records(&r).unwrap()[0].backup.clone().unwrap();
+    assert!(crypto::open(&id, &crypto::key(&"b".repeat(64)), &backup).is_err());
+    assert!(crypto::open("another-merchant", &crypto::key(&a), &backup).is_err());
+    let mut bad = backup.clone();
+    bad.ciphertext.replace_range(0..4, "AAAA");
+    assert!(crypto::open(&id, &crypto::key(&a), &bad).is_err());
+    r.merchants.live.lock().unwrap().clear();
+    assert!(unlock(&r, &a, 3).await.is_err());
+    let restored = unlock(&r, &a, 2).await.unwrap();
+    assert_eq!(restored["settings"]["revision"], 2);
+    assert_eq!(restored["settings"]["customers"][0]["user_id"], "alice");
+    assert_eq!(
+        live(&r, &id)
+            .unwrap()
+            .runtime
+            .engine()
+            .vault
+            .snapshot()
+            .unwrap()
+            .bundle
+            .secrets["upstream"],
+        "MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"
+    );
+}
+
+#[tokio::test]
+async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let la = add(&r, &a).await;
+    let lb = add(&r, &b).await;
+    let _ma = fixture(&la, completion()).await;
+    let _mb = fixture(&lb, completion()).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let (_, models) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    assert_eq!(models["data"].as_array().unwrap().len(), 2);
+    let (_, bob) = call(&server, Method::GET, "/v1/models", "bob-key", Value::Null).await;
+    assert!(bob["data"].as_array().unwrap().is_empty());
+    for token in [&a, &b] {
+        let body = json!({"model":format!("{}/model-test",crypto::identity(token)),"messages":[{"role":"user","content":"REQUEST_BODY_MUST_NOT_BE_SAVED"}]});
+        let (status, result) = call(
+            &server,
+            Method::POST,
+            "/v1/chat/completions",
+            "alice-key",
+            body,
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+    }
+    let (_, global) = call(&server, Method::GET, "/admin/refusals", ADMIN, Value::Null).await;
+    assert_eq!(global["data"].as_array().unwrap().len(), 2);
+    assert_eq!(global["last_id"], 2);
+    assert!(global["data"][0]["merchant_id"].is_string());
+    assert!(
+        !global
+            .to_string()
+            .contains("REQUEST_BODY_MUST_NOT_BE_SAVED")
+    );
+    for token in [&a, &b] {
+        let (_, usage) = call(&server, Method::GET, "/merchant/usage", token, Value::Null).await;
+        assert_eq!(usage["data"].as_array().unwrap().len(), 1);
+        assert_eq!(usage["data"][0]["event"]["merchant_price_version"], 2);
+        assert_eq!(
+            usage["data"][0]["event"]["merchant_pricing"]["input"],
+            1000000
+        );
+    }
+    assert_eq!(
+        r.engine().vault.lock().unwrap().usage["alice-key"].requests,
+        2
+    );
+    let (status, _) = call(
+        &server,
+        Method::DELETE,
+        "/merchant/refusals?through_id=1",
+        &a,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        la.runtime
+            .engine()
+            .vault
+            .lock()
+            .unwrap()
+            .refusal_queue
+            .events
+            .len(),
+        0
+    );
+    assert_eq!(
+        lb.runtime
+            .engine()
+            .vault
+            .lock()
+            .unwrap()
+            .refusal_queue
+            .events
+            .len(),
+        1
+    );
+    assert_eq!(
+        r.engine().vault.lock().unwrap().refusal_queue.events.len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn explicit_selection_prices_and_revocation_fail_closed() {
+    let r = root();
+    let a = "a".repeat(64);
+    let l = add(&r, &a).await;
+    let _mock = fixture(&l, completion()).await;
+    let id = crypto::identity(&a);
+    let request = || json!({"model":format!("{id}/model-test"),"messages":[]});
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-router-pool",
+        format!("{}.official", crypto::identity(&"b".repeat(64)))
+            .parse()
+            .unwrap(),
+    );
+    assert!(
+        routing::execute(
+            &r,
+            r.engine(),
+            0,
+            crate::router::Protocol::Chat,
+            &format!("{id}/model-test"),
+            request(),
+            headers,
+            "one".into()
+        )
+        .await
+        .is_err()
+    );
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-router-price-version", "1".parse().unwrap());
+    let result = routing::execute(
+        &r,
+        r.engine(),
+        0,
+        crate::router::Protocol::Chat,
+        &format!("{id}/model-test"),
+        request(),
+        headers,
+        "two".into(),
+    )
+    .await;
+    assert!(matches!(result,Err(e) if e.status==409));
+    let mut reg = registration(&a);
+    reg.enabled = false;
+    register(&r, reg, ADMIN).await.unwrap();
+    assert!(routing::selections(&r, "alice").await.unwrap().is_empty());
+    assert!(authenticate(&r, &a).is_err());
+}
+
+#[tokio::test]
+async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let la = add(&r, &a).await;
+    let lb = add(&r, &b).await;
+    let _ma = fixture(&la, completion()).await;
+    let _mb = fixture(&lb, completion()).await;
+    let mut config = r.engine().config.clone();
+    config.keys[0].models = vec![format!("{}.official/*", crypto::identity(&a))];
+    r.apply(
+        Update {
+            config: Some(serde_json::to_value(config).unwrap()),
+            ..Update::default()
+        },
+        ADMIN,
+    )
+    .await
+    .unwrap();
+    let server = serve(crate::server::app_runtime(r)).await;
+    let (_, catalog) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
+    assert!(!catalog.to_string().contains(&crypto::identity(&b)));
+    let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    assert_eq!(pools["data"].as_array().unwrap().len(), 1);
+    let (_, merchants) = call(
+        &server,
+        Method::GET,
+        "/v1/merchants",
+        "alice-key",
+        Value::Null,
+    )
+    .await;
+    let other = merchants["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == crypto::identity(&b))
+        .unwrap();
+    assert!(other["prices"].as_array().unwrap().is_empty());
+}

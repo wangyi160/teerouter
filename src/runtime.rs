@@ -3,6 +3,7 @@ use crate::{error::ApiError, resources::Gate, router::Engine, vault::operations:
 use std::sync::{Arc, RwLock};
 
 pub(crate) struct Runtime {
+    pub merchants: crate::merchants::Registry,
     current: RwLock<Arc<Engine>>,
     pub ingress: Arc<Gate>,
     write: tokio::sync::Mutex<()>,
@@ -11,6 +12,7 @@ pub(crate) struct Runtime {
 impl Runtime {
     pub fn new(engine: Arc<Engine>) -> Arc<Self> {
         let runtime = Arc::new(Self {
+            merchants: Default::default(),
             current: RwLock::new(engine),
             ingress: Arc::default(),
             write: tokio::sync::Mutex::new(()),
@@ -81,6 +83,13 @@ impl Runtime {
             None => old.vault.lock().map_err(storage)?.clone(),
         };
         crate::refusal::restore(&mut data).map_err(|_| invalid())?;
+        if data
+            .merchants
+            .iter()
+            .any(|(id, item)| id != &item.id || !item.validate())
+        {
+            return Err(invalid());
+        }
         let bundle = data.bundle.as_mut().ok_or_else(invalid)?;
         bundle.config.server.bind = old.config.server.bind;
         let admin = bundle

@@ -47,6 +47,7 @@ cargo build --release --locked --features dstack-tdx
 ## 文档与验证
 
 - [架构](ARCHITECTURE.md)、[运行和恢复](OPERATIONS.md)、[接口索引](docs/API.md)、[TEE 安全边界](SECURITY-TEE.md)。
+- [多商户、统一平台 key 与商户 TEE 通道](docs/MERCHANTS.md)。商户工作台独立于 router 和平台管理端。
 - [上游拒答记录](docs/API.md#上游拒答队列)、[同步与保留范围](OPERATIONS.md#上游拒答审计)。无需额外安全 API 密钥；普通文本拒答不自动分类，未收到拒答信号不表示请求合规。
 
 ```sh

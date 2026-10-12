@@ -390,6 +390,10 @@ pub(crate) struct Event {
     pub key: String,
     pub model: String,
     pub pool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merchant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merchant_price_version: Option<u64>,
     pub deployment: Option<String>,
     pub created_at: u64,
     pub status: u16,
@@ -406,6 +410,8 @@ impl Event {
             model: audit["model"].as_str().unwrap_or_default().into(),
             created_at: audit["created_at"].as_u64().unwrap_or_default(),
             pool: audit["pool"].as_str().map(str::to_owned),
+            merchant_id: audit["merchant_id"].as_str().map(str::to_owned),
+            merchant_price_version: audit["merchant_price_version"].as_u64(),
             deployment: audit["deployment"].as_str().map(str::to_owned),
             status: audit["status"].as_u64().unwrap_or_default() as u16,
             attempts: audit["attempts"].as_u64().unwrap_or_default(),

@@ -1490,6 +1490,7 @@ dependencies = [
  "libc",
  "rcgen",
  "reqwest",
+ "ring",
  "rstest",
  "rustls",
  "serde",

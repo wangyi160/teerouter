@@ -22,7 +22,7 @@ use crate::{
 };
 
 #[path = "server/admin.rs"]
-mod admin;
+pub(crate) mod admin;
 use admin::*;
 #[path = "server/refusals.rs"]
 mod refusals;
@@ -31,6 +31,7 @@ mod users;
 
 #[derive(Clone)]
 struct Identity {
+    runtime: Arc<crate::runtime::Runtime>,
     engine: Arc<Engine>,
     account: Option<usize>,
     request_id: String,
@@ -38,6 +39,9 @@ struct Identity {
 
 pub fn app(engine: Arc<Engine>) -> Router {
     let runtime = crate::runtime::Runtime::new(engine);
+    app_runtime(runtime)
+}
+pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
             "/health/live",
@@ -47,6 +51,16 @@ pub fn app(engine: Arc<Engine>) -> Router {
         .route("/v1/models", get(models))
         .route("/v1/pools", get(pools))
         .route("/v1/usage", get(usage))
+        .route("/v1/identity", get(user_identity))
+        .route("/v1/merchants", get(user_merchants))
+        .route(
+            "/admin/merchants",
+            get(crate::merchants::http::platform_list).put(crate::merchants::http::platform_put),
+        )
+        .route(
+            "/merchant/{*path}",
+            axum::routing::any(crate::merchants::http::dispatch),
+        )
         .route("/v1/chat/completions", post(generate))
         .route("/v1/messages", post(generate))
         .route("/v1/responses", post(generate))
@@ -111,6 +125,12 @@ async fn authenticate(
     let health_request = matches!(path, "/health/live" | "/health/ready");
     let mut result = if health_request {
         Ok(None)
+    } else if path.starts_with("/merchant/") {
+        credential(request.headers())
+            .ok_or_else(|| {
+                ApiError::new(401, "authentication_error", "Merchant credential required")
+            })
+            .and_then(|token| crate::merchants::authenticate(&runtime, token).map(|_| None))
     } else if path.starts_with("/admin/") {
         if !engine.admin_enabled() {
             Err(ApiError::new(404, "not_found", "Admin API is disabled"))
@@ -161,6 +181,7 @@ async fn authenticate(
     let mut response = match result {
         Ok(account) => {
             request.extensions_mut().insert(Identity {
+                runtime: runtime.clone(),
                 engine: engine.clone(),
                 account,
                 request_id: request_id.clone(),
@@ -184,7 +205,7 @@ async fn authenticate(
     response
 }
 
-fn credential(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn credential(headers: &HeaderMap) -> Option<&str> {
     // Never accept credentials in URL queries or forward client credentials upstream.
     if let Some(value) = headers.get("authorization") {
         let (scheme, key) = value.to_str().ok()?.split_once(' ')?;
@@ -198,7 +219,14 @@ fn credential(headers: &HeaderMap) -> Option<&str> {
 
 async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response {
     let engine = runtime.engine();
-    if engine.ready() {
+    let merchant_ready = runtime
+        .merchants
+        .live
+        .lock()
+        .unwrap()
+        .values()
+        .any(|m| m.runtime.engine().ready());
+    if engine.ready() || (engine.vault.serving() && merchant_ready) {
         Json(json!({"status":"ready"})).into_response()
     } else {
         ApiError::new(
@@ -211,24 +239,13 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
 }
 
 async fn models(request: Request) -> Result<Json<Value>, ApiError> {
-    let engine = request
-        .extensions()
-        .get::<Identity>()
-        .unwrap()
-        .engine
-        .clone();
-    Ok(Json(
-        engine
-            .models(
-                request
-                    .extensions()
-                    .get::<Identity>()
-                    .unwrap()
-                    .account
-                    .unwrap(),
-            )
-            .await,
-    ))
+    let identity = request.extensions().get::<Identity>().unwrap();
+    let account = identity.account.unwrap();
+    let mut result = identity.engine.models(account).await;
+    let merchants =
+        crate::merchants::routing::models(&identity.runtime, &identity.engine, account).await?;
+    result["data"].as_array_mut().unwrap().extend(merchants);
+    Ok(Json(result))
 }
 
 async fn discovery_status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
@@ -236,9 +253,33 @@ async fn discovery_status(State(runtime): State<Arc<crate::runtime::Runtime>>) -
     Json(engine.discovery_status())
 }
 
-async fn pools(request: Request) -> Json<Value> {
+async fn pools(request: Request) -> Result<Json<Value>, ApiError> {
     let identity = request.extensions().get::<Identity>().unwrap();
-    Json(identity.engine.pools(identity.account.unwrap()))
+    let mut result = identity.engine.pools(identity.account.unwrap());
+    result["data"].as_array_mut().unwrap().extend(
+        crate::merchants::routing::pools(
+            &identity.runtime,
+            &identity.engine,
+            identity.account.unwrap(),
+        )
+        .await?,
+    );
+    Ok(Json(result))
+}
+async fn user_identity(request: Request) -> Json<Value> {
+    let identity = request.extensions().get::<Identity>().unwrap();
+    Json(json!({"user_id":identity.engine.config.keys[identity.account.unwrap()].user_id}))
+}
+async fn user_merchants(request: Request) -> Result<Json<Value>, ApiError> {
+    let identity = request.extensions().get::<Identity>().unwrap();
+    let user = &identity.engine.config.keys[identity.account.unwrap()].user_id;
+    Ok(Json(
+        json!({"data":crate::merchants::routing::selections(&identity.runtime,user).await?.into_iter().map(|s| {
+            let settings=&s.settings;
+            json!({"id":s.item.id,"name":s.item.name,"price_version":settings.revision,
+                "prices":settings.prices.iter().filter(|p|s.engine.model_allowed(s.account,&p.pool,&p.model) && crate::merchants::routing::platform_allows(&identity.engine,identity.account.unwrap(),&format!("{}.{}",s.item.id,p.pool),&p.model)).collect::<Vec<_>>()})
+        }).collect::<Vec<_>>()}),
+    ))
 }
 async fn refresh_models(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
     let engine = runtime.engine();
@@ -331,7 +372,12 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         ));
     }
     let mut headers = HeaderMap::new();
-    for name in ["x-router-session", "x-router-account", "x-router-pool"] {
+    for name in [
+        "x-router-session",
+        "x-router-account",
+        "x-router-pool",
+        "x-router-price-version",
+    ] {
         if let Some(value) = parts.headers.get(name) {
             headers.insert(name, value.clone());
         }
@@ -343,8 +389,17 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             }
         }
     }
-    let routed = engine
-        .execute(
+    let merchant_request = alias
+        .split_once('/')
+        .is_some_and(|(id, _)| id.starts_with("m_"))
+        || headers
+            .get("x-router-pool")
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|p| p.starts_with("m_") && p.contains('.'));
+    let (routed, merchant_guard) = if merchant_request {
+        let result = crate::merchants::routing::execute(
+            &identity.runtime,
+            engine.clone(),
             identity.account.unwrap(),
             protocol,
             &alias,
@@ -353,6 +408,25 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             identity.request_id.clone(),
         )
         .await?;
+        (
+            result.routed,
+            Some((result.permit, result.merchant, result.price_version)),
+        )
+    } else {
+        (
+            engine
+                .execute(
+                    identity.account.unwrap(),
+                    protocol,
+                    &alias,
+                    body,
+                    headers,
+                    identity.request_id.clone(),
+                )
+                .await?,
+            None,
+        )
+    };
     let mut response = match routed.output {
         Output::Json(value) => Json(value).into_response(),
         Output::Stream(stream) => {
@@ -377,6 +451,21 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         "x-router-attempts",
         HeaderValue::from_str(&routed.attempts.to_string()).unwrap(),
     );
+    if let Some((permit, merchant, version)) = merchant_guard {
+        response
+            .headers_mut()
+            .insert("x-router-merchant", merchant.parse().unwrap());
+        response.headers_mut().insert(
+            "x-router-price-version",
+            version.to_string().parse().unwrap(),
+        );
+        let (parts, body) = response.into_parts();
+        let stream = futures_util::stream::unfold(
+            (body.into_data_stream(), permit),
+            |(mut body, permit)| async move { body.next().await.map(|chunk| (chunk, (body, permit))) },
+        );
+        response = Response::from_parts(parts, axum::body::Body::from_stream(stream));
+    }
     Ok(response)
 }
 
