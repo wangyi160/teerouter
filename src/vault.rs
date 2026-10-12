@@ -3,7 +3,7 @@ use crate::{Provider, config::Config};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
@@ -40,6 +40,10 @@ fn account_enabled() -> bool {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Data {
+    /// Merchant customers with evidence of a model request reaching an upstream.
+    /// Independent of the bounded/acknowledged usage and refusal queues.
+    #[serde(default)]
+    pub upstream_users: BTreeSet<String>,
     /// Public admission records and opaque merchant-owned recovery capsules only.
     #[serde(default)]
     pub merchants: BTreeMap<String, crate::merchants::Registration>,

@@ -784,6 +784,7 @@ impl Engine {
             ticket.refusal = Some(observer.clone());
             let mut request_client = backend.client.clone();
             request_client.refusal = Some(observer.clone());
+            request_client.activity = ticket.activity();
             let result = timeout_at(deadline, async {
                 let output = upstream::call(
                     &request_client,

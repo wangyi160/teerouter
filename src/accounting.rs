@@ -196,6 +196,11 @@ pub(crate) struct Ticket {
 }
 
 impl Ticket {
+    pub(crate) fn activity(&self) -> Option<crate::ledger::Activity> {
+        self.parent
+            .as_ref()
+            .map(|_| self.ledger.activity(&self.account.config.user_id))
+    }
     pub(crate) fn begin_request(
         &mut self,
         pool: &str,
@@ -238,8 +243,12 @@ impl Ticket {
         if let Some(extra) = self.context.as_object() {
             audit.as_object_mut().unwrap().extend(extra.clone());
         }
-        self.ledger
-            .record(&self.account.config.name, &usage, &audit, refusal.as_ref());
+        // Platform keeps all admission outcomes. A merchant must not learn an
+        // unused user's identity from an error before any upstream contact.
+        if self.parent.is_none() || self.ledger.has_upstream_user(&self.account.config.user_id) {
+            self.ledger
+                .record(&self.account.config.name, &usage, &audit, refusal.as_ref());
+        }
         if let Some(parent) = self.parent.as_mut() {
             parent.settled = true;
             let mut meter = parent.account.meter.lock().unwrap();

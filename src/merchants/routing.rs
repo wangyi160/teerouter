@@ -25,6 +25,7 @@ pub(crate) async fn selections(runtime: &Runtime, user: &str) -> Result<Vec<Sele
         let Ok(live) = live(runtime, &item.id) else {
             continue;
         };
+        customers::ensure(&live, user).await?;
         let engine = live.runtime.engine();
         let Some(account) = engine
             .config

@@ -1,6 +1,8 @@
 # 多商户与统一平台 key
 
-用户继续使用平台签发的 API key。`GET /v1/identity` 返回该 key 所属用户 ID；平台将用户授予商户后，商户还须在自己的客户列表中启用该用户。两层授权同时满足才允许调用。用户的全局并发、RPM、TPM 与停用状态跨商户生效。
+用户继续使用平台签发的 API key。`GET /v1/identity` 返回该 key 所属用户 ID；平台先授予商户接入资格，首次调用按商户的默认客户权限与限额执行。用户的全局并发、RPM、TPM 与停用状态跨商户生效。
+
+商户只看到实际使用过本商户模型账号的客户。收到模型上游响应后（包含拒答及 HTTP 错误）才建立可见关系；浏览模型、平台预授权、本地校验拒绝和没有收到上游响应的连接失败都不会使用户可见。商户响应不含平台预授权的 `merchant.users`。关系独立于用量和拒答队列持久化，确认删除队列或重启后仍保留；旧版本按已有成功用量或拒答证据恢复，不能按预授权名单生成客户。
 
 所有上游账号和账号池必须归属商户，平台不持有自营账号。商户拥有独立的账号、账号池、客户限额、价格、用量队列和拒答队列。平台管理员登记商户身份摘要、资源上限和允许接入的用户，不能通过平台账号导出商户凭证。平台配置和恢复快照中的根 `models`、`accounts` 必须为空，明文 secrets 只允许平台管理密钥和用户 key 的引用。旧快照须先将账号、代理、费率和访问范围迁入商户，再清理根配置；不能直接恢复含无归属账号池的快照。
 
@@ -29,13 +31,14 @@
 | `GET /merchant/refusals?after_id=0&limit=500` | 本商户递增 ID 的拒答队列 |
 | `DELETE /merchant/refusals?through_id=123` | 删除该 ID 及以前的拒答记录 |
 
-完整配置包含 `pools`、`customers`、`prices`、`max_concurrent`、`rpm`、`tpm`；可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
+完整配置包含 `pools`、`prices`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
 
 ```json
 {
   "expected_revision":1,"max_concurrent":16,"rpm":60,"tpm":100000,
   "pools":[{"name":"openai","provider":"openai","deployments":[{"id":"account1","provider":"openai","api_key_ref":"upstream1","proxy":"socks5h://YOUR_ACCOUNT_PROXY:1080"}]}],
-  "customers":[{"user_id":"alice","enabled":true,"models":[],"max_concurrent":4,"rpm":30,"tpm":50000}],
+  "customer_defaults":{"enabled":true,"models":[],"max_concurrent":4,"rpm":30,"tpm":50000},
+  "customers":[],
   "prices":[{"pool":"openai","model":"OFFICIAL_MODEL_ID","input":1000000,"output":2000000,"cache_read":500000}],
   "secrets":{"upstream1":"ADMINISTER_THROUGH_ATTESTED_CHANNEL"}
 }

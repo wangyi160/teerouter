@@ -14,6 +14,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 mod crypto;
+mod customers;
 pub(crate) mod http;
 pub(crate) mod routing;
 
@@ -121,6 +122,8 @@ pub(crate) struct Settings {
     pub rpm: u64,
     pub tpm: u64,
     pub customers: Vec<Customer>,
+    #[serde(default)]
+    pub customer_defaults: customers::Defaults,
     pub prices: Vec<Price>,
 }
 impl Default for Settings {
@@ -131,6 +134,7 @@ impl Default for Settings {
             rpm: 0,
             tpm: 0,
             customers: vec![],
+            customer_defaults: customers::Defaults::default(),
             prices: vec![],
         }
     }
@@ -294,6 +298,7 @@ pub(crate) async fn unlock(
             ));
         }
         crate::refusal::restore(&mut recovery.state).map_err(|_| invalid())?;
+        customers::restore(&mut recovery.state);
         let bundle = recovery.state.bundle.as_ref().ok_or_else(invalid)?;
         validate_bundle(bundle, &item, &recovery.settings)?;
         let admin = bundle
@@ -421,10 +426,39 @@ fn validate_bundle(
         return Err(invalid());
     }
     let mut names = BTreeSet::new();
-    for c in &settings.customers {
-        if !crate::config::valid_name(&c.user_id)
-            || !names.insert(&c.user_id)
-            || !(1..=4096).contains(&c.max_concurrent)
+    if settings
+        .customers
+        .iter()
+        .any(|c| !crate::config::valid_name(&c.user_id) || !names.insert(&c.user_id))
+    {
+        return Err(invalid());
+    }
+    let defaults = &settings.customer_defaults;
+    let default_customer = Customer {
+        user_id: "merchant-default-validation".into(),
+        enabled: defaults.enabled,
+        models: defaults.models.clone(),
+        max_concurrent: defaults.max_concurrent,
+        rpm: defaults.rpm,
+        tpm: defaults.tpm,
+    };
+    for c in settings
+        .customers
+        .iter()
+        .chain(std::iter::once(&default_customer))
+    {
+        if !(1..=4096).contains(&c.max_concurrent)
+            || c.rpm > 10_000_000
+            || c.tpm > 10_000_000_000
+            || c.models.len() > 8192
+            || c.models.iter().any(|rule| {
+                !crate::config::valid_model_id(rule)
+                    && !bundle
+                        .config
+                        .models
+                        .iter()
+                        .any(|p| p.name == *rule || rule == &format!("{}/*", p.name))
+            })
         {
             return Err(invalid());
         }
@@ -490,6 +524,7 @@ pub(crate) struct MerchantUpdate {
     pub expected_revision: u64,
     pub pools: Vec<Model>,
     pub customers: Vec<Customer>,
+    pub customer_defaults: Option<customers::Defaults>,
     pub prices: Vec<Price>,
     pub max_concurrent: usize,
     #[serde(default)]
@@ -523,11 +558,8 @@ pub(crate) async fn apply(
             "Reload merchant settings before editing",
         ));
     }
-    if input
-        .customers
-        .iter()
-        .any(|c| !item.users.contains(&c.user_id))
-    {
+    let known = customers::known(&live)?;
+    if input.customers.iter().any(|c| !known.contains(&c.user_id)) {
         return Err(forbidden());
     }
     if input
@@ -538,12 +570,26 @@ pub(crate) async fn apply(
     {
         return Err(forbidden());
     }
+    let mut ids = BTreeSet::new();
+    if input
+        .customers
+        .iter()
+        .any(|c| !ids.insert(c.user_id.clone()))
+    {
+        return Err(invalid());
+    }
+    // Omission is not revocation: filtered or stale lists must not erase a
+    // hidden legacy override or a newly discovered customer's restrictions.
+    let mut overrides = old.customers.clone();
+    overrides.retain(|c| !ids.contains(&c.user_id));
+    overrides.extend(input.customers);
     let settings = Settings {
         revision: old.revision.checked_add(1).ok_or_else(invalid)?,
         max_concurrent: input.max_concurrent,
         rpm: input.rpm,
         tpm: input.tpm,
-        customers: input.customers,
+        customers: overrides,
+        customer_defaults: input.customer_defaults.unwrap_or(old.customer_defaults),
         prices: input.prices,
     };
     let snapshot = live.runtime.engine().vault.snapshot().map_err(storage)?;
@@ -568,45 +614,21 @@ pub(crate) async fn apply(
         config.restrictions = restrictions;
     }
     config.server.max_concurrent = settings.max_concurrent.min(item.max_concurrent);
-    config.users = settings
-        .customers
-        .iter()
-        .map(|c| User {
-            id: c.user_id.clone(),
-            name: String::new(),
-            note: String::new(),
-            enabled: c.enabled,
-            max_concurrent: c.max_concurrent,
-        })
-        .collect();
-    config.keys = settings
-        .customers
-        .iter()
-        .map(|c| ApiKey {
-            name: c.user_id.clone(),
-            user_id: c.user_id.clone(),
-            enabled: c.enabled,
-            expires_at: 0,
-            key_env: format!("merchant_internal_customer_{}", c.user_id),
-            models: c.models.clone(),
-            rpm: c.rpm,
-            tpm: c.tpm,
-            max_concurrent: c.max_concurrent,
-        })
-        .collect();
     let mut secrets = input.secrets;
-    for key in &config.keys {
-        if !snapshot.bundle.secrets.contains_key(&key.key_env) {
-            secrets.insert(
-                key.key_env.clone(),
-                format!(
-                    "{}{}",
-                    crate::vault::random_id().map_err(storage)?,
-                    crate::vault::random_id().map_err(storage)?
-                ),
-            );
-        }
-    }
+    let ids = config
+        .keys
+        .iter()
+        .map(|k| k.user_id.clone())
+        .chain(settings.customers.iter().map(|c| c.user_id.clone()))
+        .chain(known)
+        .collect();
+    customers::configure(
+        &mut config,
+        &settings,
+        ids,
+        &snapshot.bundle.secrets,
+        &mut secrets,
+    )?;
     let update = Update {
         expected_revision: Some(snapshot.revision),
         config: Some(serde_json::to_value(config).map_err(|_| invalid())?),
@@ -648,8 +670,12 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
         }
     }
     redact(&mut pools);
+    let mut settings = live.settings.lock().unwrap().clone();
+    settings.customers = customers::visible(&live, &settings)?;
+    let mut merchant = item.public(true);
+    merchant.as_object_mut().unwrap().remove("users");
     Ok(
-        json!({"merchant":item.public(true),"settings":*live.settings.lock().unwrap(),"pools":pools,
+        json!({"merchant":merchant,"settings":settings,"pools":pools,
         "accounts":engine.account_status()?,"status":engine.status(),"catalog":engine.discovery_status()}),
     )
 }
