@@ -8,6 +8,7 @@
 - OpenAI / ChatGPT、Claude / Anthropic、Grok / xAI 三类正式上游，另保留可选的 Workbuddy 测试上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
 - Chat Completions、Responses、Messages 接口；支持流式转发和选定格式转换。
 - 统一平台 API key、商户授权与用户并发控制。全部上游账号归属商户，平台没有自营池；商户发布费率，外部管理服务结算。
+- 请求路由规则 v1：客户端提交固定池或自动匹配、倍率上限及费率/速率优先规则，router 统一选路、检查并返回实际池与倍率。真实流式测速在 router 内进行，选路规则和请求正文分离。协议见 [API 文档](docs/API.md#请求路由规则-v1)。
 - 上游拒答审计：识别明确的 refusal / content_filter 信号，将拒答原文、原因、用户标识和元数据写入全局递增 ID 队列；管理员按游标拉取，归档后按 ID 批量删除。请求正文不保存，不再调用 LockLLM。
 - 官方域名固定在代码中；模型与思考参数对照官方目录验证并原值传递；管理员只能屏蔽，不能伪造目录或覆盖请求内容。
 - Phala / dstack Intel TDX 证明与 TLS 1.3 在同一进程中完成；另保留 Linux SNP 取证路径。

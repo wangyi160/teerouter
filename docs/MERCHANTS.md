@@ -54,11 +54,13 @@
 
 ## 用户选路
 
+推荐使用 [请求路由规则 v1](API.md#请求路由规则-v1)：客户端发送固定池或自动匹配规则、倍率上限与费率/速率优先策略，由 Router 在 TEE 内跨授权商户匹配并检查。原始模型 ID 可配合自动规则使用，客户端无需逐次读取报价或自行测速。响应头返回实际商户、账号池、倍率和报价版本。
+
 `GET /v1/models` 返回 `m_<id>/官方模型ID`，并附商户、价格和 `m_<id>.账号池` 信息。可直接将返回的模型 ID 交给 agent；有多个可用池时，显式设置 `x-router-pool: m_<id>.账号池`。也可配合该请求头使用原始官方模型 ID。router 在请求上游前移除商户命名空间，上游响应保留官方模型 ID。
 
 `GET /v1/merchants` 只返回当前用户有资格访问的商户及其 key 可见价格；`GET /v1/pools` 返回允许的账号池状态、商户名称、`pool_name` 和 `multiplier_millionths`。可选 `x-router-price-version` 固定商户倍率版本；可选 `x-router-official-price-revision` 固定平台基准价版本，不一致返回 `409 price_changed`。请求与响应头中均可追踪商户和版本。
 
-不带商户标识的模型调用返回 `400 merchant_required`，不会走平台直连或隐式兜底。`/admin/accounts*` 和 `/admin/models*` 已关闭；账号操作与发现只在商户通道执行。商户配置可提交 `compatibility` 和 `restrictions`，沿用相同的官方域名、请求内容保护及只能收紧权限的校验。
+未提供路由规则且不带商户标识的模型调用返回 `400 merchant_required`，不会走平台直连或隐式兜底。`/admin/accounts*` 和 `/admin/models*` 已关闭；账号操作与发现只在商户通道执行。商户配置可提交 `compatibility` 和 `restrictions`，沿用相同的官方域名、请求内容保护及只能收紧权限的校验。
 
 商户不能设定自定义上游 URL、读取服务器 OAuth 文件或配置池间 fallback。正常服务仅允许编译固定的 OpenAI、Anthropic、xAI 官方域名。Workbuddy 同时需要构建特性和平台 `allow_test`，使用编译固定的测试地址；不会作为官方池的自动 fallback。
 

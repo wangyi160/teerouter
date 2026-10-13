@@ -30,6 +30,8 @@ mod affinity;
 mod operations;
 #[path = "router/pools.rs"]
 mod pools;
+#[path = "router/routing_policy.rs"]
+mod routing_policy;
 
 pub struct Engine {
     pub(crate) config: Config,
@@ -571,8 +573,10 @@ impl Engine {
         headers: HeaderMap,
         request_id: String,
     ) -> Result<Routed, ApiError> {
-        self.execute_admitted(account, protocol, alias, body, headers, request_id, None)
-            .await
+        self.execute_admitted(
+            account, protocol, alias, body, headers, request_id, None, None,
+        )
+        .await
     }
 
     pub(crate) fn admit_external(
@@ -600,6 +604,7 @@ impl Engine {
         mut headers: HeaderMap,
         request_id: String,
         mut parent: Option<Ticket>,
+        mut route_observation: Option<crate::merchants::route_metrics::Observation>,
     ) -> Result<Routed, ApiError> {
         let reject = |parent: &mut Option<Ticket>, error: ApiError| {
             if let Some(parent) = parent.as_mut() {
@@ -631,7 +636,13 @@ impl Engine {
                 ApiError::new(503, "storage_capacity", "Runtime state is unavailable"),
             ));
         }
-        let groups = self.route_groups(pool);
+        // A priced merchant request is confined to its selected pool. Fallbacks
+        // must not silently change the pool after pricing or affinity checks.
+        let groups = if parent.is_some() {
+            self.groups.get(pool).into_iter().collect()
+        } else {
+            self.route_groups(pool)
+        };
         let Some(primary) = groups.first() else {
             return Err(reject(
                 &mut parent,
@@ -817,6 +828,9 @@ impl Engine {
                     }
                     ticket.finish(200);
                     lease.success();
+                    if let Some(observation) = &mut route_observation {
+                        observation.nonstream();
+                    }
                     return Ok(Routed {
                         deployment: backend.config.id.clone(),
                         attempts: ticket.attempts,
@@ -842,6 +856,7 @@ impl Engine {
                         include_usage,
                         ended: false,
                         affinity,
+                        route_observation,
                     }));
                     return Ok(Routed {
                         deployment,
@@ -891,6 +906,9 @@ impl Engine {
             }
         }
         ticket.finish(last_error.status);
+        if let Some(observation) = &mut route_observation {
+            observation.fail();
+        }
         Err(last_error)
     }
 }
@@ -906,6 +924,7 @@ fn retryable(error: &Error) -> bool {
 }
 
 struct StreamState {
+    route_observation: Option<crate::merchants::route_metrics::Observation>,
     affinity: affinity::Affinity,
     stream: EventStream,
     first: Option<Frame>,
@@ -933,12 +952,18 @@ fn forward_stream(state: StreamState) -> EventStream {
                 match next {
                     Ok(Some(Ok(frame))) => {
                         if let Some(value) = &frame.value {
+                            if let Some(observation) = &mut state.route_observation {
+                                observation.value(value);
+                            }
                             if state
                                 .affinity
                                 .response(state.protocol, value, &state.lease.backend)
                                 .is_err()
                             {
                                 state.ticket.finish(503);
+                                if let Some(observation) = &mut state.route_observation {
+                                    observation.fail();
+                                }
                                 state.ended = true;
                                 return Some((
                                     Err(Error::InvalidResponse("cannot persist response affinity")),
@@ -956,6 +981,9 @@ fn forward_stream(state: StreamState) -> EventStream {
                         return Some((Ok(frame), state));
                     }
                     Ok(None) => {
+                        if let Some(observation) = &mut state.route_observation {
+                            observation.finish();
+                        }
                         state.ticket.finish(200);
                         state.lease.success();
                         state.ended = true;
@@ -967,6 +995,9 @@ fn forward_stream(state: StreamState) -> EventStream {
                     error => {
                         let timeout = error.is_err();
                         state.ticket.finish(if timeout { 504 } else { 502 });
+                        if let Some(observation) = &mut state.route_observation {
+                            observation.fail();
+                        }
                         state.lease.failure(None, false);
                         state.ended = true;
                         let mut frame = Frame::json(

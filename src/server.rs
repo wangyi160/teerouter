@@ -51,7 +51,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
             "/health/live",
-            get(|| async { Json(json!({"status":"ok"})) }),
+            get(|| async { Json(json!({"status":"ok", "routing_protocol_versions":[1]})) }),
         )
         .route("/health/ready", get(ready))
         .route("/v1/models", get(models))
@@ -410,11 +410,15 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         ));
     }
     let mut headers = HeaderMap::new();
+    // Parse before reducing headers, so duplicate rules cannot be silently ignored.
+    let rule = crate::merchants::route_rule::Rule::parse(&parts.headers)?;
     for name in [
         "x-router-session",
         "x-router-account",
         "x-router-pool",
         "x-router-price-version",
+        "x-router-official-price-revision",
+        "x-router-routing",
     ] {
         if let Some(value) = parts.headers.get(name) {
             headers.insert(name, value.clone());
@@ -427,7 +431,8 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             }
         }
     }
-    let merchant_request = identity.runtime.is_platform()
+    let merchant_request = rule.is_some()
+        || identity.runtime.is_platform()
         || alias
             .split_once('/')
             .is_some_and(|(id, _)| id.starts_with("m_"))
@@ -449,7 +454,14 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         .await?;
         (
             result.routed,
-            Some((result.permit, result.merchant, result.price_version)),
+            Some((
+                result.permit,
+                result.merchant,
+                result.price_version,
+                result.pool,
+                result.multiplier,
+                result.rule_applied,
+            )),
         )
     } else {
         (
@@ -490,7 +502,18 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         "x-router-attempts",
         HeaderValue::from_str(&routed.attempts.to_string()).unwrap(),
     );
-    if let Some((permit, merchant, version)) = merchant_guard {
+    if let Some((permit, merchant, version, pool, multiplier, rule_applied)) = merchant_guard {
+        response
+            .headers_mut()
+            .insert("x-router-pool", pool.parse().unwrap());
+        response
+            .headers_mut()
+            .insert("x-router-multiplier-millionths", multiplier.into());
+        if rule_applied {
+            response
+                .headers_mut()
+                .insert("x-router-routing-version", HeaderValue::from_static("1"));
+        }
         response
             .headers_mut()
             .insert("x-router-merchant", merchant.parse().unwrap());

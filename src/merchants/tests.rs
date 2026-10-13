@@ -4,6 +4,8 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+#[path = "routing_tests.rs"]
+mod routing_protocol;
 
 #[tokio::test]
 async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
