@@ -16,6 +16,8 @@ use subtle::ConstantTimeEq;
 mod crypto;
 mod customers;
 pub(crate) mod http;
+pub(crate) mod route_metrics;
+pub(crate) mod route_rule;
 pub(crate) mod routing;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -166,6 +168,7 @@ pub(crate) struct RateMeter {
 }
 #[derive(Default)]
 pub(crate) struct Registry {
+    pub routing: Arc<route_metrics::State>,
     pub live: Mutex<BTreeMap<String, Arc<Live>>>,
     pub write: tokio::sync::Mutex<()>,
 }

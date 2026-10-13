@@ -105,6 +105,19 @@ impl Account {
     pub(crate) fn authorize(&self) -> Result<(), ApiError> {
         self.with_user(|_| Ok(()))
     }
+    pub(crate) fn has_capacity(&self) -> bool {
+        if !self
+            .with_user(|u| Ok(self.user_slots.used() < u.max_concurrent))
+            .unwrap_or(false)
+            || self.slots.used() >= self.config.max_concurrent
+        {
+            return false;
+        }
+        let mut meter = self.meter.lock().unwrap();
+        meter.refresh();
+        (self.config.rpm == 0 || meter.requests < self.config.rpm)
+            && (self.config.tpm == 0 || meter.tokens < self.config.tpm)
+    }
     pub fn admit(
         self: &Arc<Self>,
         ledger: Arc<Ledger>,

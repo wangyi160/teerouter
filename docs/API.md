@@ -18,11 +18,47 @@
 | POST | `/v1/responses` | input 请求格式，可使用 stream；思考强度字段为 reasoning.effort。不支持 background=true。 |
 | POST | `/v1/messages` | messages 请求格式，需 max_tokens；thinking 选项以模型目录为准。 |
 
+## 请求路由规则 v1
+
+选路规则是 router 协议的一部分，适用于三个生成接口。客户端通过单个 `X-Router-Routing` 请求头发送 JSON（最多 2048 字节），不改写模型请求正文。Router 在 TEE 内完成选池、倍率检查及准入，规则头不会发给供应商。
+
+固定池：
+
+```http
+X-Router-Routing: {"version":1,"mode":"fixed","pool":"m_<id>.pool","max_multiplier_millionths":500000,"priority":"price"}
+```
+
+自动匹配：
+
+```http
+X-Router-Routing: {"version":1,"mode":"auto","max_multiplier_millionths":500000,"priority":"speed"}
+```
+
+| 字段 | 语义 |
+| --- | --- |
+| `version` | 必填整数，当前为 `1` |
+| `mode` | 必填，`fixed` 或 `auto` |
+| `pool` | 固定模式必填完整商户池 ID；自动模式不允许填写 |
+| `max_multiplier_millionths` | 必填非负整数，最大 10^15；500000 表示最高 0.5×，等于上限允许 |
+| `priority` | `price` 或 `speed`，默认 `price`；固定模式不比较其他池 |
+
+规则与 `X-Router-Pool`、`X-Router-Account`、`X-Router-Price-Version`、`X-Router-Official-Price-Revision` 互斥。重复规则头、未知字段、未知版本和无效类型返回 400。`X-Router-Session` 仍可用于会话绑定。不带规则的旧请求继续按原有商户/池选择方式处理。
+
+客户端须在同一条已验证的 TEE/TLS 连接读取 `/health/live`，确认 `routing_protocol_versions` 包含 `1` 后再发送生成请求。旧 router 可能忽略未知请求头，不能依赖生成后的响应来判定是否支持。
+
+Router 按用户和商户授权、精确模型 ID、接口与官方能力、账号状态、并发及速率限额筛选。选池与倍率校验使用同一份配置、报价快照，该报价随用量归档；之后调价不改变已准入请求的价格。固定池超限返回 `403 routing_multiplier_exceeded`，不会换池；自动模式无匹配池返回 `503 routing_no_matching_pool`，不会提高上限或更换模型。带商户前缀的模型仍限制在指定商户内。
+
+`price` 选择最低倍率。`speed` 使用 router 观测的真实流式生成内容：首字时间优先，同一 100 ms 区间再比较 token/s，再按倍率和池 ID 决定。样本按池、模型和接口区分，移动平均仅保存在 router 内存中，10 分钟后过期；无样本时从正常请求轮流积累，不发送探测请求。心跳及角色元数据不计首字，短于 250 ms 的突发不估算生成速度；非流式响应、错误、截断及取消不伪造成功速度。测速在流式转发内部进行，即使客户端不要求返回 usage，也可利用上游 token 统计。不保存请求或回复正文，重启后重新积累。
+
+已绑定的会话和响应续接留在原商户、原账号。自动模式的未知 `previous_response_id`、无已知归属的 provider 文件或跨商户归属歧义返回 `409 routing_affinity_required`，要求指定原账号池，不能以价格或速度猜测上下文归属。
+
+成功响应包含 `X-Router-Routing-Version: 1`、`X-Router-Pool`、`X-Router-Multiplier-Millionths`、`X-Router-Price-Version`，以及原有商户、deployment 和 attempts 头。规则不授予额外权限，实际调用仍须通过平台和商户准入。并发变化可能导致最终准入拒绝，不会为此放宽上限或越过授权。
+
 ## 健康检查与 TEE 验证
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| GET | `/health/live` | 200 表示进程可响应，不代表可以调用模型。 |
+| GET | `/health/live` | 200 表示进程可响应，不代表可以调用模型；`routing_protocol_versions: [1]` 声明路由规则版本。 |
 | GET | `/health/ready` | 可接收业务时返回 200，初始化、同步或上游不可用时返回 503。 |
 | POST | `/.well-known/teellm/attestation` | 仅在 TLS 入口提供。nonce 为客户端新生成的 32 字节随机数的小写十六进制编码（64 位）；客户端验证硬件签名、发布策略和当前 TLS 证书绑定。 |
 
@@ -51,7 +87,7 @@
 
 ## 上游拒答队列
 
-账号、模型发现和销售费率只通过 [商户管理接口](MERCHANTS.md) 操作。`/admin/accounts*`、`/admin/models*` 返回 404；无商户标识的模型调用返回 `merchant_required`。
+账号、模型发现和销售费率只通过 [商户管理接口](MERCHANTS.md) 操作。`/admin/accounts*`、`/admin/models*` 返回 404；未提供路由规则且无商户标识的模型调用返回 `merchant_required`。
 
 管理端统一拉取所有用户的待归档记录，持久保存后显式删除。接口要求管理 Bearer 凭证并返回 `Cache-Control: no-store`。用户 API key 无法读取或删除；用户接口不再返回 `refusals`。
 

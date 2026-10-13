@@ -133,6 +133,9 @@ impl Backend {
         let state = self.state.lock().unwrap();
         state.open_until.is_none_or(|until| until <= Instant::now())
     }
+    pub(crate) fn has_capacity(&self) -> bool {
+        self.load().is_some()
+    }
     pub(crate) fn binding(config: &Deployment) -> String {
         match &config.oauth_account {
             Some(name) => format!(
