@@ -309,7 +309,7 @@ async fn user_merchants(request: Request) -> Result<Json<Value>, ApiError> {
             let quotes=crate::pricing::quotes(settings,&s.engine.config,&s.price_book);
             json!({"id":s.item.id,"name":s.item.name,"price_version":settings.revision,
                 "official_price_revision":s.price_book.revision,
-                "prices":quotes.iter().filter(|q|s.engine.model_allowed(s.account,&q.price.pool,&q.price.model) && crate::merchants::routing::platform_allows(&identity.engine,identity.account.unwrap(),&format!("{}.{}",s.item.id,q.price.pool),&q.price.model)).collect::<Vec<_>>()})
+                "prices":quotes.iter().filter(|q|s.engine.model_allowed(s.account,&q.price.pool,&q.price.model) && crate::merchants::routing::platform_allows(&identity.engine,identity.account.unwrap(),&format!("{}.{}",s.item.id,q.price.pool),&q.price.model,s.engine.config.models.iter().find(|p|p.name==q.price.pool).and_then(|p|p.provider))).collect::<Vec<_>>()})
         }).collect::<Vec<_>>()}),
     ))
 }

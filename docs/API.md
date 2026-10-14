@@ -5,7 +5,7 @@
 
 用户接口使用用户 API key；管理接口使用独立管理密钥。认证头为 `Authorization: Bearer <KEY>`，兼容 `x-api-key`，不接受 URL 中的 key。
 
-`x-router-pool: m_<id>.pool` 选择账号池，`model` 保持目录中的原始 ID。思考参数取目录允许值，省略时不补写。金额和账务属于管理平台。
+`model` 使用目录中的提供商限定 ID，例如 `grok/grok-4.7`。使用 `X-Router-Routing` 指定账号池或自动匹配及倍率上限；旧客户端也可用 `x-router-pool: m_<id>.pool` 选择账号池。思考参数取目录允许值，省略时不补写。金额和账务属于管理平台。
 
 ## 用户调用
 

@@ -99,6 +99,7 @@ pub(super) async fn choose(
         .split_once('/')
         .filter(|(m, _)| m.starts_with("m_"))
         .map_or((None, alias), |(m, id)| (Some(m), id));
+    let (provider, model) = crate::provider::Provider::split_model(model);
     if !crate::config::valid_model_id(model) {
         return Err(invalid_rule());
     }
@@ -164,8 +165,16 @@ pub(super) async fn choose(
         ) {
             let pool = &quote.price.pool;
             let qualified = format!("{}.{}", selection.item.id, pool);
-            if quote.price.model != model
-                || !super::routing::platform_allows(root, account, &qualified, model)
+            let pool_provider = selection
+                .engine
+                .config
+                .models
+                .iter()
+                .find(|p| p.name == *pool)
+                .and_then(|p| p.provider);
+            if provider.is_some_and(|wanted| pool_provider != Some(wanted))
+                || quote.price.model != model
+                || !super::routing::platform_allows(root, account, &qualified, model, pool_provider)
                 || rule.pool.as_ref().is_some_and(|p| *p != qualified)
                 || quote
                     .price

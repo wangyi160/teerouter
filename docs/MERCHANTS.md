@@ -56,7 +56,11 @@
 
 推荐使用 [请求路由规则 v1](API.md#请求路由规则-v1)：客户端发送固定池或自动匹配规则、倍率上限与费率/速率优先策略，由 Router 在 TEE 内跨授权商户匹配并检查。原始模型 ID 可配合自动规则使用，客户端无需逐次读取报价或自行测速。响应头返回实际商户、账号池、倍率和报价版本。
 
-`GET /v1/models` 返回 `m_<id>/官方模型ID`，并附商户、价格和 `m_<id>.账号池` 信息。可直接将返回的模型 ID 交给 agent；有多个可用池时，显式设置 `x-router-pool: m_<id>.账号池`。也可配合该请求头使用原始官方模型 ID。router 在请求上游前移除商户命名空间，上游响应保留官方模型 ID。
+`GET /v1/models` 返回 `chatgpt/官方模型ID`、`claude/官方模型ID`、`grok/官方模型ID`；测试服务使用 `workbuddy/官方模型ID`。前缀标识模型提供商。同一提供商的同一模型跨商户合并为一项，不同提供商的同名模型分别展示。
+
+模型项的 `router_provider` 是内部提供商类型（`openai` / `anthropic` / `xai` / `workbuddy`），`router_model` 是完整官方模型 ID。`router_pools`、`router_capabilities[].pool` 以及 `router_pricing.rates[].pool` 使用 `m_<id>.账号池`；每项费率带 `merchant_id` 和 `price_version`，`router_merchants` 列出对应商户及其 `pools`。多商户模型没有统一的商户报价版本。
+
+将目录返回的模型 ID 直接交给 agent，配合 `X-Router-Routing` 自动匹配或固定账号池。Router 在 TEE 内先限定模型提供商，再检查池、授权和倍率；固定池的提供商不匹配时也拒绝请求。转发上游时只移除提供商前缀，上游响应保留官方模型 ID。旧的原始模型 ID 和 `m_<id>/官方模型ID` 继续兼容；没有路由规则时仍需 `x-router-pool: m_<id>.账号池` 或旧商户前缀来确定商户。
 
 `GET /v1/merchants` 只返回当前用户有资格访问的商户及其 key 可见价格；`GET /v1/pools` 返回允许的账号池状态、商户名称、`pool_name` 和 `multiplier_millionths`。可选 `x-router-price-version` 固定商户倍率版本；可选 `x-router-official-price-revision` 固定平台基准价版本，不一致返回 `409 price_changed`。请求与响应头中均可追踪商户和版本。
 
