@@ -52,7 +52,13 @@ pub(crate) async fn selections(runtime: &Runtime, user: &str) -> Result<Vec<Sele
     }
     Ok(selected)
 }
-pub(crate) fn platform_allows(root: &Engine, account: usize, pool: &str, model: &str) -> bool {
+pub(crate) fn platform_allows(
+    root: &Engine,
+    account: usize,
+    pool: &str,
+    model: &str,
+    provider: Option<crate::provider::Provider>,
+) -> bool {
     let rules = &root.config.keys[account].models;
     let qualified_model = pool
         .split_once('.')
@@ -60,73 +66,14 @@ pub(crate) fn platform_allows(root: &Engine, account: usize, pool: &str, model: 
     rules.is_empty()
         || rules.iter().any(|r| {
             r == model
+                || provider.is_some_and(|p| r == &format!("{}/{model}", p.model_namespace()))
                 || r == pool
                 || qualified_model.as_ref() == Some(r)
                 || r == &format!("{pool}/{model}")
                 || r == &format!("{pool}/*")
         })
 }
-pub(crate) async fn models(
-    runtime: &Runtime,
-    root: &Engine,
-    account: usize,
-) -> Result<Vec<Value>, ApiError> {
-    let user = &root.config.keys[account].user_id;
-    let mut result = vec![];
-    for selection in selections(runtime, user).await? {
-        let mut list = selection.engine.models(selection.account).await;
-        let settings = selection.settings;
-        let quotes =
-            crate::pricing::quotes(&settings, &selection.engine.config, &selection.price_book);
-        for row in list["data"].as_array_mut().into_iter().flatten() {
-            let original = row["id"].as_str().unwrap_or("").to_owned();
-            let pools: Vec<String> = row["router_pools"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|p| p.as_str())
-                .filter(|p| {
-                    platform_allows(
-                        root,
-                        account,
-                        &format!("{}.{}", selection.item.id, p),
-                        &original,
-                    )
-                })
-                .map(str::to_owned)
-                .collect();
-            if pools.is_empty() {
-                continue;
-            }
-            row["id"] = format!("{}/{}", selection.item.id, original).into();
-            row["router_merchant"] = json!({"id":selection.item.id,"name":selection.item.name});
-            if let Some(capabilities) = row["router_capabilities"].as_array_mut() {
-                capabilities.retain(|c| {
-                    c["pool"]
-                        .as_str()
-                        .is_some_and(|p| pools.iter().any(|allowed| allowed == p))
-                });
-                for capability in capabilities {
-                    capability["pool"] = format!(
-                        "{}.{}",
-                        selection.item.id,
-                        capability["pool"].as_str().unwrap_or("")
-                    )
-                    .into();
-                }
-            }
-            row["router_pools"] = json!(
-                pools
-                    .iter()
-                    .map(|p| format!("{}.{}", selection.item.id, p))
-                    .collect::<Vec<_>>()
-            );
-            row["router_pricing"] = json!({"version":settings.revision,"official_price_revision":selection.price_book.revision,"currency":"USD","unit":"micro_usd_per_million_tokens", "rates":quotes.iter().filter(|q|q.price.model==original && pools.contains(&q.price.pool)).collect::<Vec<_>>()});
-            result.push(row.clone());
-        }
-    }
-    Ok(result)
-}
+pub(crate) use super::model_catalog::models;
 pub(crate) async fn pools(
     runtime: &Runtime,
     root: &Engine,
@@ -148,6 +95,11 @@ pub(crate) async fn pools(
                     r == &qualified
                         || r.starts_with(&format!("{qualified}/"))
                         || r.starts_with(&format!("{}/", s.item.id))
+                        || crate::provider::Provider::split_model(r)
+                            .0
+                            .is_some_and(|provider| {
+                                pool["provider"] == serde_json::to_value(provider).unwrap()
+                            })
                         || (!r.contains('/')
                             && !r.starts_with("m_")
                             && !root.config.models.iter().any(|p| p.name == *r))
@@ -227,6 +179,11 @@ pub(crate) async fn execute(
     mut headers: HeaderMap,
     request_id: String,
 ) -> Result<Dispatch, ApiError> {
+    let legacy_model = alias
+        .split_once('/')
+        .filter(|(m, _)| m.starts_with("m_"))
+        .map_or(alias, |(_, model)| model);
+    let (provider, raw_model) = crate::provider::Provider::split_model(legacy_model);
     let rule = super::route_rule::Rule::parse(&headers)?;
     let chosen = if let Some(rule) = &rule {
         Some(
@@ -253,13 +210,18 @@ pub(crate) async fn execute(
         let (merchant, model) = alias
             .split_once('/')
             .filter(|(id, _)| id.starts_with("m_"))
-            .map(|(id, m)| (id.to_owned(), m.to_owned()))
+            .map(|(id, m)| {
+                (
+                    id.to_owned(),
+                    crate::provider::Provider::split_model(m).1.to_owned(),
+                )
+            })
             .or_else(|| {
                 qualified_pool
                     .as_ref()
                     .and_then(|p| p.split_once('.'))
                     .filter(|(id, _)| id.starts_with("m_"))
-                    .map(|(id, _)| (id.to_owned(), alias.to_owned()))
+                    .map(|(id, _)| (id.to_owned(), raw_model.to_owned()))
             })
             .ok_or_else(|| {
                 ApiError::new(
@@ -293,6 +255,7 @@ pub(crate) async fn execute(
             .config
             .models
             .iter()
+            .filter(|p| provider.is_none_or(|wanted| p.provider == Some(wanted)))
             .filter(|p| {
                 selection
                     .engine
@@ -318,9 +281,6 @@ pub(crate) async fn execute(
         }
         candidates[0].name.clone()
     };
-    if !platform_allows(&root, account, &format!("{merchant}.{pool}"), &model) {
-        return Err(forbidden());
-    }
     let group = selection
         .engine
         .config
@@ -328,6 +288,17 @@ pub(crate) async fn execute(
         .iter()
         .find(|p| p.name == pool)
         .ok_or_else(forbidden)?;
+    if provider.is_some_and(|wanted| group.provider != Some(wanted))
+        || !platform_allows(
+            &root,
+            account,
+            &format!("{merchant}.{pool}"),
+            &model,
+            group.provider,
+        )
+    {
+        return Err(forbidden());
+    }
     if group.deployments.iter().any(|d| d.provider.is_local_test()) && !selection.item.allow_test {
         return Err(forbidden());
     }

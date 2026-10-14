@@ -16,6 +16,7 @@ use subtle::ConstantTimeEq;
 mod crypto;
 mod customers;
 pub(crate) mod http;
+mod model_catalog;
 pub(crate) mod route_metrics;
 pub(crate) mod route_rule;
 pub(crate) mod routing;

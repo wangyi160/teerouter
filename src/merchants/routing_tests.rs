@@ -2,6 +2,98 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
+async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_routes() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let first = add(&r, &a).await;
+    let second = add(&r, &b).await;
+    let mut config = second.runtime.engine().config.clone();
+    config.models[0].provider = Some(crate::provider::Provider::XAI);
+    config.models[0].deployments[0].provider = crate::provider::Provider::XAI;
+    second
+        .runtime
+        .apply(
+            Update {
+                config: Some(serde_json::to_value(config).unwrap()),
+                ..Default::default()
+            },
+            &second.admin,
+        )
+        .await
+        .unwrap();
+    {
+        let engine = r.engine();
+        let mut data = engine.vault.lock().unwrap();
+        let mut book = data.official_pricing.providers[0].clone();
+        book.provider = crate::provider::Provider::XAI;
+        book.source = "https://docs.x.ai/developers/models".into();
+        data.official_pricing.providers.push(book);
+    }
+    let (_ma, ca) = observed_fixture(&first).await;
+    let (_mb, cb) = observed_fixture(&second).await;
+    multiplier(&first, 100000);
+    multiplier(&second, 500000);
+    let pa = format!("{}.official", crypto::identity(&a));
+    let pb = format!("{}.official", crypto::identity(&b));
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let (_, catalog) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    assert_eq!(catalog["data"].as_array().unwrap().len(), 2);
+    assert_eq!(catalog["data"][0]["id"], "chatgpt/model-test");
+    assert_eq!(catalog["data"][1]["id"], "grok/model-test");
+    assert_eq!(catalog["data"][1]["router_pools"], json!([pb]));
+    assert_eq!(catalog["data"][1]["router_pricing"]["rates"][0]["pool"], pb);
+    assert_eq!(
+        catalog["data"][1]["router_pricing"]["rates"][0]["price_version"],
+        3
+    );
+    let body = json!({"model":"grok/model-test","messages":[{"role":"user","content":"hello"}]});
+    for policy in [rule(None, 1000000), rule(Some(&pb), 1000000)] {
+        let response = request(&server, "alice-key", policy, body.clone()).await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["x-router-pool"], pb);
+        response.bytes().await.unwrap();
+    }
+    // A cheaper identically named model from another provider is not eligible.
+    let response = request(&server, "alice-key", rule(Some(&pa), 1000000), body.clone()).await;
+    assert_eq!(response.status(), 503);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["error"]["code"],
+        "routing_no_matching_pool"
+    );
+    // Provider-scoped platform grants also apply to catalogs and legacy raw IDs.
+    let mut config = r.engine().config.clone();
+    config.keys[0].models = vec!["grok/model-test".into()];
+    r.apply(
+        Update {
+            config: Some(serde_json::to_value(config).unwrap()),
+            ..Default::default()
+        },
+        ADMIN,
+    )
+    .await
+    .unwrap();
+    let (_, catalog) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["data"][0]["id"], "grok/model-test");
+    let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    assert_eq!(pools["data"].as_array().unwrap().len(), 1);
+    assert_eq!(pools["data"][0]["id"], pb);
+    let response = request(
+        &server,
+        "alice-key",
+        rule(None, 1000000),
+        json!({"model":"model-test","messages":[{"role":"user","content":"legacy"}]}),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-pool"], pb);
+    response.bytes().await.unwrap();
+    assert_eq!(ca.load(Ordering::SeqCst), 0);
+    assert_eq!(cb.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn router_measures_stream_before_filtering_usage_for_the_client() {
     use axum::{body::Body, response::Response};
     let r = root();
@@ -81,6 +173,7 @@ async fn observed_fixture(live: &Live) -> (Server, Arc<AtomicUsize>) {
     let count = Arc::new(AtomicUsize::new(0));
     let calls = count.clone();
     let mock=serve(Router::new().route("/v1/models",any(||async {Json(json!({"data":[{"id":"model-test"}]}))}))
+        .route("/v1/language-models",any(||async {Json(json!({"models":[{"id":"model-test"}]}))}))
         .fallback(any(move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
             let count=calls.clone(); async move {
                 assert!(!headers.contains_key("x-router-routing"));

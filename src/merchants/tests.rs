@@ -558,7 +558,19 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
     let _mb = fixture(&lb, completion()).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
     let (_, models) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
-    assert_eq!(models["data"].as_array().unwrap().len(), 2);
+    assert_eq!(models["data"].as_array().unwrap().len(), 1);
+    assert_eq!(models["data"][0]["id"], "chatgpt/model-test");
+    assert_eq!(
+        models["data"][0]["router_pools"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        models["data"][0]["router_merchants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let (_, bob) = call(&server, Method::GET, "/v1/models", "bob-key", Value::Null).await;
     assert!(bob["data"].as_array().unwrap().is_empty());
     for token in [&a, &b] {
