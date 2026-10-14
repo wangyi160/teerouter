@@ -34,7 +34,9 @@ Router 使用 GitHub Contents / Git Blobs API 读取配置文件，完整 TLS �
 
 ## 导入范围与计费
 
-只取 `litellm_provider` 为 `openai` / `anthropic` / `xai`，且 `mode` 为 `chat` / `responses` 的直接模型；去掉自身提供商前缀。Azure、Bedrock、OpenRouter 等中转条目、通用微调模板、容器、专用音频与图像条目不导入。原 Workbuddy 测试价格保持不变。目录中的旧型号按数据源保留；价格目录不代表账号拥有该模型的调用权限。
+ChatGPT 先取 `chatgpt/` 前缀、`litellm_provider: chatgpt` 的文本目录，再按完全相同的模型 ID 关联 `litellm_provider: openai` 的直接 API 标价；不导入 OpenAI API 全集。没有同名官方报价时列入管理状态的 `unpriced_models`，不猜测相近型号价格、不取第三方转售价格，也不填零。缺失整个 ChatGPT 目录时拒绝本次更新。
+
+Claude 和 Grok 只取 `litellm_provider: anthropic` / `xai` 的对应 `claude-` / `grok-` 模型。三家都要求 `mode` 为 `chat` / `responses`；Azure、Bedrock、OpenRouter 等中转条目、通用微调模板、容器、专用音频、视频与生图条目不导入。原 Workbuddy 测试价格保持不变。文本模型可以具有理解图片的能力，这不代表开放生图功能。目录中的旧型号按数据源保留；价格目录不代表账号拥有该模型的调用权限。
 
 导入输入、输出、缓存读取、缓存写入、Claude 一小时缓存、长上下文和完整的 priority/flex 报价。Claude 明确提供的 US / fast 倍率应用到 token 价格及其组合，遵循 [LiteLLM Anthropic 计算器](https://github.com/BerriAI/litellm/blob/main/litellm/llms/anthropic/cost_calculation.py)。xAI 长上下文边界保持包含阈值；其他提供商使用大于阈值。
 

@@ -25,6 +25,7 @@ pub(crate) struct State {
     pub sha256: Option<String>,
     pub git_blob: Option<String>,
     pub history: Vec<Value>,
+    pub unpriced_models: Vec<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -38,6 +39,7 @@ impl Default for State {
             sha256: None,
             git_blob: None,
             history: vec![],
+            unpriced_models: vec![],
         }
     }
 }
@@ -104,7 +106,10 @@ pub(super) fn github(url: &str) -> Result<reqwest::Url, ApiError> {
 }
 pub(crate) fn validate(state: &State) -> Result<(), ApiError> {
     github(&state.url)?;
-    if state.history.len() > 32 || state.last_error.as_ref().is_some_and(|s| s.len() > 128) {
+    if state.history.len() > 32
+        || state.unpriced_models.len() > 8192
+        || state.last_error.as_ref().is_some_and(|s| s.len() > 128)
+    {
         return Err(invalid());
     }
     Ok(())
@@ -332,14 +337,14 @@ pub(crate) async fn sync(runtime: &Runtime, manual: bool) -> Result<(), ApiError
         .await
         .map_err(|_| unavailable())??;
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        let providers = super::litellm::parse(&bytes, &config.url, now())?;
-        Ok::<_, ApiError>((providers, sha, hash))
+        let imported = super::litellm::parse(&bytes, &config.url, now())?;
+        Ok::<_, ApiError>((imported, sha, hash))
     }
     .await;
     let mut data = engine.vault.lock().map_err(storage)?;
     finish(&mut data, &config, result)
 }
-type Download = Result<(Vec<ProviderBook>, String, String), ApiError>;
+type Download = Result<(super::litellm::Import, String, String), ApiError>;
 pub(super) fn finish(
     data: &mut crate::vault::Data,
     config: &State,
@@ -352,12 +357,13 @@ pub(super) fn finish(
             "Pricing source changed during fetch; fetched prices discarded",
         ));
     }
-    let outcome=result.and_then(|(providers,sha,hash)|{
-        let next=replace(&data.official_pricing,providers)?;
+    let outcome=result.and_then(|(imported,sha,hash)|{
+        let next=replace(&data.official_pricing,imported.providers)?;
         let changed=next.revision!=data.official_pricing.revision;
         let revision=next.revision;
         data.official_pricing=next;
         let s=&mut data.pricing_source;
+        s.unpriced_models=imported.unpriced_models;
         s.last_success=now();s.last_error=None;s.sha256=Some(hash.clone());s.git_blob=Some(sha.clone());
         s.history.push(json!({"at":s.last_success,"revision":revision,"changed":changed,"url":config.url,"sha256":hash,"git_blob":sha}));
         if s.history.len()>32 {s.history.remove(0);}
