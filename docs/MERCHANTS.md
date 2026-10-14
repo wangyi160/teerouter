@@ -48,7 +48,7 @@
 
 平台管理员通过 `GET/PUT /admin/pricing` 维护官方基准价格。PUT 包含 `expected_revision` 和 `providers`；每项包含 `provider`、递增 `version`、官方 `source`、`checked_at` 和 `models`。模型包含 `model`、`rates`（整数 micro-USD / 百万 tokens）、可选 `long_context` 和 `valid_until`。价格内容有变化必须提升版本；不能回退版本或删除整个供应商价格簿。Workbuddy 的 source 必须为 `local-test:workbuddy`，仅为测试基准。平台需跟随官方调价更新价格簿。
 
-调用事件的 `merchant_pricing` 包含 `basis: official_pool_multiplier`、**未经倍率乘算的基准费率**、`multiplier_millionths`、`official_price_revision`、`official_version`、`official_source`、`official_checked_at`。外部账务使用这份不可变快照；不能把基准费率直接视为销售费率。缺少池倍率、模型基准价或基准价过期时拒绝模型调用；缺少实际使用的缓存类别费率时保留待结算记录。恢复旧商户胶囊时，平台须先加载匹配的官方价格簿；只有全池所有模型、缓存、长上下文费率都能精确还原为同一倍率时才自动迁移，否则拒绝解锁。
+调用事件的 `merchant_pricing` 包含 `basis: official_pool_multiplier`、**未经倍率乘算的基准费率**、`multiplier_millionths`、`official_price_revision`、`official_version`、`official_source`、`official_checked_at` 和 `billing_rules`。Router 按提供商分别计算，将结果与分项写入事件的 `billing`；管理平台校验后入账，不重新套用通用 Token 公式。报价和规则在请求开始时冻结。缺少池倍率、模型基准价或基准价过期时拒绝模型调用；缺少实际使用的缓存类别费率时保留待结算记录。恢复旧商户胶囊时，平台须先加载匹配的官方价格簿；只有全池所有模型、缓存、长上下文费率都能精确还原为同一倍率时才自动迁移，否则拒绝解锁。详细字段、支持范围与拒绝策略见 [计费协议](BILLING.md)。
 
 每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 账号在 deployment 的 `proxy` 中配置；OAuth 账号在 `accounts` 对象内配置 `proxy`。代理仅提供网络出口，模型请求目标仍固定为官方服务。仅获授权的 Workbuddy 测试账号允许 `direct://`。
 

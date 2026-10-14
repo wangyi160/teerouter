@@ -185,6 +185,7 @@ pub(crate) async fn decode(
     streaming: bool,
     limits: crate::resources::Limits,
     refusal: Option<crate::refusal::Observer>,
+    billing: Option<crate::billing::Observer>,
 ) -> Result<crate::upstream::Output, Error> {
     use crate::upstream::{Output, Protocol, decode_native};
     // The Python implementation also accepts an ordinary JSON response for nonstream callers.
@@ -205,6 +206,7 @@ pub(crate) async fn decode(
         streaming || !is_json,
         limits,
         refusal,
+        billing,
     )
     .await?;
     match output {

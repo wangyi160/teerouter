@@ -87,6 +87,10 @@ fn protected(key: &str) -> bool {
     matches!(
         normalized.as_str(),
         "model"
+            | "servicetier"
+            | "speed"
+            | "inferencegeo"
+            | "cachecontrol"
             | "reasoningeffort"
             | "effort"
             | "thinking"

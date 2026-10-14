@@ -676,6 +676,7 @@ impl Engine {
             .map_err(|e| reject(&mut parent, e))?;
         if let Some(parent) = parent {
             ticket.context = parent.context.clone();
+            ticket.billing = parent.billing.clone();
             ticket.parent = Some(Box::new(parent));
         }
         let catalogs = groups
@@ -795,6 +796,7 @@ impl Engine {
             ticket.refusal = Some(observer.clone());
             let mut request_client = backend.client.clone();
             request_client.refusal = Some(observer.clone());
+            request_client.billing = ticket.billing.clone();
             request_client.activity = ticket.activity();
             let result = timeout_at(deadline, async {
                 let output = upstream::call(

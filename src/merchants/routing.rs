@@ -385,6 +385,11 @@ pub(crate) async fn execute(
         meter.requests += 1;
     }
     let mut parent: Ticket = root.admit_external(account, request_id.clone(), alias.into())?;
+    parent.billing = Some(crate::billing::Observer::new(
+        group.provider.ok_or_else(invalid)?,
+        &body,
+        price.clone(),
+    )?);
     parent.context = json!({"merchant_id":merchant,"merchant_price_version":settings.revision,"merchant_pricing":price});
     body["model"] = model.clone().into();
     headers.insert("x-router-pool", pool.parse().map_err(|_| invalid())?);

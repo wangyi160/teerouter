@@ -10,7 +10,7 @@
 
 `src/attestation.rs` 在同一程序中提供 TLS 1.3 和挑战绑定的 SNP / dstack TDX 证据。Linux SNP 路径直接访问设备；dstack 路径访问 guest 内固定 Unix socket。普通开发主机只在显式 sample 构建与参数下返回 sample，正式 SDK 拒绝此证据。
 
-`src/accounting.rs` 管理请求和流的生命周期、并发及 RPM/TPM；`src/ledger.rs` 采集 usage 与拒答审计，并暂存待确认记录。它们不计算费用。用户所有 API key 共享 `max_concurrent`；流结束、失败或取消后才释放名额，超限返回 429、不排队。
+`src/accounting.rs` 管理请求和流的生命周期、并发及 RPM/TPM；`src/ledger.rs` 采集 usage、计费结果与拒答审计，并暂存待确认记录。`src/billing/` 在协议转换前采集计费用量，分别由 OpenAI、Anthropic、xAI 计算器使用请求开始时冻结的报价计算金额。余额和持久化账务仍由外部管理平台负责，详见 [计费协议](docs/BILLING.md)。用户所有 API key 共享 `max_concurrent`；流结束、失败或取消后才释放名额，超限返回 429、不排队。
 
 `src/refusal.rs` 在上游协议转换前采集明确的拒答字段；每次上游尝试独立收集，流式片段合并，确认拒答后不换账号重试。`Ticket` 在请求完成、失败、超时或客户端取消时将拒答记录和 usage 一起写入内存状态。只保存拒答文本、公开原因与定位元数据，正常回答、输入正文及工具内容不归档。LockLLM 扫描路径已删除；`src/moderation.rs` 仅为旧快照保留历史类型。拒答原文只存放在 `src/refusal/queue.rs` 的全局有序队列中，使用独立递增 ID；用量事件仅保存 `refusal_id` 引用。管理员通过 `/admin/refusals` 按 ID 拉取、归档后删除前缀，分页通过有序双端队列二分定位游标，删除按前缀弹出。队列满时暂停新请求，不淘汰未归档记录。用户资料不附带拒答历史。
 

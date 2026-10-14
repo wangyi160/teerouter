@@ -112,6 +112,14 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
     assert_eq!(quote["input"], 3000000, "{event}");
     assert_eq!(quote["multiplier_millionths"], 200000);
     assert_eq!(quote["official_price_revision"], 2);
+    let bill = &event["event"]["billing"];
+    assert_eq!(bill["calculator"], "chatgpt_v1");
+    assert_eq!(bill["state"], "calculated", "{event}");
+    assert_eq!(bill["official_cost_microusd"], 40);
+    assert_eq!(bill["charge_microusd"], 8);
+    let merchant_events = live.runtime.engine().vault.lock().unwrap().events.clone();
+    let merchant_event = serde_json::to_value(merchant_events.back().unwrap()).unwrap();
+    assert_eq!(merchant_event["event"]["billing"], *bill);
 }
 
 #[tokio::test]

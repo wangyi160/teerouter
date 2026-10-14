@@ -1,6 +1,7 @@
 mod accounting;
 mod anthropic;
 pub mod attestation;
+mod billing;
 mod client;
 pub mod compatibility;
 pub mod config;

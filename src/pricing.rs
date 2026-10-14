@@ -34,6 +34,8 @@ pub(crate) struct ModelPrice {
     pub long_context: Option<LongContextPrice>,
     #[serde(default)]
     pub valid_until: Option<u64>,
+    #[serde(default, skip_serializing_if = "crate::billing::Rules::is_empty")]
+    pub billing_rules: crate::billing::Rules,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +53,7 @@ pub(crate) struct Quote {
     pub official_version: u64,
     pub official_source: String,
     pub official_checked_at: u64,
+    pub billing_rules: crate::billing::Rules,
 }
 fn invalid() -> ApiError {
     ApiError::new(
@@ -126,6 +129,7 @@ pub(crate) fn validate(book: &Book) -> Result<(), ApiError> {
                 .all(|n| n <= 1_000_000_000_000)
             };
             if !crate::config::valid_model_id(&m.model)
+                || !crate::billing::validate(p.provider, &m.billing_rules)
                 || !models.insert(&m.model)
                 || !rates_valid(&m.rates)
                 || m.long_context.as_ref().is_some_and(|t| {
@@ -188,6 +192,7 @@ pub(crate) fn quotes(settings: &Settings, config: &Config, book: &Book) -> Vec<Q
                 official_version: provider.version,
                 official_source: provider.source.clone(),
                 official_checked_at: provider.checked_at,
+                billing_rules: model.billing_rules.clone(),
             });
         }
     }
