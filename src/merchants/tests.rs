@@ -73,6 +73,32 @@ async fn price_source_is_platform_admin_only_and_blocks_static_overwrites() {
         "pricing_source_managed"
     );
     r.engine().vault.lock().unwrap().pricing_source.enabled = false;
+    // Inject a deterministic download failure without contacting the network.
+    r.engine().vault.lock().unwrap().pricing_source.url = "invalid://test".into();
+    drop(_guard);
+    let (status, queued) = call(
+        &server,
+        Method::POST,
+        "/admin/pricing/refresh",
+        ADMIN,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(queued["accepted"], true);
+    assert_eq!(queued["running"], true);
+    for _ in 0..100 {
+        if r.pricing_sync.try_lock().is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let data = r.engine().vault.lock().unwrap().clone();
+    assert_eq!(
+        data.pricing_source.last_error.as_deref(),
+        Some("invalid_pricing_source")
+    );
+    assert_eq!(data.official_pricing.revision, 1);
 }
 
 #[tokio::test]
