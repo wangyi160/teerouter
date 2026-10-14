@@ -143,13 +143,13 @@ async fn refresh_urls_are_compiled_in_and_ignore_imported_endpoint_metadata() {
 }
 
 #[tokio::test]
-async fn externally_renewed_claude_tokens_remain_usable_until_the_expiry_margin() {
+async fn externally_renewed_claude_tokens_remain_usable_until_expiry() {
     let vault = crate::vault::Vault::memory().unwrap();
     vault
         .put_account(
             "claude",
             Provider::Anthropic,
-            &json!({"access_token":"sk-ant-oat-fixture","expires_at":now()+180.0}),
+            &json!({"access_token":"sk-ant-oat-fixture","expires_at":now()+30.0}),
         )
         .unwrap();
     vault
@@ -173,8 +173,97 @@ async fn externally_renewed_claude_tokens_remain_usable_until_the_expiry_margin(
     assert!(store.maintain().await.is_err());
     assert_eq!(
         vault.health("claude", store.revision().unwrap()).unwrap()["state"],
-        "reauthorization_required"
+        "expired"
     );
+}
+
+#[rstest]
+#[case(Provider::OpenAI)]
+#[case(Provider::XAI)]
+#[tokio::test]
+async fn access_only_tokens_do_not_refresh_and_expired_accounts_recover_on_import(
+    #[case] provider: Provider,
+) {
+    let vault = crate::vault::Vault::memory().unwrap();
+    // Inside both the proactive refresh window and the normal refresh margin.
+    let access = jwt(now() + 30.0, "fixture-account");
+    vault
+        .put_account("test", provider, &json!({"access_token":access}))
+        .unwrap();
+    let mock = endpoint(json!({"error":"must_not_refresh"}), 400).await;
+    vault
+        .set_account_proxy("test", provider, mock.url.trim_end_matches("/token"))
+        .unwrap();
+    let store = TokenStore::open(provider, vault.clone(), "test").unwrap();
+    assert_eq!(store.maintain().await.unwrap().access_token, access);
+    assert_eq!(store.credential().await.unwrap().access_token, access);
+    assert!(store.force_refresh().await.is_err());
+    assert!(store.available());
+    assert_eq!(
+        vault.health("test", store.revision().unwrap()).unwrap()["state"],
+        "active"
+    );
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+
+    vault
+        .import_account(
+            "test",
+            provider,
+            &json!({"access_token":jwt(1.0,"fixture-account")}),
+        )
+        .unwrap();
+    assert!(store.maintain().await.is_err());
+    assert!(!store.available());
+    assert!(store.credential().await.is_err());
+    assert!(store.force_refresh().await.is_err());
+    let health = vault.health("test", store.revision().unwrap()).unwrap();
+    assert_eq!(health["state"], "expired");
+    assert_eq!(health["last_error"], "access_token_expired");
+    assert_eq!(health["failures"], 0);
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+
+    vault
+        .import_account(
+            "test",
+            provider,
+            &json!({"access_token":"replacement", "expires_at":now()+3600.0}),
+        )
+        .unwrap();
+    assert!(store.available());
+    assert_eq!(
+        store.credential().await.unwrap().access_token,
+        "replacement"
+    );
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+}
+
+#[rstest]
+#[case(Provider::OpenAI)]
+#[case(Provider::XAI)]
+#[case(Provider::Anthropic)]
+#[tokio::test]
+async fn rejected_access_only_tokens_require_replacement_without_refresh_requests(
+    #[case] provider: Provider,
+) {
+    let vault = crate::vault::Vault::memory().unwrap();
+    vault
+        .put_account("test", provider, &json!({"access_token":"opaque-token"}))
+        .unwrap();
+    let mock = endpoint(json!({"error":"must_not_refresh"}), 400).await;
+    vault
+        .set_account_proxy("test", provider, mock.url.trim_end_matches("/token"))
+        .unwrap();
+    let store = TokenStore::open(provider, vault.clone(), "test").unwrap();
+    assert!(store.maintain().await.is_ok());
+    store.rejected();
+    assert!(!store.available());
+    assert!(store.credential().await.is_err());
+    assert!(store.maintain().await.is_err());
+    assert_eq!(
+        vault.health("test", store.revision().unwrap()).unwrap()["last_error"],
+        "access_rejected"
+    );
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

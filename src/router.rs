@@ -14,7 +14,7 @@ use subtle::ConstantTimeEq;
 use tokio::time::{Instant, timeout_at};
 
 use crate::{
-    Client, Error, Provider,
+    Client, Error,
     accounting::{Account, Ticket},
     config::{self, Config},
     error::ApiError,
