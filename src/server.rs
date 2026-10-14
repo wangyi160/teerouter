@@ -77,6 +77,14 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
             get(crate::pricing::get).put(crate::pricing::put),
         )
         .route("/admin/usage", get(usage))
+        .route(
+            "/admin/pricing/source",
+            get(crate::pricing::source::get).put(crate::pricing::source::put),
+        )
+        .route(
+            "/admin/pricing/refresh",
+            post(crate::pricing::source::refresh),
+        )
         .route("/admin/models", get(discovery_status))
         .route("/admin/models/refresh", post(refresh_models))
         .route(
@@ -340,6 +348,7 @@ async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Val
         status["merchant_only"] = true.into();
         status["pool_multiplier_pricing"] = true.into();
         status["provider_billing_version"] = 1.into();
+        status["pricing_source_sync_version"] = 1.into();
     }
     Json(status)
 }

@@ -7,6 +7,7 @@ pub(crate) struct Runtime {
     pub merchants: crate::merchants::Registry,
     current: RwLock<Arc<Engine>>,
     pub ingress: Arc<Gate>,
+    pub pricing_sync: tokio::sync::Mutex<()>,
     write: tokio::sync::Mutex<()>,
     maintenance: RwLock<serde_json::Value>,
 }
@@ -26,6 +27,7 @@ impl Runtime {
             merchants: Default::default(),
             current: RwLock::new(engine),
             ingress: Arc::default(),
+            pricing_sync: tokio::sync::Mutex::new(()),
             write: tokio::sync::Mutex::new(()),
             maintenance: RwLock::new(serde_json::json!({"last_run":null,"last_error":null})),
         });
@@ -58,6 +60,7 @@ impl Runtime {
                 tokio::time::sleep(std::time::Duration::from_secs(interval.min(30))).await;
             }
         });
+        crate::pricing::source::start(&runtime);
         runtime
     }
     pub fn engine(&self) -> Arc<Engine> {
@@ -97,6 +100,7 @@ impl Runtime {
         };
         crate::refusal::restore(&mut data).map_err(|_| invalid())?;
         crate::pricing::validate(&data.official_pricing)?;
+        crate::pricing::source::validate(&data.pricing_source)?;
         if data
             .merchants
             .iter()

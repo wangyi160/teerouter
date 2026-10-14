@@ -8,6 +8,74 @@ const ADMIN: &str = "platform-admin";
 mod routing_protocol;
 
 #[tokio::test]
+async fn price_source_is_platform_admin_only_and_blocks_static_overwrites() {
+    let r = root();
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    for key in ["alice-key", "invalid"] {
+        for (method, path) in [
+            (Method::GET, "/admin/pricing/source"),
+            (Method::PUT, "/admin/pricing/source"),
+            (Method::POST, "/admin/pricing/refresh"),
+        ] {
+            assert_eq!(call(&server, method, path, key, json!({})).await.0, 401);
+        }
+    }
+    let (_, source) = call(
+        &server,
+        Method::GET,
+        "/admin/pricing/source",
+        ADMIN,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(source["enabled"], false);
+    // Hold the job lock to make this test independent of the background worker timer.
+    let _guard = r.pricing_sync.lock().await;
+    let update = json!({"expected_revision":0,"enabled":true,"url":source["url"]});
+    assert_eq!(
+        call(
+            &server,
+            Method::PUT,
+            "/admin/pricing/source",
+            ADMIN,
+            update.clone()
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        call(&server, Method::PUT, "/admin/pricing/source", ADMIN, update)
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/pricing/refresh",
+            ADMIN,
+            json!({})
+        )
+        .await
+        .1["error"]["code"],
+        "pricing_sync_running"
+    );
+    let mut book =
+        json!({"expected_revision":1,"providers":crate::pricing::book(&r).unwrap().providers});
+    book["providers"][0]["version"] = json!(2);
+    book["providers"][0]["models"][0]["rates"]["input"] = json!(1);
+    assert_eq!(
+        call(&server, Method::PUT, "/admin/pricing", ADMIN, book)
+            .await
+            .1["error"]["code"],
+        "pricing_source_managed"
+    );
+    r.engine().vault.lock().unwrap().pricing_source.enabled = false;
+}
+
+#[tokio::test]
 async fn public_price_book_is_read_only_and_independent_of_account_inventory() {
     let r = root();
     #[cfg(feature = "workbuddy-lab")]
