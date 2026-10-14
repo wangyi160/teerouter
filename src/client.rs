@@ -12,6 +12,7 @@ pub struct Client {
     pub(crate) provider: Provider,
     pub(crate) http: reqwest::Client,
     pub(crate) refusal: Option<crate::refusal::Observer>,
+    pub(crate) billing: Option<crate::billing::Observer>,
     pub(crate) activity: Option<crate::ledger::Activity>,
     headers: HeaderMap,
     pub(crate) base_url: reqwest::Url,
@@ -66,6 +67,7 @@ impl Client {
             base_url: parse_base_url(provider.base_url())?,
             oauth: None,
             refusal: None,
+            billing: None,
             activity: None,
         })
     }
@@ -92,6 +94,7 @@ impl Client {
             base_url: parse_base_url(base)?,
             oauth: Some(account),
             refusal: None,
+            billing: None,
             activity: None,
         })
     }
@@ -168,6 +171,9 @@ impl Client {
     pub async fn completion(&self, request: Value) -> Result<Value, Error> {
         let response = self.send(request, false).await?;
         let body = crate::resources::json(response, self.limits.bytes).await?;
+        if let Some(observer) = &self.billing {
+            observer.observe(self.chat_protocol(), &body, false);
+        }
         if let Some(observer) = &self.refusal {
             observer.observe(self.chat_protocol(), &body, false);
         }
@@ -204,6 +210,7 @@ impl Client {
             include_usage,
             self.limits,
             self.refusal.clone(),
+            self.billing.clone(),
         ))
     }
 

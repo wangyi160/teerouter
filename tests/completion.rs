@@ -68,6 +68,59 @@ fn native_response() -> Value {
         "stop_reason":"end_turn", "usage":{"input_tokens":2, "output_tokens":1}})
 }
 
+#[tokio::test]
+async fn claude_native_billing_survives_chat_conversion_and_stream_usage_filtering() {
+    for streaming in [false, true] {
+        let usage = json!({"input_tokens":60,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":10,
+            "cache_creation":{"ephemeral_5m_input_tokens":6,"ephemeral_1h_input_tokens":4}});
+        let mut reply = native_response();
+        reply["usage"] = usage.clone();
+        let body = if streaming {
+            let mut initial = reply.clone();
+            initial["usage"]["output_tokens"] = json!(0);
+            [json!({"type":"message_start","message":initial}),
+             json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}),
+             json!({"type":"message_stop"})].iter().map(|v|format!("data: {v}\n\n")).collect::<String>()
+        } else {
+            reply.to_string()
+        };
+        let (url, captured) = server(
+            200,
+            if streaming {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+            body,
+        )
+        .await;
+        let observer = crate::billing::Observer::new(
+            Provider::Anthropic,
+            &request(),
+            crate::billing::tests::quote(),
+        )
+        .unwrap();
+        let mut client = Client::new(Provider::Anthropic, "test-key")
+            .unwrap()
+            .with_base_url(&url)
+            .unwrap();
+        client.billing = Some(observer.clone());
+        if streaming {
+            let _: Vec<_> = client
+                .stream(request())
+                .await
+                .unwrap()
+                .try_collect()
+                .await
+                .unwrap();
+        } else {
+            client.completion(request()).await.unwrap();
+        }
+        captured.await.unwrap();
+        assert_eq!(observer.finish(200, 1)["official_cost_microusd"], 354);
+    }
+}
+
 #[rstest]
 #[case::openai(Provider::OpenAI)]
 #[case::grok(Provider::XAI)]

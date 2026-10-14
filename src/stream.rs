@@ -20,6 +20,7 @@ struct State {
     pending: VecDeque<Value>,
     done: bool,
     refusal: Option<crate::refusal::Observer>,
+    billing: Option<crate::billing::Observer>,
     protocol: crate::upstream::Protocol,
 }
 
@@ -29,6 +30,7 @@ pub(crate) fn decode(
     include_usage: bool,
     limits: crate::resources::Limits,
     refusal: Option<crate::refusal::Observer>,
+    billing: Option<crate::billing::Observer>,
 ) -> CompletionStream {
     let input = crate::resources::bytes(response, limits);
     let events = FramedRead::new(StreamReader::new(input), SseCodec::bounded(limits.event)).fuse();
@@ -38,6 +40,7 @@ pub(crate) fn decode(
         pending: VecDeque::new(),
         done: false,
         refusal,
+        billing,
         protocol: if provider == Provider::Anthropic {
             crate::upstream::Protocol::Messages
         } else {
@@ -84,6 +87,9 @@ impl State {
             return Ok(());
         }
         let value: Value = serde_json::from_str(&event.data)?;
+        if let Some(observer) = &self.billing {
+            observer.observe(self.protocol, &value, true);
+        }
         if let Some(observer) = &self.refusal {
             observer.observe(self.protocol, &value, true);
         }

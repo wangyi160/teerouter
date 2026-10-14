@@ -176,6 +176,7 @@ impl Account {
                 .unwrap_or_default()
                 .as_millis(),
             tokens: Tokens::default(),
+            billing: None,
             backend: None,
             attempts: 0,
             refusal: None,
@@ -200,6 +201,7 @@ pub(crate) struct Ticket {
     created_at: u64,
     started_at_ms: u128,
     pub tokens: Tokens,
+    pub(crate) billing: Option<crate::billing::Observer>,
     pub backend: Option<Arc<Backend>>,
     pub attempts: usize,
     pub refusal: Option<crate::refusal::Observer>,
@@ -255,6 +257,9 @@ impl Ticket {
         });
         if let Some(extra) = self.context.as_object() {
             audit.as_object_mut().unwrap().extend(extra.clone());
+        }
+        if let Some(billing) = &self.billing {
+            audit["billing"] = billing.finish(status, self.attempts);
         }
         // Platform keeps all admission outcomes. A merchant must not learn an
         // unused user's identity from an error before any upstream contact.

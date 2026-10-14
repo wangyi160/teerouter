@@ -91,6 +91,7 @@ pub(crate) async fn call(
             streaming,
             client.limits,
             client.refusal.clone(),
+            client.billing.clone(),
         )
         .await;
     }
@@ -100,6 +101,7 @@ pub(crate) async fn call(
         streaming,
         client.limits,
         client.refusal.clone(),
+        client.billing.clone(),
     )
     .await
 }
@@ -110,9 +112,13 @@ pub(crate) async fn decode_native(
     streaming: bool,
     limits: crate::resources::Limits,
     refusal: Option<crate::refusal::Observer>,
+    billing: Option<crate::billing::Observer>,
 ) -> Result<Output, Error> {
     if !streaming {
         let value = crate::resources::json(response, limits.bytes).await?;
+        if let Some(observer) = &billing {
+            observer.observe(protocol, &value, false);
+        }
         if let Some(observer) = &refusal {
             observer.observe(protocol, &value, false);
         }
@@ -151,12 +157,14 @@ pub(crate) async fn decode_native(
         events: Pin<Box<dyn Stream<Item = Result<SseEvent, Error>> + Send>>,
         terminal: bool,
         refusal: Option<crate::refusal::Observer>,
+        billing: Option<crate::billing::Observer>,
         done: bool,
     }
     let state = State {
         events: Box::pin(events),
         terminal: false,
         refusal,
+        billing,
         done: false,
     };
     Ok(Output::Stream(Box::pin(futures_util::stream::unfold(
@@ -190,6 +198,9 @@ pub(crate) async fn decode_native(
                             serde_json::from_str::<Value>(&event.data)
                                 .map_err(Error::from)
                                 .and_then(|value| {
+                                    if let Some(observer) = &state.billing {
+                                        observer.observe(protocol, &value, true);
+                                    }
                                     if let Some(observer) = &state.refusal {
                                         observer.observe(protocol, &value, true);
                                     }

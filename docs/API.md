@@ -5,7 +5,7 @@
 
 用户接口使用用户 API key；管理接口使用独立管理密钥。认证头为 `Authorization: Bearer <KEY>`，兼容 `x-api-key`，不接受 URL 中的 key。
 
-`model` 使用目录中的提供商限定 ID，例如 `grok/grok-4.7`。使用 `X-Router-Routing` 指定账号池或自动匹配及倍率上限；旧客户端也可用 `x-router-pool: m_<id>.pool` 选择账号池。思考参数取目录允许值，省略时不补写。金额和账务属于管理平台。
+`model` 使用目录中的提供商限定 ID，例如 `grok/grok-4.7`。使用 `X-Router-Routing` 指定账号池或自动匹配及倍率上限；旧客户端也可用 `x-router-pool: m_<id>.pool` 选择账号池。思考参数取目录允许值，省略时不补写。逐请求费用由 Router 计算，余额和持久化账务属于管理平台。
 
 ## 用户调用
 
@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | GET | `/v1/models` | 按当前 API key 的权限返回已发现模型及思考能力；模型目录与账号池分别读取。 |
 | GET | `/v1/pools` | 返回当前 API key 可访问的池、供应商类型和账号运行状态；不返回账号凭证。 |
-| GET | `/v1/usage` | 当前 API key 的调用和 token 统计；金额与历史账单由管理平台计算。 |
+| GET | `/v1/usage` | 当前 API key 的调用和 token 统计；逐请求金额由 Router 计算，历史账单和余额由管理平台保存。 |
 | POST | `/v1/chat/completions` | messages 请求格式，可使用 stream；思考强度字段为 reasoning_effort。 |
 | POST | `/v1/responses` | input 请求格式，可使用 stream；思考强度字段为 reasoning.effort。不支持 background=true。 |
 | POST | `/v1/messages` | messages 请求格式，需 max_tokens；thinking 选项以模型目录为准。 |

@@ -338,6 +338,7 @@ async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Val
         status["platform_ready"] = engine.vault.serving().into();
         status["merchant_only"] = true.into();
         status["pool_multiplier_pricing"] = true.into();
+        status["provider_billing_version"] = 1.into();
     }
     Json(status)
 }

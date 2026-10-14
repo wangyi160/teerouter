@@ -1,4 +1,5 @@
-//! Usage metadata and explicit upstream refusal evidence, never request bodies. Prices, balances and settlement live in management.
+//! Usage, provider-calculated charges and refusal evidence, never request bodies.
+//! Balances and durable settlement live in management.
 use crate::vault::Vault;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
