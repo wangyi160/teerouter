@@ -190,8 +190,28 @@ pub(crate) async fn refresh(
     if body.as_object().is_none_or(|o| !o.is_empty()) {
         return Err(invalid());
     }
-    sync(&runtime, true).await?;
-    get(HttpState(runtime)).await
+    let engine = runtime.engine();
+    if !engine.vault.initialized() || !engine.vault.serving() {
+        return Err(ApiError::new(
+            503,
+            "not_ready",
+            "Router must be initialized and serving before refreshing prices",
+        ));
+    }
+    let guard = runtime.pricing_sync.clone().try_lock_owned().map_err(|_| {
+        ApiError::new(
+            409,
+            "pricing_sync_running",
+            "A pricing update is already running",
+        )
+    })?;
+    let mut result = status(&engine.vault.lock().map_err(storage)?.pricing_source, true);
+    result["accepted"] = true.into();
+    tokio::spawn(async move {
+        let _guard = guard;
+        let _ = run(&runtime, true).await;
+    });
+    Ok(Json(result))
 }
 
 async fn json(client: &reqwest::Client, url: reqwest::Url) -> Result<Value, ApiError> {
@@ -299,6 +319,10 @@ pub(crate) async fn sync(runtime: &Runtime, manual: bool) -> Result<(), ApiError
             "A pricing update is already running",
         )
     })?;
+    run(runtime, manual).await
+}
+
+async fn run(runtime: &Runtime, manual: bool) -> Result<(), ApiError> {
     let engine = runtime.engine();
     if !engine.vault.initialized() || !engine.vault.serving() {
         return Err(ApiError::new(
@@ -327,11 +351,11 @@ pub(crate) async fn sync(runtime: &Runtime, manual: bool) -> Result<(), ApiError
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("teerouter-pricing/1")
             .connect_timeout(std::time::Duration::from_secs(8))
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|_| unavailable())?;
         let (bytes, sha) = tokio::time::timeout(
-            std::time::Duration::from_secs(25),
+            std::time::Duration::from_secs(120),
             fetch(&client, &config.url),
         )
         .await

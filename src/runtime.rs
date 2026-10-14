@@ -7,7 +7,7 @@ pub(crate) struct Runtime {
     pub merchants: crate::merchants::Registry,
     current: RwLock<Arc<Engine>>,
     pub ingress: Arc<Gate>,
-    pub pricing_sync: tokio::sync::Mutex<()>,
+    pub pricing_sync: Arc<tokio::sync::Mutex<()>>,
     write: tokio::sync::Mutex<()>,
     maintenance: RwLock<serde_json::Value>,
 }
@@ -27,7 +27,7 @@ impl Runtime {
             merchants: Default::default(),
             current: RwLock::new(engine),
             ingress: Arc::default(),
-            pricing_sync: tokio::sync::Mutex::new(()),
+            pricing_sync: Arc::new(tokio::sync::Mutex::new(())),
             write: tokio::sync::Mutex::new(()),
             maintenance: RwLock::new(serde_json::json!({"last_run":null,"last_error":null})),
         });

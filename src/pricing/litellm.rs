@@ -137,7 +137,10 @@ pub(super) fn parse(bytes: &[u8], source: &str, now: u64) -> Result<Import, ApiE
             .then_some(model.to_owned())
         })
         .collect();
-    if chatgpt.is_empty() {
+    if chatgpt.is_empty()
+        || chatgpt.len() > 8192
+        || chatgpt.iter().any(|id| !crate::config::valid_model_id(id))
+    {
         return Err(bad());
     }
     let mut unpriced_models = vec![];

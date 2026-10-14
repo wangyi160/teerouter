@@ -28,7 +28,7 @@ Content-Type: application/json
 
 支持 `github.com/{owner}/{repo}/blob/{ref}/{path}.json` 和 `raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}.json`。ref 可为不含斜线的分支、tag 或 commit SHA；固定 SHA 适合审计复现，跟随 main 适合持续更新。不接受私有仓库凭证、URL 用户名、参数、fragment 或非标准端口。
 
-Router 使用 GitHub Contents / Git Blobs API 读取配置文件，完整 TLS 校验，不跟随重定向，不附加平台、用户或商户密钥。一次检查最长约 25 秒，响应最大 16 MiB。并发更新返回 `409 pricing_sync_running`，配置版本冲突返回 `409 pricing_source_conflict`。更新失败返回 `502 pricing_fetch_failed` 或 `502 invalid_price_source`，保留旧价格；下一次自动检查在上次尝试的 24 小时后，管理员可随时重试。
+Router 使用 GitHub Contents / Git Blobs API 读取配置文件，完整 TLS 校验，不跟随重定向，不附加平台、用户或商户密钥。一次检查最长约 120 秒，响应最大 16 MiB。手动刷新立即返回 `accepted: true, running: true`；下载在后台进行，不占用管理连接。随后轮询 `GET /admin/pricing/source`，以 `running: false` 和 `last_error` 判断结果。并发更新返回 `409 pricing_sync_running`，配置版本冲突返回 `409 pricing_source_conflict`。下载或校验失败记为 `pricing_fetch_failed` 或 `invalid_price_source`，保留旧价格；下一次自动检查在上次尝试的 24 小时后，管理员可随时重试。
 
 状态包含 `last_attempt`、`last_success`、`last_error`、`next_update_at`、`running`、源文件 SHA-256、Git blob SHA 和最近 32 次成功检查的记录。`history.changed` 表示是否改变价格版本。完整账务历史由管理平台保存，请求回执冻结实际使用的报价、来源、价格版本和商户倍率。
 
