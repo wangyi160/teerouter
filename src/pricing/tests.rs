@@ -2,6 +2,7 @@ use super::*;
 
 fn fixture() -> Value {
     json!({
+        "chatgpt/gpt-test":{"litellm_provider":"chatgpt","mode":"responses"},
         "gpt-test":{"litellm_provider":"openai","mode":"chat","input_cost_per_token":0.00001,"output_cost_per_token":0.00005,"cache_read_input_token_cost":0.000001,
             "input_cost_per_token_above_272k_tokens":0.00002,"output_cost_per_token_above_272k_tokens":0.000075,
             "input_cost_per_token_priority":0.00002,"output_cost_per_token_priority":0.0001},
@@ -17,7 +18,7 @@ fn fixture() -> Value {
     })
 }
 fn parse(v: Value) -> Result<Vec<ProviderBook>, crate::error::ApiError> {
-    litellm::parse(&serde_json::to_vec(&v).unwrap(), source::DEFAULT_URL, 100)
+    litellm::parse(&serde_json::to_vec(&v).unwrap(), source::DEFAULT_URL, 100).map(|i| i.providers)
 }
 
 #[test]
@@ -73,6 +74,30 @@ fn incomplete_or_conflicting_source_never_builds_a_partial_book() {
     v["openai/gpt-test"]["input_cost_per_token"] = json!(0);
     assert!(parse(v).is_err());
 }
+
+#[test]
+fn chatgpt_catalog_controls_scope_and_cannot_use_reseller_or_image_prices() {
+    let mut v = fixture();
+    v["gpt-api-only"] = v["gpt-test"].clone();
+    v["chatgpt/image-only"] = json!({"litellm_provider":"chatgpt","mode":"image_generation"});
+    v["image-only"] = json!({"litellm_provider":"openai","mode":"image_generation","input_cost_per_token":0.1,"output_cost_per_token":0.1});
+    v["chatgpt/gpt-unpriced"] = json!({"litellm_provider":"chatgpt","mode":"responses"});
+    v["gpt-unpriced"] = json!({"litellm_provider":"openrouter","mode":"chat","input_cost_per_token":0.1,"output_cost_per_token":0.1});
+    v["bedrock/claude-test"] = v["claude-test"].clone();
+    v["bedrock/claude-test"]["litellm_provider"] = json!("bedrock");
+    v["xai/grok-image"] = json!({"litellm_provider":"xai","mode":"image_generation","input_cost_per_token":0.1,"output_cost_per_token":0.1});
+    let imported =
+        litellm::parse(&serde_json::to_vec(&v).unwrap(), source::DEFAULT_URL, 100).unwrap();
+    assert!(imported.providers.iter().all(|p| p.models.len() == 1));
+    assert_eq!(imported.unpriced_models, vec!["chatgpt/gpt-unpriced"]);
+    v.as_object_mut()
+        .unwrap()
+        .retain(|id, _| !id.starts_with("chatgpt/"));
+    assert!(
+        parse(v).is_err(),
+        "missing subscription catalog must not fall back to the whole OpenAI API catalog"
+    );
+}
 #[test]
 fn safe_github_resolution_and_daily_schedule() {
     assert_eq!(
@@ -120,7 +145,8 @@ fn downloaded_litellm_snapshot() {
     let Ok(path) = std::env::var("TEEROUTER_PRICE_FIXTURE") else {
         return;
     };
-    let p = litellm::parse(&std::fs::read(path).unwrap(), source::DEFAULT_URL, 100).unwrap();
+    let imported = litellm::parse(&std::fs::read(path).unwrap(), source::DEFAULT_URL, 100).unwrap();
+    let p = imported.providers;
     for provider in &p {
         println!(
             "{}: {} models",
@@ -134,6 +160,11 @@ fn downloaded_litellm_snapshot() {
         .find(|m| m.model == "gpt-6-astra")
         .unwrap();
     assert_eq!(astra.rates.input, 10_000_000);
+    assert_eq!(p[0].models.len(), 17);
+    assert_eq!(
+        imported.unpriced_models,
+        vec!["chatgpt/gpt-5.3-codex-spark", "chatgpt/gpt-5.3-instant"]
+    );
 }
 
 #[test]
@@ -163,7 +194,16 @@ fn failure_preserves_active_prices_and_reconfiguration_discards_inflight_downloa
         Some("pricing_fetch_failed")
     );
     data.pricing_source.revision += 1;
-    let downloaded = Ok((parse(fixture()).unwrap(), "a".repeat(40), "b".repeat(64)));
+    let downloaded = Ok((
+        litellm::parse(
+            &serde_json::to_vec(&fixture()).unwrap(),
+            source::DEFAULT_URL,
+            100,
+        )
+        .unwrap(),
+        "a".repeat(40),
+        "b".repeat(64),
+    ));
     assert_eq!(
         source::finish(&mut data, &config, downloaded)
             .unwrap_err()

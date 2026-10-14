@@ -112,13 +112,35 @@ fn uplift(r: &TokenRates, multiplier: u64) -> Result<TokenRates, ApiError> {
     })
 }
 
-pub(super) fn parse(bytes: &[u8], source: &str, now: u64) -> Result<Vec<ProviderBook>, ApiError> {
+pub(super) struct Import {
+    pub providers: Vec<ProviderBook>,
+    pub unpriced_models: Vec<String>,
+}
+
+pub(super) fn parse(bytes: &[u8], source: &str, now: u64) -> Result<Import, ApiError> {
     let root: Value = serde_json::from_slice(bytes).map_err(|_| bad())?;
     let root = root
         .as_object()
         .filter(|v| v.len() <= 100_000)
         .ok_or_else(bad)?;
     let mut providers = vec![];
+    // Subscription catalog and API prices are distinct sections. Join exact IDs;
+    // never guess a price from a similar model name or a reseller's quote.
+    let chatgpt: BTreeSet<_> = root
+        .iter()
+        .filter_map(|(id, v)| {
+            let model = id.strip_prefix("chatgpt/")?;
+            (v["litellm_provider"] == "chatgpt"
+                && matches!(v["mode"].as_str(), Some("chat" | "responses"))
+                && !model.contains('/')
+                && !model.contains("audio"))
+            .then_some(model.to_owned())
+        })
+        .collect();
+    if chatgpt.is_empty() {
+        return Err(bad());
+    }
+    let mut unpriced_models = vec![];
     for (name, provider) in [
         ("openai", Provider::OpenAI),
         ("anthropic", Provider::Anthropic),
@@ -141,6 +163,12 @@ pub(super) fn parse(bytes: &[u8], source: &str, now: u64) -> Result<Vec<Provider
                 continue;
             }
             let v = value.as_object().ok_or_else(bad)?;
+            if (provider == Provider::OpenAI && !chatgpt.contains(id))
+                || (provider == Provider::Anthropic && !id.starts_with("claude-"))
+                || (provider == Provider::XAI && !id.starts_with("grok-"))
+            {
+                continue;
+            }
             let base = rates(v, "", "")?.ok_or_else(bad)?;
             let threshold = context(v)?;
             let long = |tier: &str| -> Result<Option<LongContextPrice>, ApiError> {
@@ -236,6 +264,14 @@ pub(super) fn parse(bytes: &[u8], source: &str, now: u64) -> Result<Vec<Provider
         if models.is_empty() {
             return Err(bad());
         }
+        if provider == Provider::OpenAI {
+            unpriced_models.extend(
+                chatgpt
+                    .iter()
+                    .filter(|id| !models.contains_key(*id))
+                    .map(|id| format!("chatgpt/{id}")),
+            );
+        }
         providers.push(ProviderBook {
             provider,
             version: 1,
@@ -249,5 +285,8 @@ pub(super) fn parse(bytes: &[u8], source: &str, now: u64) -> Result<Vec<Provider
         providers: providers.clone(),
     })
     .map_err(|_| bad())?;
-    Ok(providers)
+    Ok(Import {
+        providers,
+        unpriced_models,
+    })
 }
