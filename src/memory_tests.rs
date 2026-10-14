@@ -3,6 +3,46 @@ fn bundle() -> Provision {
     serde_json::from_value(json!({"config":{"server":{"admin_key_ref":"admin","allow_empty_routes":true},"users":[{"id":"test-user"}],"keys":[{"name":"client","user_id":"test-user","key_ref":"client"}],"models":[]},
         "secrets":{"admin":"admin-secret","client":"client-secret"},"accounts":{"one":{"provider":"openai","credential":{"access_token":"old","refresh_token":"refresh"},"proxy":"http://127.0.0.1:7897"}}})).unwrap()
 }
+#[tokio::test]
+async fn account_status_reports_jwt_expiry_and_external_renewal_without_maintenance() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let v = Vault::memory().unwrap();
+    v.provision(&bundle()).unwrap();
+    for (name, expiry, automatic) in [
+        ("expired", 1u64, false),
+        ("valid", 4102444800, false),
+        ("renewable", 1, true),
+    ] {
+        let token = format!(
+            "e30.{}.fixture",
+            URL_SAFE_NO_PAD.encode(json!({"exp":expiry}).to_string())
+        );
+        let mut record = json!({"access_token":token});
+        if automatic {
+            record["refresh_token"] = "fixture-refresh".into();
+        }
+        v.put_account(name, Provider::XAI, &record).unwrap();
+    }
+    let engine = crate::router::Engine::from_vault(v).unwrap();
+    let status = engine.account_status().unwrap();
+    let account = |name| {
+        status["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()
+    };
+    assert_eq!(account("expired")["health"]["state"], "expired");
+    assert_eq!(account("expired")["expires_at"], 1.0);
+    assert_eq!(account("expired")["refresh_mode"], "external");
+    assert_eq!(account("valid")["health"]["state"], "active");
+    assert_eq!(account("valid")["expires_at"], 4102444800.0);
+    assert_eq!(account("valid")["refresh_mode"], "external");
+    assert_eq!(account("renewable")["refresh_mode"], "automatic");
+    assert_eq!(account("renewable")["health"]["state"], "active");
+    assert!(!status.to_string().contains("fixture"));
+}
 #[test]
 fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
     let v = Vault::memory().unwrap();

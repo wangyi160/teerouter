@@ -19,6 +19,10 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 ## 供应商范围与升级
 
+OAuth 凭证允许只提供 `access_token`，省略或清空 `refresh_token` 表示外部手动续期（Claude 始终由外部续期）。Router 不会对这些账号发起刷新请求，也不会因为进入提前刷新窗口而停用尚未过期的令牌。到期时间取 `expires_at`（Unix 秒）、Claude `expiresAt`（毫秒）或 JWT 的 `exp`；未提供且令牌不可解析时无法预告过期，只能在官方拒绝凭证后要求更新。
+
+已过期账号在状态 API 中返回 `health.state: "expired"`、`health.last_error: "access_token_expired"` 和 `refresh_mode: "external"`，停止转发新请求；到期前被官方拒绝的凭证显示 `reauthorization_required`。重新导入完整的新凭证后恢复。提供有效刷新令牌的 OpenAI / xAI 账号仍自动续期，Workbuddy API key 行为不变。
+
 当前只接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`），以及启用 `workbuddy-lab` 构建时的 `workbuddy`。Gemini / Gemini CLI 已移除，旧的 `/v1beta/models/*` 接口返回 404。
 
 升级前应由管理服务保存旧版加密快照，移除 Gemini 账号、部署、空池及其关联的池权限、fallback、restrictions、compatibility 和专用密钥，再保存并恢复新快照。禁用但仍存在的 Gemini 账号或部署也会被拒绝；不要用空初始化覆盖用户及用量。其余提供商的旧快照允许 `gemini_project: null` 和 `client_secret_ref: null`，新版导出时省略；非空值会被拒绝。管理端的供应商选项也应同步移除 Gemini。

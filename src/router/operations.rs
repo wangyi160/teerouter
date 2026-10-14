@@ -78,18 +78,24 @@ impl Engine {
         let mut data = Vec::new();
         for (name, account) in snapshot.bundle.accounts {
             let revision = snapshot.account_revisions[&name];
-            let health = self
+            let mut health = self
                 .vault
                 .health(&name, revision)
                 .map_err(crate::runtime::storage)?;
-            let expiry = account.credential["expires_at"].as_f64().or_else(|| {
-                account.credential["claudeAiOauth"]["expiresAt"]
-                    .as_f64()
-                    .map(|v| v / 1000.0)
-            });
+            let expiry = crate::oauth::tokens::access_expiry(&account.credential);
+            let renewable =
+                crate::oauth::tokens::can_refresh(account.provider, &account.credential);
+            if !account.provider.is_local_test()
+                && !renewable
+                && expiry.is_some_and(|t| t <= crate::oauth::tokens::now())
+            {
+                health["state"] = "expired".into();
+                health["last_error"] = "access_token_expired".into();
+                health["next_retry_at"] = 0.into();
+            }
             data.push(json!({"name":name,"provider":account.provider,"enabled":account.enabled,"revision":revision,
                 "proxy_configured":account.proxy.is_some(),"expires_at":expiry,"health":health,
-                "refresh_mode":if account.provider.is_local_test() {"none"} else if account.provider == Provider::Anthropic {"external"} else {"automatic"}}));
+                "refresh_mode":if account.provider.is_local_test() {"none"} else if renewable {"automatic"} else {"external"}}));
         }
         Ok(json!({"revision":snapshot.revision,"data":data}))
     }

@@ -132,12 +132,10 @@ impl TokenStore {
     }
 
     fn fresh(&self, data: &Value) -> bool {
-        let Some(access) = token(data) else {
+        if token(data).is_none() {
             return false;
-        };
-        let expiry = data["expires_at"]
-            .as_f64()
-            .or_else(|| claims(access)["exp"].as_f64());
+        }
+        let expiry = access_expiry(data);
         let skew = match self.provider {
             Provider::XAI => 120.0,
             _ => 60.0,
@@ -161,10 +159,17 @@ impl TokenStore {
     }
     pub(crate) fn rejected(&self) {
         if let Ok(revision) = self.revision() {
+            let renewable = self
+                .read()
+                .is_ok_and(|data| can_refresh(self.provider, &data));
             let _ = self.vault.record_health(
                 &self.name,
                 revision,
-                "refresh_required",
+                if renewable {
+                    "refresh_required"
+                } else {
+                    "reauthorization_required"
+                },
                 0,
                 0,
                 Some("access_rejected"),
@@ -177,6 +182,7 @@ impl TokenStore {
         };
         self.vault.health(&self.name, revision).is_ok_and(|h| {
             h["state"] != "reauthorization_required"
+                && h["state"] != "expired"
                 && h["next_retry_at"].as_u64().unwrap_or(0) <= now() as u64
         })
     }
@@ -189,6 +195,11 @@ impl TokenStore {
             .map_err(|_| Error::OAuth("cannot read account health"))?;
         if !force && health["state"] == "reauthorization_required" {
             return Err(Error::OAuth("account requires renewed authorization"));
+        }
+        if health["state"] == "expired" {
+            return Err(Error::OAuth(
+                "access token expired; import renewed credentials",
+            ));
         }
         if !force && health["next_retry_at"].as_u64().unwrap_or(0) > now() as u64 {
             return Err(Error::Api {
@@ -218,9 +229,42 @@ impl TokenStore {
                 account_id: None,
             });
         }
-        let expiry = data["expires_at"]
-            .as_f64()
-            .or_else(|| token(&data).and_then(|t| claims(t)["exp"].as_f64()));
+        let expiry = access_expiry(&data);
+        if !can_refresh(self.provider, &data) {
+            // Externally renewed credentials remain usable until their actual
+            // expiry. Neither proactive maintenance nor a manual refresh may
+            // make an OAuth request without a refresh token.
+            if expiry.is_some_and(|t| t <= now()) {
+                let _ = self.vault.record_health(
+                    &self.name,
+                    revision,
+                    "expired",
+                    0,
+                    0,
+                    Some("access_token_expired"),
+                );
+                return Err(Error::OAuth(
+                    "access token expired; import renewed credentials",
+                ));
+            }
+            if force {
+                return Err(Error::OAuth("account uses external credential renewal"));
+            }
+            if health["state"] == "refresh_required" {
+                let _ = self.vault.record_health(
+                    &self.name,
+                    revision,
+                    "reauthorization_required",
+                    0,
+                    0,
+                    Some("access_rejected"),
+                );
+                return Err(Error::OAuth(
+                    "access token rejected; import renewed credentials",
+                ));
+            }
+            return credential(&data);
+        }
         let early = early
             && self.provider != Provider::Anthropic
             && expiry.is_some_and(|t| t <= now() + self.refresh_ahead as f64);
@@ -373,6 +417,27 @@ impl TokenStore {
 
 pub(crate) fn token(data: &Value) -> Option<&str> {
     data["access_token"].as_str().filter(|s| !s.is_empty())
+}
+pub(crate) fn can_refresh(provider: Provider, data: &Value) -> bool {
+    !provider.is_local_test()
+        && provider != Provider::Anthropic
+        && data["refresh_token"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+}
+pub(crate) fn access_expiry(data: &Value) -> Option<f64> {
+    data["expires_at"]
+        .as_f64()
+        .or_else(|| {
+            data["claudeAiOauth"]["expiresAt"]
+                .as_f64()
+                .map(|t| t / 1000.0)
+        })
+        .or_else(|| {
+            token(data)
+                .or_else(|| data["claudeAiOauth"]["accessToken"].as_str())
+                .and_then(|t| claims(t)["exp"].as_f64())
+        })
 }
 fn credential(data: &Value) -> Result<Credential, Error> {
     let access_token = token(data)
