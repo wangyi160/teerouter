@@ -19,6 +19,8 @@ Token 单价仍为整数 micro-USD / 百万 Token。内部用 `u128` 按 10^-12 
 
 ## 报价扩展
 
+用户通过 `GET /v1/pricing` 读取全部已发布官方价格，不要求存在上游账号或商户授权。响应包含 `revision`、`currency: USD`、`unit: micro_usd_per_million_tokens` 和 `providers`（提供商、版本、官方来源、核对时间、模型及全部计价档位）。此接口仅允许读取，保持用户认证，不返回商户倍率或测试服务价格。它表示 Router 已发布的价格簿，不表示网页实时抓取结果；有报价不代表用户可调用该模型。
+
 `/admin/pricing` 的模型行新增可选 `billing_rules`；旧价格簿仍可加载。它随报价进入 `merchant_pricing` 和模型目录，修改时必须提升官方价格版本。
 
 ```json
