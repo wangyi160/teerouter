@@ -162,3 +162,6 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 LockLLM 不再调用，不需要其密钥；旧 `config.moderation` 仅兼容读取且导出时省略。原 `user.moderation` 是旧版历史，不再增长。新统计称为上游拒答，不能直接认定用户违规。
 
 字段来源：[OpenAI Chat](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[OpenAI Responses SSE](https://developers.openai.com/api/reference/resources/responses/streaming-events)、[Claude 拒答格式](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals)、[xAI Chat 兼容响应](https://docs.x.ai/developers/model-capabilities/legacy/chat-completions)。本地测试验证这些协议形状，不声称进行了真实安全违规触发测试。
+# 自动价格数据源
+
+平台管理接口：`GET/PUT /admin/pricing/source`、`POST /admin/pricing/refresh`。详见 [配置、状态及导入规则](PRICE_SOURCE.md)。能力标识为 `/admin/status` 的 `pricing_source_sync_version: 1`。

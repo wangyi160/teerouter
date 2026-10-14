@@ -42,6 +42,8 @@ fn account_enabled() -> bool {
 pub(crate) struct Data {
     #[serde(default)]
     pub official_pricing: crate::pricing::Book,
+    #[serde(default)]
+    pub pricing_source: crate::pricing::source::State,
     /// Merchant customers with evidence of a model request reaching an upstream.
     /// Independent of the bounded/acknowledged usage and refusal queues.
     #[serde(default)]

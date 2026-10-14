@@ -9,6 +9,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+mod litellm;
+pub(crate) mod source;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -81,30 +85,33 @@ pub(crate) fn validate(book: &Book) -> Result<(), ApiError> {
         let source_ok = if p.provider.is_local_test() {
             p.source == "local-test:workbuddy"
         } else {
-            source.is_some_and(|u| {
-                u.scheme() == "https"
-                    && u.username().is_empty()
-                    && u.password().is_none()
-                    && match p.provider {
-                        Provider::OpenAI => matches!(
-                            u.host_str(),
-                            Some("openai.com" | "platform.openai.com" | "developers.openai.com")
-                        ),
-                        Provider::Anthropic => matches!(
-                            u.host_str(),
-                            Some(
-                                "anthropic.com"
-                                    | "www.anthropic.com"
-                                    | "docs.anthropic.com"
-                                    | "platform.claude.com"
-                                    | "claude.com"
-                            )
-                        ),
-                        Provider::XAI => matches!(u.host_str(), Some("x.ai" | "docs.x.ai")),
-                        #[allow(unreachable_patterns)]
-                        _ => false,
-                    }
-            })
+            self::source::github(&p.source).is_ok()
+                || source.is_some_and(|u| {
+                    u.scheme() == "https"
+                        && u.username().is_empty()
+                        && u.password().is_none()
+                        && match p.provider {
+                            Provider::OpenAI => matches!(
+                                u.host_str(),
+                                Some(
+                                    "openai.com" | "platform.openai.com" | "developers.openai.com"
+                                )
+                            ),
+                            Provider::Anthropic => matches!(
+                                u.host_str(),
+                                Some(
+                                    "anthropic.com"
+                                        | "www.anthropic.com"
+                                        | "docs.anthropic.com"
+                                        | "platform.claude.com"
+                                        | "claude.com"
+                                )
+                            ),
+                            Provider::XAI => matches!(u.host_str(), Some("x.ai" | "docs.x.ai")),
+                            #[allow(unreachable_patterns)]
+                            _ => false,
+                        }
+                })
         };
         if !source_ok
             || p.version == 0
@@ -350,6 +357,24 @@ pub(crate) async fn put(
         providers: input.providers,
     };
     validate(&next)?;
+    if data.pricing_source.enabled {
+        let managed = |b: &Book| {
+            let mut providers: Vec<_> = b
+                .providers
+                .iter()
+                .filter(|p| !p.provider.is_local_test())
+                .collect();
+            providers.sort_by_key(|p| p.provider.api_key_env());
+            serde_json::to_value(providers).unwrap()
+        };
+        if managed(&next) != managed(&data.official_pricing) {
+            return Err(ApiError::new(
+                409,
+                "pricing_source_managed",
+                "Prices are managed by the configured source; use pricing refresh",
+            ));
+        }
+    }
     if data
         .official_pricing
         .providers
