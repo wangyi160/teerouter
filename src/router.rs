@@ -111,7 +111,7 @@ impl Engine {
             }
         }
         for model in &config.models {
-            let mut backends = Vec::new();
+            let mut prepared = Vec::new();
             for deployment in model.deployments.iter().filter(|d| d.enabled) {
                 let deployment = deployment.clone();
                 if deployment
@@ -191,30 +191,40 @@ impl Engine {
                         format!("invalid api_base for deployment {}", deployment.id)
                     })?;
                 }
-                let catalog = {
-                    let binding = if let Some(name) = &deployment.oauth_account {
-                        bundle.accounts[name]
-                            .proxy
-                            .as_deref()
-                            .ok_or("missing proxy")?
-                    } else {
-                        bundle
-                            .secrets
-                            .get(&deployment.api_key_env)
-                            .map(String::as_str)
-                            .ok_or("missing API key")?
-                    };
-                    Some(crate::discovery::Catalog::new(
-                        client.clone(),
-                        &deployment,
-                        config.discovery.clone(),
-                        vault.clone(),
-                        binding,
-                    )?)
-                };
+                let binding = if let Some(name) = &deployment.oauth_account {
+                    bundle.accounts[name]
+                        .proxy
+                        .as_deref()
+                        .ok_or("missing proxy")?
+                } else {
+                    bundle
+                        .secrets
+                        .get(&deployment.api_key_env)
+                        .map(String::as_str)
+                        .ok_or("missing API key")?
+                }
+                .to_owned();
+                prepared.push((deployment, client, binding));
+            }
+            let catalog = if prepared.is_empty() {
+                None
+            } else {
+                Some(crate::discovery::Catalog::new(
+                    &model.name,
+                    &prepared,
+                    config.discovery.clone(),
+                    vault.clone(),
+                )?)
+            };
+            let mut backends = Vec::new();
+            for (deployment, client, _) in prepared {
                 let identity = Backend::binding(&deployment);
-                let backend =
-                    Backend::new(deployment, client, catalog, shared.get(&identity).cloned());
+                let backend = Backend::new(
+                    deployment,
+                    client,
+                    catalog.clone(),
+                    shared.get(&identity).cloned(),
+                );
                 shared.insert(identity, backend.state.clone());
                 backends.push(backend);
             }

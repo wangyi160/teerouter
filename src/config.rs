@@ -318,6 +318,14 @@ impl Config {
         let mut names = HashSet::new();
         let mut ids = HashSet::new();
         for group in &self.models {
+            if let Some(first) = group.deployments.first()
+                && group
+                    .deployments
+                    .iter()
+                    .any(|d| d.provider != first.provider)
+            {
+                return Err("all accounts in a pool must use the same provider".into());
+            }
             if let Some(models) = &group.allowed_models {
                 let mut unique = HashSet::new();
                 if models.len() > 4096

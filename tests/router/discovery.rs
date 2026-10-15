@@ -138,79 +138,100 @@ async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model
 }
 
 #[tokio::test]
-async fn refresh_gates_each_account_without_changing_credentials() {
+async fn pool_fetches_one_catalog_shares_it_and_fails_over_to_another_source() {
     let a = catalog_mock(vec![catalog(Provider::XAI, &["alpha"])]).await;
-    let b = catalog_mock(vec![
-        catalog(Provider::XAI, &["beta"]),
-        Reply::json(native(Provider::XAI)),
-    ])
-    .await;
+    // The second account serves generation without fetching its own catalog.
+    let b = catalog_mock(vec![Reply::json(native(Provider::XAI))]).await;
     let v = Vault::memory().unwrap();
     v.provision(&bundle(Provider::XAI, &[&a, &b])).unwrap();
     let e = Engine::from_vault(v).unwrap();
-    let gateway = run(server::app_upstream_fixture(e)).await;
-    assert_eq!(listed(&gateway).await, ["alpha", "beta"]);
-    assert_eq!(
-        generate(&gateway, Provider::XAI, "beta").await.status(),
-        200
-    );
+    e.refresh_models(true).await;
+    let gateway = run(server::app_upstream_fixture(e.clone())).await;
+    for list in futures_util::future::join_all((0..8).map(|_| listed(&gateway))).await {
+        assert_eq!(list, ["alpha"]);
+    }
     assert_eq!(a.calls.lock().unwrap().len(), 1);
+    assert!(b.calls.lock().unwrap().is_empty());
+    let response = client()
+        .post(format!("{}/v1/responses", gateway.url))
+        .bearer_auth("client-secret")
+        .header("x-router-account", "account-1")
+        .json(&json!({"model":"alpha","input":"hello"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
     assert_eq!(
-        b.calls.lock().unwrap()[1].headers["authorization"],
+        b.calls.lock().unwrap()[0].headers["authorization"],
         "Bearer sk-ant-oat-fixture-1"
     );
     a.replies
         .lock()
         .unwrap()
-        .push_back(catalog(Provider::XAI, &["new-alpha"]));
+        .push_back(catalog(Provider::XAI, &["updated"]));
+    e.refresh_models(true).await;
+    assert_eq!(a.calls.lock().unwrap().len(), 2); // One GET even though two backends share it.
+    assert_eq!(b.calls.lock().unwrap().len(), 1);
+    assert_eq!(listed(&gateway).await, ["updated"]);
+    a.replies.lock().unwrap().push_back(Reply::error(503));
     b.replies
         .lock()
         .unwrap()
-        .push_back(catalog(Provider::XAI, &[]));
-    let url = format!("{}/admin/models/refresh", gateway.url);
-    assert_eq!(
-        client()
-            .post(&url)
-            .bearer_auth("client-secret")
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
-    assert_eq!(
-        client()
-            .post(url)
-            .bearer_auth("admin-secret")
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        200
-    );
-    assert_eq!(listed(&gateway).await, ["new-alpha"]);
+        .push_back(catalog(Provider::XAI, &["replacement"]));
+    e.refresh_models(true).await;
+    for row in e.discovery_status()["data"].as_array().unwrap() {
+        assert_eq!(row["catalog"]["scope"], "pool");
+        assert_eq!(row["catalog"]["source_deployment"], "account-1");
+        assert_eq!(
+            row["official_models"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["replacement"]
+        );
+    }
+    // Last successful source is preferred on the next refresh, with no union of old results.
     b.replies
         .lock()
         .unwrap()
-        .push_back(Reply::json(native(Provider::XAI)));
+        .push_back(catalog(Provider::XAI, &["latest"]));
+    e.refresh_models(true).await;
+    assert_eq!(a.calls.lock().unwrap().len(), 3);
+    assert_eq!(b.calls.lock().unwrap().len(), 3);
+    assert_eq!(listed(&gateway).await, ["latest"]);
     assert_eq!(
-        generate(&gateway, Provider::XAI, "beta").await.status(),
+        generate(&gateway, Provider::XAI, "alpha").await.status(),
         404
     );
-    a.replies
-        .lock()
-        .unwrap()
-        .push_back(Reply::json(native(Provider::XAI)));
-    assert_eq!(
-        generate(&gateway, Provider::XAI, "new-alpha")
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(
-        a.calls.lock().unwrap().last().unwrap().body["model"],
-        "new-alpha"
-    );
+}
+
+#[tokio::test]
+async fn pool_catalog_falls_back_after_timeout_or_auth_failure() {
+    for auth_failure in [false, true] {
+        let first = if auth_failure {
+            Reply::error(401)
+        } else {
+            let mut reply = catalog(Provider::XAI, &["slow"]);
+            reply.delay = Duration::from_secs(2);
+            reply
+        };
+        let a = catalog_mock(vec![first]).await;
+        let b = catalog_mock(vec![catalog(Provider::XAI, &["working"])]).await;
+        let mut config = bundle(Provider::XAI, &[&a, &b]);
+        config.config.discovery.timeout_secs = 1;
+        let v = Vault::memory().unwrap();
+        v.provision(&config).unwrap();
+        let e = Engine::from_vault(v).unwrap();
+        e.refresh_models(true).await;
+        for row in e.discovery_status()["data"].as_array().unwrap() {
+            assert_eq!(row["catalog"]["source_deployment"], "account-1");
+            assert!(row["official_models"].get("working").is_some());
+            assert!(row["official_models"].get("slow").is_none());
+        }
+        assert_eq!(a.calls.lock().unwrap().len(), 1);
+        assert_eq!(b.calls.lock().unwrap().len(), 1);
+    }
 }
 
 #[tokio::test]
@@ -301,7 +322,9 @@ async fn background_refresh_works_without_list_requests_and_shared_account_limit
         }
     })))
     .await;
-    let mut data = bundle_urls(Provider::XAI, &[&proxy.url]);
+    let unused = catalog_mock(vec![]).await;
+    let mut data = bundle_urls(Provider::XAI, &[&proxy.url, &unused.running.url]);
+    data.config.models[0].deployments[1].rpm = 1;
     data.config.discovery.refresh_secs = 1;
     data.config.models[0].deployments[0].rpm = 1;
     let v = Vault::memory().unwrap();
@@ -323,9 +346,26 @@ async fn background_refresh_works_without_list_requests_and_shared_account_limit
     .await
     .unwrap();
     assert!(catalog_calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    assert!(unused.calls.lock().unwrap().is_empty());
+    assert!(
+        e.discovery_status()["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["official_models"].get("new").is_some())
+    );
     assert_eq!(listed(&gateway).await, ["new"]);
-    assert_eq!(generate(&gateway, Provider::XAI, "new").await.status(), 200);
-    assert_eq!(generate(&gateway, Provider::XAI, "new").await.status(), 503);
+    for expected in [200, 503] {
+        let response = client()
+            .post(format!("{}/v1/responses", gateway.url))
+            .bearer_auth("client-secret")
+            .header("x-router-account", "account-0")
+            .json(&json!({"model":"new","input":"hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
 }
 
 #[tokio::test]

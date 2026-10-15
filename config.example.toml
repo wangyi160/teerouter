@@ -20,7 +20,7 @@ max_concurrent = 16
 user_id = "test-user"
 name = "local"
 key_env = "TEELLM_API_KEY"
-models = ["chat/*"] # Select with x-router-pool; send the real model ID unchanged.
+models = ["chat/*", "claude/*", "grok/*"] # Pool ACLs; send the real model ID unchanged.
 rpm = 120
 tpm = 0
 max_concurrent = 32
@@ -46,6 +46,10 @@ failure_threshold = 2
 cooldown_secs = 30
 timeout_secs = 90
 
+[[models]]
+name = "claude"
+provider = "anthropic"
+
 [[models.deployments]]
 id = "claude-primary"
 provider = "anthropic" # alias: claude
@@ -54,6 +58,10 @@ api_key_env = "ANTHROPIC_API_KEY"
 proxy = "http://127.0.0.1:18082"
 enabled = false
 # api_base = "https://api.anthropic.com/v1"
+
+[[models]]
+name = "grok"
+provider = "xai"
 
 [[models.deployments]]
 id = "grok-primary"

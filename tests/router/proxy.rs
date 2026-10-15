@@ -119,8 +119,8 @@ async fn dead_proxy_never_contacts_reachable_origin_and_failover_uses_next_bindi
     .await;
     let response = generate(&gateway, Provider::XAI).await;
     assert_eq!(response.status(), 200);
-    // The dead account is excluded by catalog admission before generation.
-    assert_eq!(response.headers()["x-router-attempts"], "1");
+    // Pool discovery uses the working proxy; generation retains its own account failover.
+    assert_eq!(response.headers()["x-router-attempts"], "2");
     assert!(origin.calls.lock().unwrap().is_empty());
     assert_eq!(
         good.calls.lock().unwrap()[0].headers["authorization"],

@@ -1,4 +1,4 @@
-//! Account-scoped official model/capability evidence; only fresh caches admit requests.
+//! One official model/capability catalog per pool, fetched through one usable account.
 pub(crate) mod capabilities;
 mod fetch;
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::{Arc, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -29,16 +29,18 @@ struct Snapshot {
     models: BTreeMap<String, ModelInfo>,
     fetched_at: u64,
     revision: Option<i64>,
+    account: usize,
 }
 
 struct Refresh {
     attempted: Option<Instant>,
-    revision: Option<Option<i64>>,
+    revisions: Vec<Option<Option<i64>>>,
+    next_account: usize,
     error: Option<&'static str>,
 }
 
 pub(crate) struct Catalog {
-    client: Client,
+    clients: Vec<(String, Client)>,
     options: Discovery,
     vault: Arc<Vault>,
     source: String,
@@ -48,21 +50,29 @@ pub(crate) struct Catalog {
 
 impl Catalog {
     pub fn new(
-        client: Client,
-        deployment: &Deployment,
+        pool: &str,
+        accounts: &[(Deployment, Client, String)],
         options: Discovery,
         vault: Arc<Vault>,
-        binding: &str,
     ) -> Result<Arc<Self>, String> {
-        // Bind restart caches to the provider, credential reference, proxy and endpoint.
+        if accounts.is_empty()
+            || accounts
+                .iter()
+                .any(|(d, _, _)| d.provider != accounts[0].0.provider)
+        {
+            return Err("model discovery requires a nonempty pool with one provider".into());
+        }
+        // Pool identity and source bindings isolate merchants, pools, endpoints and credentials.
         // Hash input can contain secrets, but only the digest is persisted as a cache key.
         let encoded = zeroize::Zeroizing::new(
             serde_json::to_vec(&(
-                "official-capabilities-v2",
-                deployment,
+                "official-pool-capabilities-v1",
+                pool,
                 &options,
-                binding,
-                &client.profile,
+                accounts
+                    .iter()
+                    .map(|(d, c, binding)| (d, binding, &c.profile))
+                    .collect::<Vec<_>>(),
             ))
             .map_err(|_| "invalid discovery configuration")?,
         );
@@ -74,7 +84,8 @@ impl Catalog {
             .transpose()
             .map_err(|_| "invalid model cache")?;
         if snapshot.as_ref().is_some_and(|s| {
-            s.models.len() > 10000
+            s.account >= accounts.len()
+                || s.models.len() > 10000
                 || s.models.iter().any(|(id, info)| {
                     !valid_model_id(id)
                         || !valid_model_id(&info.canonical_id)
@@ -83,39 +94,54 @@ impl Catalog {
         }) {
             return Err("invalid model cache".into());
         }
+        let next_account = snapshot.as_ref().map(|s| s.account).unwrap_or(0);
         Ok(Arc::new(Self {
-            client,
+            clients: accounts
+                .iter()
+                .map(|(d, c, _)| (d.id.clone(), c.clone()))
+                .collect(),
             options,
             vault,
             source,
             snapshot: RwLock::new(snapshot),
             refresh: Mutex::new(Refresh {
                 attempted: None,
-                revision: None,
+                revisions: Vec::new(),
+                next_account,
                 error: None,
             }),
         }))
     }
 
-    fn current_revision(&self) -> Result<Option<i64>, Error> {
-        self.client.oauth.as_ref().map(|a| a.revision()).transpose()
+    fn current_revision(&self, account: usize) -> Result<Option<i64>, Error> {
+        self.clients[account]
+            .1
+            .oauth
+            .as_ref()
+            .map(|a| a.revision())
+            .transpose()
+    }
+
+    fn revisions(&self) -> Vec<Option<Option<i64>>> {
+        (0..self.clients.len())
+            .map(|i| self.current_revision(i).ok())
+            .collect()
+    }
+
+    fn fresh(&self, snapshot: &Snapshot) -> bool {
+        let time = now();
+        self.current_revision(snapshot.account).ok() == Some(snapshot.revision)
+            && snapshot.fetched_at <= time
+            && time - snapshot.fetched_at
+                < self.options.refresh_secs.min(self.options.max_stale_secs)
     }
 
     pub fn models(&self) -> BTreeSet<String> {
-        let Ok(revision) = self.current_revision() else {
-            return BTreeSet::new();
-        };
-        let time = now();
         self.snapshot
             .read()
             .unwrap()
             .as_ref()
-            .filter(|s| {
-                s.revision == revision
-                    && s.fetched_at <= time
-                    && time - s.fetched_at
-                        < self.options.refresh_secs.min(self.options.max_stale_secs)
-            })
+            .filter(|s| self.fresh(s))
             .map(|s| s.models.keys().cloned().collect())
             .unwrap_or_default()
     }
@@ -128,23 +154,16 @@ impl Catalog {
                 "A current authenticated official model catalog is required",
             )
         };
-        let revision = self.current_revision().map_err(|_| unavailable())?;
-        let time = now();
         let guard = self.snapshot.read().unwrap();
         let snapshot = guard
             .as_ref()
-            .filter(|s| {
-                s.revision == revision
-                    && s.fetched_at <= time
-                    && time - s.fetched_at
-                        < self.options.refresh_secs.min(self.options.max_stale_secs)
-            })
+            .filter(|s| self.fresh(s))
             .ok_or_else(unavailable)?;
         snapshot.models.get(model).cloned().ok_or_else(|| {
             crate::error::ApiError::new(
                 404,
                 "model_not_found",
-                "Model is not in the selected account's official catalog",
+                "Model is not in the selected pool's official catalog",
             )
         })
     }
@@ -156,9 +175,9 @@ impl Catalog {
             return;
         }
         let mut state = self.refresh.lock().await;
-        let current = self.current_revision();
+        let current = self.revisions();
         if state.attempted.is_some_and(|t| {
-            state.revision == current.as_ref().ok().copied()
+            state.revisions == current
                 && (t >= requested
                     || (!force
                         && state.error.is_some()
@@ -166,74 +185,120 @@ impl Catalog {
         }) {
             return;
         }
-        let time = now();
-        let fresh = self.snapshot.read().unwrap().as_ref().is_some_and(|s| {
-            current.as_ref().is_ok_and(|rev| *rev == s.revision)
-                && s.fetched_at <= time
-                && time - s.fetched_at < self.options.refresh_secs
-        });
+        let fresh = self
+            .snapshot
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|s| self.fresh(s));
         if !force && fresh {
             return;
         }
-        let result = tokio::time::timeout(
-            Duration::from_secs(self.options.timeout_secs),
-            fetch::models(&self.client, &self.options.codex_client_version),
-        )
-        .await;
-        match result {
-            Ok(Ok((models, revision))) => {
-                let snapshot = Snapshot {
-                    models,
-                    fetched_at: now(),
-                    revision,
-                };
-                if self.current_revision().ok() != Some(revision) {
-                    state.error = Some("account_changed");
-                } else if self
-                    .vault
-                    .store_catalog(&self.source, Some(&json!(snapshot)))
-                    .is_err()
-                {
-                    state.error = Some("cache_write_failed");
-                } else {
-                    *self.snapshot.write().unwrap() = Some(snapshot);
-                    state.error = None;
-                }
+        // Prefer the last successful source. A failed source is replaced, never merged.
+        // Bound the whole pool refresh; reserve time for a fallback after a slow source.
+        let budget = Duration::from_secs(self.options.timeout_secs);
+        let deadline = Instant::now() + budget;
+        let start = state.next_account;
+        let candidates: Vec<_> = (0..self.clients.len())
+            .map(|n| (start + n) % self.clients.len())
+            .filter(|i| {
+                self.clients[*i]
+                    .1
+                    .oauth
+                    .as_ref()
+                    .is_none_or(|a| a.available())
+            })
+            .collect();
+        let attempt_budget = if candidates.len() > 1 {
+            budget / 2
+        } else {
+            budget
+        };
+        state.error = Some("authentication_failed");
+        for account in candidates {
+            if Instant::now() >= deadline {
+                break;
             }
-            Ok(Err(error)) => {
-                if matches!(
-                    error,
-                    Error::Api {
-                        status: 401 | 403,
-                        ..
-                    } | Error::OAuth(_)
-                ) {
-                    // Authentication/permission failures must not keep advertising old access.
-                    *self.snapshot.write().unwrap() = None;
-                    let _ = self.vault.store_catalog(&self.source, None);
-                }
-                state.error = Some(match error {
-                    Error::Api {
-                        status: 401 | 403, ..
+            state.next_account = (account + 1) % self.clients.len();
+            let client = &self.clients[account].1;
+            let result = tokio::time::timeout_at(
+                deadline.min(Instant::now() + attempt_budget),
+                fetch::models(client, &self.options.codex_client_version),
+            )
+            .await;
+            match result {
+                Ok(Ok((models, revision))) => {
+                    let snapshot = Snapshot {
+                        models,
+                        fetched_at: now(),
+                        revision,
+                        account,
+                    };
+                    if self.current_revision(account).ok() != Some(revision) {
+                        state.error = Some("account_changed");
+                    } else if self
+                        .vault
+                        .store_catalog(&self.source, Some(&json!(snapshot)))
+                        .is_err()
+                    {
+                        state.error = Some("cache_write_failed");
+                    } else {
+                        *self.snapshot.write().unwrap() = Some(snapshot);
+                        state.error = None;
+                        state.next_account = account;
+                        break;
                     }
-                    | Error::OAuth(_) => "authentication_failed",
-                    Error::Api {
-                        status: 404 | 405, ..
-                    } => "discovery_unavailable",
-                    Error::InvalidResponse(_) | Error::Json(_) => "invalid_catalog",
-                    _ => "upstream_unavailable",
-                });
+                }
+                Ok(Err(error)) => {
+                    if matches!(
+                        error,
+                        Error::Api {
+                            status: 401 | 403,
+                            ..
+                        } | Error::OAuth(_)
+                    ) {
+                        // Only the source of the cached evidence can invalidate it.
+                        let mut snapshot = self.snapshot.write().unwrap();
+                        if snapshot.as_ref().is_some_and(|s| s.account == account) {
+                            *snapshot = None;
+                            let _ = self.vault.store_catalog(&self.source, None);
+                        }
+                        if matches!(error, Error::Api { status: 401, .. })
+                            && let Some(oauth) = &client.oauth
+                        {
+                            oauth.rejected();
+                        }
+                    }
+                    state.error = Some(match error {
+                        Error::Api {
+                            status: 401 | 403, ..
+                        }
+                        | Error::OAuth(_) => "authentication_failed",
+                        Error::Api {
+                            status: 404 | 405, ..
+                        } => "discovery_unavailable",
+                        Error::InvalidResponse(_) | Error::Json(_) => "invalid_catalog",
+                        _ => "upstream_unavailable",
+                    });
+                }
+                Err(_) => state.error = Some("timeout"),
             }
-            Err(_) => state.error = Some("timeout"),
         }
         state.attempted = Some(Instant::now());
-        state.revision = self.current_revision().ok();
+        state.revisions = self.revisions();
     }
 
     pub fn status(&self) -> Value {
-        let fetched_at = self.snapshot.read().unwrap().as_ref().map(|s| s.fetched_at);
+        let (fetched_at, source_account) = self
+            .snapshot
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|s| (Some(s.fetched_at), Some(self.clients[s.account].0.clone())))
+            .unwrap_or_default();
         let state = self.refresh.try_lock();
         json!({"source": "provider_catalog",
+            "scope": "pool", "source_deployment":source_account, "refresh_secs":self.options.refresh_secs,
             "complete_catalog": true,
             "fetched_at":fetched_at,
             "models":self.models().len(),
@@ -253,9 +318,15 @@ impl Catalog {
 }
 
 pub(crate) async fn refresh_all(catalogs: Vec<Arc<Catalog>>, force: bool) {
-    stream::iter(catalogs)
-        .for_each_concurrent(4, |c| async move { c.refresh(force).await })
-        .await;
+    let mut seen = HashSet::new();
+    stream::iter(
+        catalogs
+            .into_iter()
+            .filter(|c| seen.insert(Arc::as_ptr(c) as usize))
+            .collect::<Vec<_>>(),
+    )
+    .for_each_concurrent(4, |c| async move { c.refresh(force).await })
+    .await;
 }
 
 fn now() -> u64 {
