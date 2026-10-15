@@ -120,32 +120,39 @@ async fn refresh_admits_new_model_and_effort_then_removes_old_capabilities() {
 }
 
 #[tokio::test]
-async fn schedules_only_accounts_with_the_exact_capability_and_respects_pinning() {
-    let low = catalog_mock(vec![xai("official", Some(&["low"]))]).await;
-    let high = catalog_mock(vec![
-        xai("official", Some(&["high"])),
-        Reply::json(native(Provider::XAI)),
-    ])
-    .await;
-    let (_, gateway) = start(Provider::XAI, &[&low, &high]).await;
+async fn shared_pool_capabilities_apply_to_every_account_and_respect_pinning() {
+    let source = catalog_mock(vec![xai("official", Some(&["high"]))]).await;
+    let other = catalog_mock(vec![Reply::json(native(Provider::XAI))]).await;
+    let (_, gateway) = start(Provider::XAI, &[&source, &other]).await;
     let request = body("official", "high");
-    let response = post(&gateway, "/v1/responses", request.clone()).await;
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.headers()["x-router-deployment"], "account-1");
     let response = client()
         .post(format!("{}/v1/responses", gateway.url))
         .bearer_auth("client-secret")
-        .header("x-router-account", "account-0")
+        .header("x-router-account", "account-1")
         .json(&request)
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 400);
-    assert_eq!(low.calls.lock().unwrap().len(), 1);
-    assert_eq!(high.calls.lock().unwrap().len(), 2);
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-deployment"], "account-1");
+    assert_eq!(source.calls.lock().unwrap().len(), 1);
+    assert_eq!(other.calls.lock().unwrap().len(), 1);
     let mut expected = request;
     expected["store"] = false.into();
-    assert_eq!(high.calls.lock().unwrap()[1].body, expected);
+    assert_eq!(other.calls.lock().unwrap()[0].body, expected);
+    for account in ["account-0", "account-1"] {
+        let response = client()
+            .post(format!("{}/v1/responses", gateway.url))
+            .bearer_auth("client-secret")
+            .header("x-router-account", account)
+            .json(&body("official", "low"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    assert_eq!(source.calls.lock().unwrap().len(), 1);
+    assert_eq!(other.calls.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
