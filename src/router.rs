@@ -408,6 +408,17 @@ impl Engine {
     }
 
     pub(crate) fn model_allowed(&self, account: usize, pool: &str, model: &str) -> bool {
+        // A merchant's pool policy applies to catalogs, automatic candidates,
+        // explicit selection and every account in the pool, before dispatch.
+        if !self.groups.get(pool).is_some_and(|group| {
+            group
+                .config
+                .allowed_models
+                .as_ref()
+                .is_none_or(|ids| ids.iter().any(|id| id == model))
+        }) {
+            return false;
+        }
         let rules = &self.accounts[account].config.models;
         rules.is_empty()
             || rules.iter().any(|rule| {
@@ -483,6 +494,7 @@ impl Engine {
         let catalogs = eligible
             .iter()
             .flat_map(|g| self.route_groups(&g.config.name))
+            .filter(|g| self.model_allowed(account, &g.config.name, model))
             .flat_map(|g| &g.backends)
             .filter(|b| protocol.supports(b.config.provider))
             .filter_map(|b| b.catalog.clone())
@@ -513,6 +525,7 @@ impl Engine {
             for backend in self
                 .route_groups(&group.config.name)
                 .iter()
+                .filter(|g| self.model_allowed(account, &g.config.name, model))
                 .flat_map(|g| &g.backends)
                 .filter(|b| protocol.supports(b.config.provider))
             {
@@ -535,6 +548,7 @@ impl Engine {
         let groups: Vec<_> = matching
             .iter()
             .flat_map(|g| self.route_groups(&g.config.name))
+            .filter(|g| self.model_allowed(account, &g.config.name, model))
             .collect();
         // Resolve account/session ownership across all matching pools before
         // selecting one, so automatic routing cannot guess another account.
@@ -627,7 +641,11 @@ impl Engine {
         if !self.model_allowed(account, pool, alias) {
             return Err(reject(
                 &mut parent,
-                ApiError::new(403, "model_forbidden", "API key cannot use this model"),
+                ApiError::new(
+                    403,
+                    "model_forbidden",
+                    "Model is not permitted by the API key or pool model list",
+                ),
             ));
         }
         if !self.storage_ready() {
@@ -638,10 +656,13 @@ impl Engine {
         }
         // A priced merchant request is confined to its selected pool. Fallbacks
         // must not silently change the pool after pricing or affinity checks.
-        let groups = if parent.is_some() {
+        let groups: Vec<_> = if parent.is_some() {
             self.groups.get(pool).into_iter().collect()
         } else {
             self.route_groups(pool)
+                .into_iter()
+                .filter(|g| self.model_allowed(account, &g.config.name, alias))
+                .collect()
         };
         let Some(primary) = groups.first() else {
             return Err(reject(
