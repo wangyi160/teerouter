@@ -141,6 +141,10 @@ pub struct Model {
     /// Pool type; absent only in legacy configurations awaiting classification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<Provider>,
+    /// Native upstream IDs shared by every account in this pool. None keeps
+    /// official discovery unrestricted; an empty list publishes no models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_models: Option<Vec<String>>,
     #[serde(default)]
     // Legacy serialized field. Official discovery and admission are mandatory.
     pub discover: bool,
@@ -314,6 +318,16 @@ impl Config {
         let mut names = HashSet::new();
         let mut ids = HashSet::new();
         for group in &self.models {
+            if let Some(models) = &group.allowed_models {
+                let mut unique = HashSet::new();
+                if models.len() > 4096
+                    || models
+                        .iter()
+                        .any(|id| !valid_model_id(id) || !unique.insert(id))
+                {
+                    return Err("pool allowed_models must contain at most 4096 unique, valid native model IDs".into());
+                }
+            }
             let has_test = group.deployments.iter().any(|d| d.provider.is_local_test());
             if has_test
                 && group
