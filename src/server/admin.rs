@@ -222,12 +222,13 @@ pub(super) async fn admin_acknowledge(
         boot_id: String,
         generation: u64,
         sequence: u64,
+        balances: BTreeMap<String, i64>,
     }
     let ack: Ack = serde_json::from_value(body).map_err(|_| invalid())?;
     runtime
         .engine()
         .vault
-        .acknowledge(&ack.boot_id, ack.generation, ack.sequence)
+        .acknowledge(&ack.boot_id, ack.generation, ack.sequence, ack.balances)
         .map_err(|_| {
             ApiError::new(
                 409,

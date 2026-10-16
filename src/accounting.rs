@@ -66,6 +66,7 @@ impl Account {
     // on this mutex; the shared gate survives key rotation and user recreation.
     fn with_user<T>(
         &self,
+        check_balance: bool,
         action: impl FnOnce(&crate::config::User) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         use subtle::ConstantTimeEq;
@@ -100,14 +101,17 @@ impl Account {
             .iter()
             .find(|u| u.id == key.user_id && u.enabled)
             .ok_or_else(invalid)?;
+        if check_balance && self.vault.managed() {
+            crate::balances::admit(&data, &user.id)?;
+        }
         action(user)
     }
     pub(crate) fn authorize(&self) -> Result<(), ApiError> {
-        self.with_user(|_| Ok(()))
+        self.with_user(false, |_| Ok(()))
     }
     pub(crate) fn has_capacity(&self) -> bool {
         if !self
-            .with_user(|u| Ok(self.user_slots.used() < u.max_concurrent))
+            .with_user(false, |u| Ok(self.user_slots.used() < u.max_concurrent))
             .unwrap_or(false)
             || self.slots.used() >= self.config.max_concurrent
         {
@@ -136,7 +140,7 @@ impl Account {
         let _global = global.acquire(global_limit.min(4096)).ok_or_else(|| {
             ApiError::new(503, "router_busy", "Router concurrency limit exceeded")
         })?;
-        let _user = self.with_user(|u| {
+        let _user = self.with_user(true, |u| {
             self.user_slots.acquire(u.max_concurrent).ok_or_else(|| {
                 ApiError::new(
                     429,

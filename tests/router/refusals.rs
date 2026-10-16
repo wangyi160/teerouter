@@ -335,7 +335,7 @@ async fn queue_pagination_deletion_and_checkpoint_ack_have_independent_cursors()
             .iter()
             .all(|e| e["event"].get("refusal").is_none() && e["event"]["refusal_id"].is_u64())
     );
-    assert_eq!(write_admin(&g,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"]})).await.status(),200);
+    assert_eq!(write_admin(&g,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"],"balances":{"test-user":1000000}})).await.status(),200);
     assert_eq!(record(&g).await["pending"], 25); // Usage ACK is unrelated.
     let deleted = write_admin(&g, "DELETE", "/admin/refusals?through_id=10", Value::Null).await;
     assert_eq!(deleted.status(), 200);
@@ -386,7 +386,7 @@ async fn queue_pagination_deletion_and_checkpoint_ack_have_independent_cursors()
         200
     );
     let checkpoint = admin(&rebooted, "/admin/checkpoint").await;
-    assert_eq!(write_admin(&rebooted,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"]})).await.status(),200);
+    assert_eq!(write_admin(&rebooted,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"],"balances":{"test-user":1000000}})).await.status(),200);
     assert_eq!(record(&rebooted).await, remainder);
     assert_eq!(
         admin(&rebooted, "/admin/users/test-user").await["user"]["moderation"]["blocked_requests"],

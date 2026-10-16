@@ -79,7 +79,7 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 | PUT | `/admin/users/{id}` | 更新指定用户及其权限。 |
 | DELETE | `/admin/users/{id}` | 撤销指定用户及其 API key。 |
 | GET | `/admin/checkpoint` | 管理后端用于加密保存配置、凭证、待确认用量与拒答队列及其游标；响应含敏感数据。 |
-| POST | `/admin/checkpoint/ack` | 持久保存后确认用量消费游标，并续期服务租约；不删除拒答队列。 |
+| POST | `/admin/checkpoint/ack` | 持久化结算后提交 boot_id、generation、sequence 和全部用户 balances（整数 micro-USD）；原子更新余额、清除已同步消费、续期服务租约，不删除拒答队列。 |
 | POST | `/admin/initialize` | 绑定本次 boot_id 恢复管理平台保存的快照。 |
 | GET | `/admin/logs` | 待同步调用元数据，拒答仅含 refusal_id 引用；不含拒答正文。 |
 | GET | `/admin/refusals` | 按 after_id、limit 分页拉取所有用户的待归档拒答。 |

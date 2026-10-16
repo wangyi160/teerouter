@@ -23,6 +23,68 @@ fn user(id: &str, key: &str) -> Value {
 }
 
 #[tokio::test]
+async fn managed_balance_blocks_upstream_but_keeps_catalog_access_and_accepts_topup() {
+    let mock = mock(vec![Reply::json(native(Provider::OpenAI))]).await;
+    let engine = engine(configuration(&mock));
+    engine.vault.require_manager();
+    let initial = engine.vault.lock().unwrap().clone();
+    engine.vault.initialize(initial).unwrap();
+    let g = run(server::app_upstream_fixture(engine.clone())).await;
+    for (balances, status, code) in [
+        (json!({}), 503, "balance_unavailable"),
+        (json!({"test-user":0}), 402, "insufficient_balance"),
+        (json!({"test-user":-1}), 402, "insufficient_balance"),
+    ] {
+        let checkpoint = engine.vault.checkpoint().unwrap();
+        let response = admin(
+            &g,
+            "POST",
+            "/admin/checkpoint/ack",
+            json!({
+                "boot_id":checkpoint["boot_id"], "generation":checkpoint["state"]["generation"],
+                "sequence":checkpoint["state"]["sequence"], "balances":balances
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let response = generate(&g, "client-secret", false).await;
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"]["code"],
+            code
+        );
+        assert!(mock.calls.lock().unwrap().is_empty());
+    }
+    assert_eq!(
+        client()
+            .get(format!("{}/v1/models", g.url))
+            .bearer_auth("client-secret")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let checkpoint = engine.vault.checkpoint().unwrap();
+    assert_eq!(
+        admin(
+            &g,
+            "POST",
+            "/admin/checkpoint/ack",
+            json!({
+                "boot_id":checkpoint["boot_id"], "generation":checkpoint["state"]["generation"],
+                "sequence":checkpoint["state"]["sequence"], "balances":{"test-user":100}
+            })
+        )
+        .await
+        .status(),
+        200
+    );
+    assert_eq!(generate(&g, "client-secret", false).await.status(), 200);
+    assert_eq!(mock.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn user_crud_is_atomic_admin_only_and_contains_no_money() {
     let mock = mock(vec![]).await;
     let g = gateway(configuration(&mock)).await;
