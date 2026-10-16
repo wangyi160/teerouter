@@ -352,6 +352,7 @@ async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Val
         status["merchant_only"] = true.into();
         status["pool_multiplier_pricing"] = true.into();
         status["provider_billing_version"] = 1.into();
+        status["balance_sync_version"] = 1.into();
         status["pricing_source_sync_version"] = 1.into();
     }
     Json(status)

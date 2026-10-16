@@ -164,7 +164,7 @@ async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_a
         503
     );
     let mut saved = get(&first, "/admin/checkpoint").await;
-    assert_eq!(post(&first,"/admin/checkpoint/ack",json!({"boot_id":saved["boot_id"],"generation":saved["state"]["generation"],"sequence":saved["state"]["sequence"]})).await.status(),200);
+    assert_eq!(post(&first,"/admin/checkpoint/ack",json!({"boot_id":saved["boot_id"],"generation":saved["state"]["generation"],"sequence":saved["state"]["sequence"],"balances":{}})).await.status(),200);
     let key = "sk-fixture-user";
     assert_eq!(post(&first,"/admin/apply",json!({"config":{"users":[{"id":"test-user"}],"keys":[{"name":"client","user_id":"test-user","key_ref":"client","enabled":true}]},"secrets":{"client":key}})).await.status(),200);
     saved = get(&first, "/admin/checkpoint").await;
@@ -197,7 +197,7 @@ async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_a
         200
     );
     let c = get(&second, "/admin/checkpoint").await;
-    assert_eq!(post(&second,"/admin/checkpoint/ack",json!({"boot_id":c["boot_id"],"generation":c["state"]["generation"],"sequence":c["state"]["sequence"]})).await.status(),200);
+    assert_eq!(post(&second,"/admin/checkpoint/ack",json!({"boot_id":c["boot_id"],"generation":c["state"]["generation"],"sequence":c["state"]["sequence"],"balances":{"test-user":1000000}})).await.status(),200);
     // Refusal auditing needs no external scanner key after checkpoint restore.
     assert_eq!(
         reqwest::Client::new()

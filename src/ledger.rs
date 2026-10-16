@@ -1,5 +1,5 @@
 //! Usage, provider-calculated charges and refusal evidence, never request bodies.
-//! Balances and durable settlement live in management.
+//! Management persists balances; the router tracks consumption between syncs.
 use crate::vault::Vault;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -98,6 +98,11 @@ impl Ledger {
             audit["refusal_id"] = data.refusal_queue.push(event).into();
         }
         let event = serde_json::json!({"seq":seq,"event":audit});
+        // Only the platform ledger enforces user balances. Merchant ledgers
+        // have their own receipt acknowledgements and no platform balance map.
+        if self.vault.managed() {
+            crate::balances::add(&mut data.consumption, &event["event"]);
+        }
         data.pending_event_bytes += serde_json::to_vec(&event).unwrap().len();
         data.events.push_back(event);
         data.changed();

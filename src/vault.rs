@@ -40,6 +40,12 @@ fn account_enabled() -> bool {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Data {
+    /// Last balances committed by management. Requests never modify this map.
+    #[serde(default)]
+    pub balances: BTreeMap<String, i64>,
+    /// Cost of receipts newer than the last acknowledged snapshot.
+    #[serde(default)]
+    pub consumption: BTreeMap<String, u128>,
     #[serde(default)]
     pub official_pricing: crate::pricing::Book,
     #[serde(default)]
@@ -102,6 +108,7 @@ struct SyncState {
     initialized: bool,
     acknowledged: Option<Instant>,
     exported: (u64, u64),
+    confirmed: Option<(u64, u64)>,
 }
 pub struct Vault {
     pub(crate) data: Mutex<Data>,
@@ -128,6 +135,7 @@ impl Vault {
                 initialized: true,
                 acknowledged: None,
                 exported: (0, 0),
+                confirmed: None,
             }),
             locks: Mutex::new(BTreeMap::new()),
             user_gates: Mutex::new(BTreeMap::new()),
@@ -154,10 +162,14 @@ impl Vault {
             initialized: false,
             acknowledged: None,
             exported: (0, 0),
+            confirmed: None,
         };
     }
     pub(crate) fn initialized(&self) -> bool {
         self.sync.lock().unwrap().initialized
+    }
+    pub(crate) fn managed(&self) -> bool {
+        self.sync.lock().unwrap().managed
     }
     pub(crate) fn serving(&self) -> bool {
         let sync = self.sync.lock().unwrap();
@@ -178,6 +190,7 @@ impl Vault {
             .iter()
             .map(|v| serde_json::to_vec(v).map_or(0, |b| b.len()))
             .sum();
+        data.consumption = crate::balances::consumption(&data.events);
         *current = data;
         sync.initialized = true;
         Ok(())
@@ -186,14 +199,31 @@ impl Vault {
         let data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         sync.exported = (data.generation, data.sequence);
-        Ok(json!({"version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":*data}))
+        Ok(
+            json!({"version":1,"balance_sync_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":*data}),
+        )
     }
-    pub(crate) fn acknowledge(&self, boot: &str, generation: u64, sequence: u64) -> Result<()> {
+    pub(crate) fn acknowledge(
+        &self,
+        boot: &str,
+        generation: u64,
+        sequence: u64,
+        balances: BTreeMap<String, i64>,
+    ) -> Result<()> {
         let mut data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if boot != self.boot_id || !sync.initialized || (generation, sequence) != sync.exported {
             return Err(VaultError("checkpoint acknowledgement mismatch"));
         }
+        if balances.len() > 100_000
+            || balances.keys().any(|id| !crate::config::valid_name(id))
+            || (sync.confirmed == Some((generation, sequence)) && balances != data.balances)
+        {
+            return Err(VaultError("invalid or conflicting balance acknowledgement"));
+        }
+        // One atomic boundary: replace the saved balance and clear only the
+        // consumption already included in management's committed snapshot.
+        data.balances = balances;
         data.events
             .retain(|e| e["seq"].as_u64().unwrap_or(u64::MAX) > sequence);
         data.pending_event_bytes = data
@@ -201,6 +231,9 @@ impl Vault {
             .iter()
             .map(|v| serde_json::to_vec(v).map_or(0, |b| b.len()))
             .sum();
+        data.consumption = crate::balances::consumption(&data.events);
+        data.changed();
+        sync.confirmed = Some((generation, sequence));
         sync.acknowledged = Some(Instant::now());
         Ok(())
     }

@@ -176,6 +176,7 @@ fn queue_backpressure_never_evicts_and_usage_ack_does_not_consume_refusals() {
             &vault.boot_id,
             exported["state"]["generation"].as_u64().unwrap(),
             exported["state"]["sequence"].as_u64().unwrap(),
+            std::collections::BTreeMap::new(),
         )
         .unwrap();
     assert!(!ledger.healthy());

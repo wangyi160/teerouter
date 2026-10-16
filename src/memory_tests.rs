@@ -84,14 +84,20 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
         None,
     );
     assert!(
-        v.acknowledge("wrong", saved["state"]["generation"].as_u64().unwrap(), 1)
-            .is_err()
+        v.acknowledge(
+            "wrong",
+            saved["state"]["generation"].as_u64().unwrap(),
+            1,
+            BTreeMap::new()
+        )
+        .is_err()
     );
     assert!(!v.serving());
     v.acknowledge(
         &v.boot_id,
         saved["state"]["generation"].as_u64().unwrap(),
         1,
+        BTreeMap::new(),
     )
     .unwrap();
     assert!(v.serving());
@@ -111,7 +117,7 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
         next.account("one", Provider::OpenAI).unwrap().0["refresh_token"],
         "rotated"
     );
-    assert!(next.acknowledge(&v.boot_id, 0, 0).is_err());
+    assert!(next.acknowledge(&v.boot_id, 0, 0, BTreeMap::new()).is_err());
 }
 #[test]
 fn refresh_cas_atomic_updates_and_identity_affinity_are_preserved() {
@@ -166,7 +172,7 @@ fn management_cannot_restore_official_catalog_or_session_bindings() {
 }
 
 #[test]
-fn manager_disconnect_expires_permission_without_any_balance_state() {
+fn manager_disconnect_expires_permission() {
     let v = Vault::memory().unwrap();
     v.provision(&bundle()).unwrap();
     v.require_manager();
@@ -177,6 +183,7 @@ fn manager_disconnect_expires_permission_without_any_balance_state() {
         &v.boot_id,
         checkpoint["state"]["generation"].as_u64().unwrap(),
         0,
+        BTreeMap::new(),
     )
     .unwrap();
     assert!(v.serving());

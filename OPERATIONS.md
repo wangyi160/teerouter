@@ -5,10 +5,10 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 1. 冷启动 `GET /admin/checkpoint` 返回新的 boot_id、initialized=false。
 2. 管理端发送 `POST /admin/initialize`：`{"boot_id":"当前值","state":已保存的state或null}`。null 只用于首次空初始化；已有服务必须恢复管理数据库保存的快照。
 3. 初始化仅允许一次，验证全部配置、凭证、管理员身份与账号版本；失败不激活候选状态。拒答审计默认启用，无需下发独立审核服务的配置或密钥。
-4. 管理端读取 `/admin/checkpoint`，原子保存 state、用量和计费结果，然后 POST `/admin/checkpoint/ack`，包含同一 boot_id、generation、sequence。
-5. ACK 只清除已同步用量，不清除读取快照之后产生的新用量。每轮同步重复此过程。密码、token 和完整快照必须经经过验证的保密连接传输，不放在日志中。
+4. 管理端读取 `/admin/checkpoint`，在同一事务中保存快照、结算新消费、更新用户余额和消费游标，然后 POST `/admin/checkpoint/ack`，包含同一 boot_id、generation、sequence 及结算后的全部用户余额 `balances`（用户 ID → 整数 micro-USD）。
+5. ACK 原子更新余额并清除已同步消费；读取快照之后产生的新消费保留到下一轮。管理端的恢复快照使用结算后的余额、空 events 和空 consumption，重启时不会重复扣款。密码、token 和完整快照必须经经过验证的保密连接传输，不放在日志中。
 
-管理 API 沿用 Bearer 认证，快照响应禁止缓存；业务 API key 不能读取快照或初始化。账务 API 仅存在于独立管理平台，router 不接受充值、余额或定价命令。
+管理 API 沿用 Bearer 认证，快照响应禁止缓存；业务 API key 不能读取快照或初始化。充值和持久化账务由独立管理平台负责；Router 通过同步 ACK 接收余额，通过价格 API 管理报价。
 
 每轮同步后等待 1 秒。管理确认超过 30 秒未更新时暂停新业务请求；已经开始的请求继续完成。达到待同步 usage 上限也暂停新请求，避免长期断联占满内存。模型目录查询同样要求管理连接健康。
 
@@ -50,7 +50,9 @@ OAuth 凭证允许只提供 `access_token`，省略或清空 `refresh_token` 表
 
 用户并发范围为正在执行的模型请求，所有关联 API key 共享 `max_concurrent`（1 至 100000，默认 16）。超限响应为 429 / `user_concurrency_limit`，不会排队。流式调用直到流结束或客户端断开才释放。单个 key、router 总体和上游账号的限制仍可能更严格。
 
-余额、累计金额、额度和持久化结算由外部管理服务负责，不是 router 用户属性。Router 保存版本化官方价格簿，并按提供商生成逐请求计费结果；管理端须支持 [billing v1](docs/BILLING.md)，先持久化结果再确认队列。上线时需同时升级管理端，否则旧管理端会忽略新计费结果而套用旧公式。
+Router 内存保存上次同步余额 `balances` 和尚未同步的消费 `consumption`，请求只累加消费。新模型请求检查「余额 − 消费」，不足时返回 402 / `insufficient_balance`；用户尚未同步余额时返回 503 / `balance_unavailable`。同一用户的所有 key 共享余额，模型目录查询不受余额限制。已开始的并发请求仍会完成，因此可能出现负余额。
+
+`/admin/status` 和 `/admin/checkpoint` 的 `balance_sync_version: 1` 表示支持此协议。先升级管理端，再升级 Router；ACK 必须包含完整的 `balances`，可以为空，但未列出的用户不能发起模型请求。重复 ACK 不允许修改余额；充值等后续余额变动应读取新 checkpoint 后确认。官方价格计算与账单格式见 [billing v1](docs/BILLING.md)。
 
 ## 上游拒答审计
 
