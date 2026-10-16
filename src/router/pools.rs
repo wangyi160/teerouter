@@ -1,6 +1,46 @@
 use super::*;
 
 impl Engine {
+    /// Public aggregate only. Never refresh upstreams, create customers, expose
+    /// deployment IDs, account bindings, endpoints, credentials or raw errors.
+    pub(crate) fn public_pool_inventory(&self) -> Vec<Value> {
+        self.config.models.iter().map(|pool| {
+            let group = &self.groups[&pool.name];
+            let mut models = std::collections::BTreeMap::new();
+            let mut bindings = HashSet::new();
+            let (mut used, mut limit, mut available, mut ready) = (0u64, 0u64, 0u64, 0usize);
+            for backend in &group.backends {
+                let mut visible = false;
+                if let Some(catalog) = &backend.catalog {
+                    for model in catalog.models() {
+                        if pool.allowed_models.as_ref().is_some_and(|ids| !ids.contains(&model)) { continue; }
+                        let Ok(info) = catalog.evidence(&model) else { continue };
+                        if crate::policy::Restrictions::for_model(&self.config.restrictions,
+                            backend.config.provider, &model, &info.canonical_id).block_model { continue; }
+                        visible = true;
+                        models.entry(model.clone()).or_insert_with(|| json!({
+                            "id":format!("{}/{}", backend.config.provider.model_namespace(),model),"model":model}));
+                    }
+                }
+                if !bindings.insert(Backend::binding(&backend.config)) { continue; }
+                let current = backend.status()["in_flight"].as_u64().unwrap_or(0);
+                used = used.saturating_add(current);
+                limit = limit.saturating_add(backend.config.max_concurrent as u64);
+                if visible && backend.ready() { ready += 1; }
+                if visible && backend.has_capacity() {
+                    available = available.saturating_add((backend.config.max_concurrent as u64).saturating_sub(current));
+                }
+            }
+            let child_limit = self.config.server.max_concurrent as u64;
+            let provider = pool.provider.or_else(|| pool.deployments.first().map(|d| d.provider));
+            json!({"name":pool.name,"provider":provider,"account_count":pool.deployments.len(),
+                "enabled_accounts":bindings.len(),"available_accounts":ready,
+                "concurrency":{"limit":limit.min(child_limit),"in_flight":used,
+                    "available":available.min(child_limit.saturating_sub(self.global.used() as u64))},
+                "models":models.into_values().collect::<Vec<_>>()})
+        }).collect()
+    }
+
     // Pool-scoped ACLs apply even before an upstream catalog can be fetched.
     // An unscoped model permission can use that model in any pool; this does
     // not grant additional model permissions or expose another key's scopes.
