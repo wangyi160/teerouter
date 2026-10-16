@@ -73,6 +73,10 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
         .route("/v1/responses", post(generate))
         .route("/admin/status", get(status))
         .route(
+            "/admin/public-catalog",
+            get(crate::merchants::public_catalog::get),
+        )
+        .route(
             "/admin/pricing",
             get(crate::pricing::get).put(crate::pricing::put),
         )
