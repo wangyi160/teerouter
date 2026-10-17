@@ -3,6 +3,10 @@
 !Cargo.lock
 !LICENSE
 !NOTICE
+!egress
+!egress/*.go
+!egress/go.mod
+!egress/go.sum
 !LICENSES
 !LICENSES/**
 !src

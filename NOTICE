@@ -47,3 +47,11 @@ teellm code, applied after the retained provider transformations. It includes no
 script interpreter or replacement OAuth/streaming protocol implementation.
 Official-host enforcement, raw model routing with separate pool selection, and
 lossless reasoning-parameter bridging/protection are new teellm Rust integration.
+
+The private teerouter-egress component links unmodified Xray-core v1.260327.0
+(upstream release v26.3.27), https://github.com/XTLS/Xray-core, under MPL-2.0.
+Source is available at https://github.com/XTLS/Xray-core/tree/v26.3.27.
+The helper and Rust pipe/SOCKS lifecycle integration are new teerouter code.
+Exact transitive versions and checksums are recorded in egress/go.mod and go.sum.
+Container distributions include dependency notices and the Go license under
+/usr/share/doc/teerouter-egress; the helper is part of the measured router image.

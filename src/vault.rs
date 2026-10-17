@@ -597,7 +597,9 @@ impl Provision {
 fn validate_proxy(provider: Provider, proxy: &str) -> Result<()> {
     crate::network::validate_proxy(provider, proxy)
         .map(|_| ())
-        .map_err(|_| VaultError("invalid proxy: expected http, https or socks5h URL"))
+        .map_err(|_| {
+            VaultError("invalid proxy: expected http, https, socks5h or supported vless URL")
+        })
 }
 fn provider_id(provider: Provider) -> &'static str {
     match provider {
