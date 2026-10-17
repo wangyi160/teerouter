@@ -1504,6 +1504,8 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "toml",
+ "tower-layer",
+ "tower-service",
  "zeroize",
 ]
 

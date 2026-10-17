@@ -1,4 +1,6 @@
 /target/
+/egress/vendor/
+/egress/teerouter-egress*
 **/target/
 /dist/
 /.tools/

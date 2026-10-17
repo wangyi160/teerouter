@@ -1,6 +1,7 @@
 //! Explicit outbound bindings. Never inherit system proxies or bypass lists.
 use crate::{Error, Provider};
 use std::time::Duration;
+mod vless;
 
 pub(crate) fn proxy(value: &str) -> Result<reqwest::Proxy, Error> {
     let invalid = || Error::OAuth("invalid proxy: expected http, https or socks5h URL");
@@ -33,6 +34,9 @@ fn outbound_proxy(provider: Provider, value: &str) -> Result<Option<reqwest::Pro
 }
 
 pub(crate) fn validate_proxy(provider: Provider, value: &str) -> Result<(), Error> {
+    if value.starts_with("vless://") {
+        return vless::Node::parse(value).map(|_| ());
+    }
     outbound_proxy(provider, value).map(|_| ())
 }
 
@@ -42,7 +46,12 @@ pub(crate) fn http_client(
     timeout_secs: u64,
 ) -> Result<reqwest::Client, Error> {
     let mut builder = reqwest::Client::builder().no_proxy();
-    if let Some(proxy) = outbound_proxy(provider, proxy_url)? {
+    if proxy_url.starts_with("vless://") {
+        let node = vless::bind(vless::Node::parse(proxy_url)?)?;
+        builder = builder
+            .proxy(node.proxy()?)
+            .connector_layer(vless::LeaseLayer(node));
+    } else if let Some(proxy) = outbound_proxy(provider, proxy_url)? {
         builder = builder.proxy(proxy);
     }
     builder
