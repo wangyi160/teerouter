@@ -121,6 +121,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
             post(admin_account_refresh),
         )
         .route("/admin/checkpoint", get(admin_checkpoint))
+        .route("/admin/checkpoint/diff", post(admin_checkpoint_diff))
         .route("/admin/checkpoint/ack", post(admin_acknowledge))
         .route("/admin/initialize", post(admin_initialize))
         .route("/admin/quiesce", post(admin_quiesce))
@@ -218,7 +219,10 @@ async fn authenticate(
     // either counted by the drain barrier or rejected before its handler runs.
     let drain_control = path.starts_with("/admin/")
         && (request.method() == axum::http::Method::GET
-            || matches!(path, "/admin/quiesce" | "/admin/checkpoint/ack"));
+            || matches!(
+                path,
+                "/admin/quiesce" | "/admin/checkpoint/ack" | "/admin/checkpoint/diff"
+            ));
     if result.is_ok() && !health_request && !drain_control && runtime.quiescing() {
         result = Err(ApiError::new(
             503,
@@ -373,6 +377,7 @@ async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Val
         status["pool_multiplier_pricing"] = true.into();
         status["provider_billing_version"] = 1.into();
         status["balance_sync_version"] = 1.into();
+        status["checkpoint_diff_version"] = 1.into();
         status["pricing_source_sync_version"] = 1.into();
     }
     Json(status)

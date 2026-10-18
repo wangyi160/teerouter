@@ -9,6 +9,8 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+mod checkpoint_diff;
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct VaultError(pub(crate) &'static str);
@@ -109,6 +111,7 @@ struct SyncState {
     acknowledged: Option<Instant>,
     exported: (u64, u64),
     confirmed: Option<(u64, u64)>,
+    diff_base: Option<(String, Value)>,
 }
 pub struct Vault {
     pub(crate) data: Mutex<Data>,
@@ -136,6 +139,7 @@ impl Vault {
                 acknowledged: None,
                 exported: (0, 0),
                 confirmed: None,
+                diff_base: None,
             }),
             locks: Mutex::new(BTreeMap::new()),
             user_gates: Mutex::new(BTreeMap::new()),
@@ -163,6 +167,7 @@ impl Vault {
             acknowledged: None,
             exported: (0, 0),
             confirmed: None,
+            diff_base: None,
         };
     }
     pub(crate) fn initialized(&self) -> bool {
@@ -181,7 +186,7 @@ impl Vault {
             .lock()
             .unwrap()
             .acknowledged
-            .is_some_and(|t| t.elapsed().as_secs() < 30)
+            .is_some_and(|t| t.elapsed().as_secs() < 630)
     }
     pub(crate) fn initialize(&self, mut data: Data) -> Result<()> {
         let mut current = self.lock()?;
@@ -204,9 +209,10 @@ impl Vault {
         let mut sync = self.sync.lock().unwrap();
         sync.exported = (data.generation, data.sequence);
         Ok(
-            json!({"version":1,"balance_sync_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":*data}),
+            json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":*data}),
         )
     }
+    #[cfg(test)]
     pub(crate) fn acknowledge(
         &self,
         boot: &str,
@@ -214,10 +220,32 @@ impl Vault {
         sequence: u64,
         balances: BTreeMap<String, i64>,
     ) -> Result<()> {
+        self.acknowledge_balances(boot, generation, sequence, Some(balances), BTreeMap::new())
+    }
+
+    pub(crate) fn acknowledge_balances(
+        &self,
+        boot: &str,
+        generation: u64,
+        sequence: u64,
+        full: Option<BTreeMap<String, i64>>,
+        patch: BTreeMap<String, Option<i64>>,
+    ) -> Result<()> {
         let mut data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if boot != self.boot_id || !sync.initialized || (generation, sequence) != sync.exported {
             return Err(VaultError("checkpoint acknowledgement mismatch"));
+        }
+        if patch.len() > 100_000 || patch.keys().any(|id| !crate::config::valid_name(id)) {
+            return Err(VaultError("invalid balance changes"));
+        }
+        let mut balances = full.unwrap_or_else(|| data.balances.clone());
+        for (id, amount) in patch {
+            if let Some(amount) = amount {
+                balances.insert(id, amount);
+            } else {
+                balances.remove(&id);
+            }
         }
         if balances.len() > 100_000
             || balances.keys().any(|id| !crate::config::valid_name(id))

@@ -222,13 +222,23 @@ pub(super) async fn admin_acknowledge(
         boot_id: String,
         generation: u64,
         sequence: u64,
-        balances: BTreeMap<String, i64>,
+        balances: Option<BTreeMap<String, i64>>,
+        balances_patch: Option<BTreeMap<String, Option<i64>>>,
     }
     let ack: Ack = serde_json::from_value(body).map_err(|_| invalid())?;
+    if ack.balances.is_some() == ack.balances_patch.is_some() {
+        return Err(invalid());
+    }
     runtime
         .engine()
         .vault
-        .acknowledge(&ack.boot_id, ack.generation, ack.sequence, ack.balances)
+        .acknowledge_balances(
+            &ack.boot_id,
+            ack.generation,
+            ack.sequence,
+            ack.balances,
+            ack.balances_patch.unwrap_or_default(),
+        )
         .map_err(|_| {
             ApiError::new(
                 409,
@@ -237,6 +247,39 @@ pub(super) async fn admin_acknowledge(
             )
         })?;
     Ok(Json(json!({"acknowledged":true})))
+}
+
+pub(super) async fn admin_checkpoint_diff(
+    State(runtime): State<Arc<Runtime>>,
+    request: Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let (secret, body) = input(&runtime, request).await?;
+    if !runtime.engine().authenticate_admin(&secret) {
+        return Err(ApiError::new(
+            401,
+            "authentication_error",
+            "Admin credential was revoked",
+        ));
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Base {
+        boot_id: Option<String>,
+        base_id: Option<String>,
+    }
+    let base: Base = serde_json::from_value(body).map_err(|_| invalid())?;
+    if base.boot_id.as_ref().is_some_and(|id| id.len() > 64)
+        || base.base_id.as_ref().is_some_and(|id| id.len() > 64)
+    {
+        return Err(invalid());
+    }
+    crate::merchants::checkpoint_all(&runtime).await?;
+    let result = runtime
+        .engine()
+        .vault
+        .checkpoint_diff(base.boot_id.as_deref(), base.base_id.as_deref())
+        .map_err(storage)?;
+    Ok(([("cache-control", "no-store")], Json(result)))
 }
 pub(super) async fn admin_initialize(
     State(runtime): State<Arc<Runtime>>,

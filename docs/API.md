@@ -79,7 +79,8 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 | PUT | `/admin/users/{id}` | 更新指定用户及其权限。 |
 | DELETE | `/admin/users/{id}` | 撤销指定用户及其 API key。 |
 | GET | `/admin/checkpoint` | 管理后端用于加密保存配置、凭证、待确认用量与拒答队列及其游标；响应含敏感数据。 |
-| POST | `/admin/checkpoint/ack` | 持久化结算后提交 boot_id、generation、sequence 和全部用户 balances（整数 micro-USD）；原子更新余额、清除已同步消费，不删除拒答队列，不承担服务保活。 |
+| POST | `/admin/checkpoint/diff` | 提交上次 boot_id、base_id，返回 checkpoint_id 和变化字段；首次请求或基线失效返回完整 state。仅平台管理员可用，停机排空期间仍可读取。 |
+| POST | `/admin/checkpoint/ack` | 持久化结算后提交 boot_id、generation、sequence 和 balances_patch（变化的用户余额；null 删除）或完整 balances，二者互斥。原子更新余额、清除已同步消费，不删除拒答队列，不承担服务保活。 |
 | POST | `/admin/initialize` | 绑定本次 boot_id 恢复管理平台保存的快照。 |
 | POST | `/admin/quiesce` | 管理员提交 `{"boot_id":"当前进程 ID","quiescing":true}` 暂停新业务和后台任务；轮询 metrics 的 `lifecycle.drained`，排空后保存快照再停机。提交 false 恢复服务；重启后须重新初始化。 |
 | GET | `/admin/logs` | 待同步调用元数据，拒答仅含 refusal_id 引用；不含拒答正文。 |

@@ -162,6 +162,7 @@ pub(crate) struct Live {
     pub settings: Mutex<Settings>,
     admin: zeroize::Zeroizing<String>,
     recovery_key: zeroize::Zeroizing<[u8; 32]>,
+    checkpoint_revision: Mutex<Option<(u64, u64)>>,
     pub gate: Arc<crate::resources::Gate>,
     pub meter: Mutex<RateMeter>,
 }
@@ -380,6 +381,7 @@ pub(crate) async fn unlock(
             settings: Mutex::new(settings),
             admin: zeroize::Zeroizing::new(admin),
             recovery_key: zeroize::Zeroizing::new(recovery_key),
+            checkpoint_revision: Mutex::new(None),
             gate: Arc::default(),
             meter: Mutex::new(RateMeter {
                 start: Instant::now(),
@@ -396,6 +398,11 @@ pub(crate) fn checkpoint_one(runtime: &Runtime, id: &str) -> Result<(), ApiError
     let live = live(runtime, id)?;
     let settings = live.settings.lock().unwrap().clone();
     let data = live.runtime.engine().vault.lock().map_err(storage)?.clone();
+    let revision = (data.generation, settings.revision);
+    let mut saved_revision = live.checkpoint_revision.lock().unwrap();
+    if *saved_revision == Some(revision) {
+        return Ok(());
+    }
     let capsule = crypto::seal(
         id,
         &live.recovery_key,
@@ -409,6 +416,7 @@ pub(crate) fn checkpoint_one(runtime: &Runtime, id: &str) -> Result<(), ApiError
     let mut data = engine.vault.lock().map_err(storage)?;
     data.merchants.get_mut(id).ok_or_else(forbidden)?.backup = Some(capsule);
     data.changed();
+    *saved_revision = Some(revision);
     Ok(())
 }
 pub(crate) async fn checkpoint_all(runtime: &Runtime) -> Result<(), ApiError> {

@@ -5,12 +5,14 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 1. 冷启动 `GET /admin/checkpoint` 返回新的 boot_id、initialized=false。
 2. 管理端发送 `POST /admin/initialize`：`{"boot_id":"当前值","state":已保存的state或null}`。null 只用于首次空初始化；已有服务必须恢复管理数据库保存的快照。
 3. 初始化仅允许一次，验证全部配置、凭证、管理员身份与账号版本；失败不激活候选状态。拒答审计默认启用，无需下发独立审核服务的配置或密钥。
-4. 管理端读取 `/admin/checkpoint`，在同一事务中保存快照、结算新消费、更新用户余额和消费游标，然后 POST `/admin/checkpoint/ack`，包含同一 boot_id、generation、sequence 及结算后的全部用户余额 `balances`（用户 ID → 整数 micro-USD）。
+4. 管理端通过 `/admin/checkpoint/diff` 获取增量，在本地重建完整快照，在同一事务中保存快照、结算新消费、更新用户余额和消费游标，然后 POST `/admin/checkpoint/ack`，包含同一 boot_id、generation、sequence 及 `balances_patch`（变化的用户 ID → 整数 micro-USD，删除使用 null）。旧客户端仍可读取完整 `/admin/checkpoint` 并提交完整 `balances`。
 5. ACK 原子更新余额并清除已同步消费；读取快照之后产生的新消费保留到下一轮。管理端的恢复快照使用结算后的余额、空 events 和空 consumption，重启时不会重复扣款。密码、token 和完整快照必须经经过验证的保密连接传输，不放在日志中。
 
 管理 API 沿用 Bearer 认证，快照响应禁止缓存；业务 API key 不能读取快照或初始化。充值和持久化账务由独立管理平台负责；Router 通过同步 ACK 接收余额，通过价格 API 管理报价。
 
-管理平台每轮同步后等待 1 秒。初始化完成后，Router 独立处理业务请求、模型目录查询、账号令牌维护及价格更新；管理平台断联不会触发停服。断联期间继续使用上次同步余额减去未同步消费检查余款，消费等待管理平台恢复连接后结算。达到待同步 usage 上限仍暂停新模型请求，避免占满内存。`storage.manager_connected` 仅表示最近 30 秒收到过 ACK，不参与请求准入。
+管理平台每轮自动同步后等待 300 秒；管理员保存修改、充值或点击同步时立即下发。初始化完成后，Router 独立处理业务请求、模型目录查询、账号令牌维护及价格更新；管理平台断联不会触发停服。断联期间继续使用上次同步余额减去未同步消费检查余款，消费等待管理平台恢复连接后结算。达到待同步 usage 上限仍暂停新模型请求，避免占满内存。`storage.manager_connected` 仅表示最近 630 秒收到过 ACK（容纳两次定时同步和网络延迟），不参与请求准入。
+
+增量协议：`POST /admin/checkpoint/diff` 请求体为 `{"boot_id":"上次启动标识","base_id":"上次 checkpoint_id"}`，首次均可为 null。响应携带 `checkpoint_diff_version: 1` 和新的 `checkpoint_id`；有效基线响应包含 `base_id`、`changes`，每项为 `{"path":["对象键",...],"value":新值}` 或 `{"path":[...],"remove":true}`。对象按变化字段传送，数组作为一个字段整体替换；null 与删除不同。首次连接、管理进程重启、Router 重启或其他读取者替换基线时，返回完整 `state`。Router 只保留一份内存基线，管理端须保留原始基线用于差量合并，不能拿已清空消费的恢复快照作基线。合并和事务提交成功后才 ACK；丢失 ACK、重试或回退完整快照不重复结算。商户未变化时复用原加密恢复胶囊；只有变化商户才重新加密。
 
 计划重启：管理平台暂停自己的同步任务，向 `/admin/quiesce` 提交当前 `boot_id` 和 `quiescing: true`，然后轮询 `/admin/metrics`，直到 `lifecycle.drained: true`。此时新业务、商户操作和配置写入返回 503 / `router_draining`，已经开始的请求以及所有商户的后台刷新完成后才视为排空。管理读取、checkpoint 与 ACK 仍可使用。保存最终 checkpoint 后停止 Router。停机前保存失败应提交 `quiescing: false` 恢复服务；云端停机结果不明时先确认状态，显式启动可以恢复仍在运行的暂停实例。暂停状态不写入快照；新进程必须重新初始化。不要用首次空初始化覆盖已有状态。
 

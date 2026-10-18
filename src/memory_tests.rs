@@ -192,7 +192,7 @@ fn manager_disconnect_does_not_expire_initialized_router() {
     .unwrap();
     assert!(v.serving());
     assert!(v.manager_connected());
-    for seconds in [31, 3600, 86400 * 7] {
+    for seconds in [631, 3600, 86400 * 7] {
         v.sync.lock().unwrap().acknowledged =
             Some(Instant::now() - std::time::Duration::from_secs(seconds));
         assert!(!v.manager_connected());

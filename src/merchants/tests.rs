@@ -5,6 +5,99 @@ use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
 #[tokio::test]
+async fn checkpoint_diff_is_admin_only_and_survives_explicit_quiesce() {
+    let r = root();
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let endpoint = "/admin/checkpoint/diff";
+    for key in ["alice-key", "invalid"] {
+        assert_eq!(
+            call(&server, Method::POST, endpoint, key, json!({}))
+                .await
+                .0,
+            401
+        );
+    }
+    let (code, first) = call(&server, Method::POST, endpoint, ADMIN, json!({})).await;
+    assert_eq!(code, 200);
+    assert!(first.get("state").is_some());
+    let boot = first["boot_id"].clone();
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/quiesce",
+            ADMIN,
+            json!({"boot_id":boot,"quiescing":true})
+        )
+        .await
+        .0,
+        200
+    );
+    let (code, diff) = call(
+        &server,
+        Method::POST,
+        endpoint,
+        ADMIN,
+        json!({"boot_id":boot,"base_id":first["checkpoint_id"]}),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(diff["changes"], json!([]));
+    assert!(diff.get("state").is_none());
+    let ack = json!({"boot_id":boot,"generation":first["state"]["generation"],
+        "sequence":first["state"]["sequence"],"balances_patch":{}});
+    for _ in 0..2 {
+        assert_eq!(
+            call(
+                &server,
+                Method::POST,
+                "/admin/checkpoint/ack",
+                ADMIN,
+                ack.clone()
+            )
+            .await
+            .0,
+            200
+        );
+    }
+    let mut ambiguous = ack;
+    ambiguous["balances"] = json!({});
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/checkpoint/ack",
+            ADMIN,
+            ambiguous
+        )
+        .await
+        .0,
+        400
+    );
+}
+
+#[tokio::test]
+async fn unchanged_merchant_capsules_are_not_reencrypted_by_checkpoint_reads() {
+    let r = root();
+    let merchant = add(&r, &"a".repeat(64)).await;
+    checkpoint_all(&r).await.unwrap();
+    let before = r.engine().vault.checkpoint().unwrap();
+    checkpoint_all(&r).await.unwrap();
+    assert_eq!(r.engine().vault.checkpoint().unwrap(), before);
+    {
+        let engine = merchant.runtime.engine();
+        let mut data = engine.vault.lock().unwrap();
+        data.upstream_users.insert("alice".into());
+        data.changed();
+    }
+    checkpoint_all(&r).await.unwrap();
+    assert_ne!(
+        r.engine().vault.checkpoint().unwrap()["state"]["merchants"],
+        before["state"]["merchants"]
+    );
+}
+
+#[tokio::test]
 async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
     let r = root();
     let token = "a".repeat(64);
