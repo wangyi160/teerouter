@@ -323,6 +323,13 @@ pub(crate) async fn sync(runtime: &Runtime, manual: bool) -> Result<(), ApiError
 }
 
 async fn run(runtime: &Runtime, manual: bool) -> Result<(), ApiError> {
+    let _job = runtime.background_job().ok_or_else(|| {
+        ApiError::new(
+            503,
+            "router_draining",
+            "Router is paused for an administrative shutdown",
+        )
+    })?;
     let engine = runtime.engine();
     if !engine.vault.initialized() || !engine.vault.serving() {
         return Err(ApiError::new(
@@ -340,11 +347,6 @@ async fn run(runtime: &Runtime, manual: bool) -> Result<(), ApiError> {
         data.changed();
         data.pricing_source.clone()
     };
-    // Include background fetches in management's drain barrier.
-    let _permit = runtime
-        .ingress
-        .acquire(usize::MAX)
-        .ok_or_else(unavailable)?;
     let result = async {
         let client = reqwest::Client::builder()
             .no_proxy()

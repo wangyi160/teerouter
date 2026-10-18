@@ -60,7 +60,7 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/health/live` | 200 表示进程可响应，不代表可以调用模型；`routing_protocol_versions: [1]` 声明路由规则版本。 |
-| GET | `/health/ready` | 可接收业务时返回 200，初始化、同步或上游不可用时返回 503。 |
+| GET | `/health/ready` | 可接收业务时返回 200，尚未初始化、主动停机或上游不可用时返回 503；管理断联本身不影响就绪状态。 |
 | POST | `/.well-known/teellm/attestation` | 仅在 TLS 入口提供。nonce 为客户端新生成的 32 字节随机数的小写十六进制编码（64 位）；客户端验证硬件签名、发布策略和当前 TLS 证书绑定。 |
 
 ## 管理接口
@@ -68,7 +68,7 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/admin/status` | 就绪状态、内存存储、初始化状态、boot_id、在途请求和账号健康情况。 |
-| GET | `/admin/metrics` | 入口并发、存储、账号、发现与自动维护指标。 |
+| GET | `/admin/metrics` | 入口并发、存储、账号、发现与自动维护指标；`lifecycle` 包含 `quiesce_version: 1`、`quiescing`、`background_jobs` 和 `drained`。`/admin/status` 同样提供 `lifecycle`。 |
 | GET | `/admin/usage` | 读取用量统计，不包含用户的问题和回答。 |
 | GET | `/admin/config` | 返回脱敏配置及 revision。 |
 | PATCH | `/admin/config` | 带 revision 提交配置补丁；过期 revision 被拒绝。 |
@@ -79,8 +79,9 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 | PUT | `/admin/users/{id}` | 更新指定用户及其权限。 |
 | DELETE | `/admin/users/{id}` | 撤销指定用户及其 API key。 |
 | GET | `/admin/checkpoint` | 管理后端用于加密保存配置、凭证、待确认用量与拒答队列及其游标；响应含敏感数据。 |
-| POST | `/admin/checkpoint/ack` | 持久化结算后提交 boot_id、generation、sequence 和全部用户 balances（整数 micro-USD）；原子更新余额、清除已同步消费、续期服务租约，不删除拒答队列。 |
+| POST | `/admin/checkpoint/ack` | 持久化结算后提交 boot_id、generation、sequence 和全部用户 balances（整数 micro-USD）；原子更新余额、清除已同步消费，不删除拒答队列，不承担服务保活。 |
 | POST | `/admin/initialize` | 绑定本次 boot_id 恢复管理平台保存的快照。 |
+| POST | `/admin/quiesce` | 管理员提交 `{"boot_id":"当前进程 ID","quiescing":true}` 暂停新业务和后台任务；轮询 metrics 的 `lifecycle.drained`，排空后保存快照再停机。提交 false 恢复服务；重启后须重新初始化。 |
 | GET | `/admin/logs` | 待同步调用元数据，拒答仅含 refusal_id 引用；不含拒答正文。 |
 | GET | `/admin/refusals` | 按 after_id、limit 分页拉取所有用户的待归档拒答。 |
 | DELETE | `/admin/refusals` | 按 through_id（含该 ID）批量删除已归档前缀。 |

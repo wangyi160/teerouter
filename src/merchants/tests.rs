@@ -4,6 +4,117 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+#[tokio::test]
+async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
+    let r = root();
+    let token = "a".repeat(64);
+    let merchant = add(&r, &token).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let body = json!({"boot_id":r.engine().vault.boot_id,"quiescing":true});
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/quiesce",
+            "alice-key",
+            body.clone()
+        )
+        .await
+        .0,
+        401
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/quiesce",
+            ADMIN,
+            json!({"boot_id":"old-boot","quiescing":true})
+        )
+        .await
+        .0,
+        409
+    );
+    let job = merchant.runtime.background_job().unwrap();
+    let admitted = r.ingress.acquire(usize::MAX).unwrap();
+    let (code, state) = call(&server, Method::POST, "/admin/quiesce", ADMIN, body).await;
+    assert_eq!(code, 200);
+    assert_eq!(state["drained"], false);
+    assert!(merchant.runtime.background_job().is_none());
+    let child = r.merchant_child(merchant.runtime.engine());
+    assert!(child.background_job().is_none());
+    for (method, path, key, body) in [
+        (Method::GET, "/v1/models", "alice-key", Value::Null),
+        (Method::GET, "/merchant/state", &token, Value::Null),
+        (Method::POST, "/admin/apply", ADMIN, json!({})),
+    ] {
+        let (code, error) = call(&server, method, path, key, body).await;
+        assert_eq!(code, 503);
+        assert_eq!(error["error"]["code"], "router_draining");
+    }
+    assert_eq!(
+        call(&server, Method::GET, "/health/live", "", Value::Null)
+            .await
+            .0,
+        200
+    );
+    drop(job);
+    assert_eq!(
+        call(&server, Method::GET, "/admin/metrics", ADMIN, Value::Null)
+            .await
+            .1["lifecycle"]["drained"],
+        false
+    );
+    drop(admitted);
+    for _ in 0..100 {
+        if call(&server, Method::GET, "/admin/metrics", ADMIN, Value::Null)
+            .await
+            .1["lifecycle"]["drained"]
+            == true
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        call(&server, Method::GET, "/admin/metrics", ADMIN, Value::Null)
+            .await
+            .1["lifecycle"]["drained"],
+        true
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::GET,
+            "/admin/checkpoint",
+            ADMIN,
+            Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/quiesce",
+            ADMIN,
+            json!({"boot_id":r.engine().vault.boot_id,"quiescing":false})
+        )
+        .await
+        .0,
+        200
+    );
+    assert!(merchant.runtime.background_job().is_some());
+    assert_eq!(
+        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
+            .await
+            .0,
+        200
+    );
+}
+
 #[path = "probe_tests.rs"]
 mod account_probes;
 #[path = "pool_model_tests.rs"]

@@ -173,11 +173,15 @@ impl Vault {
     }
     pub(crate) fn serving(&self) -> bool {
         let sync = self.sync.lock().unwrap();
-        !sync.managed
-            || (sync.initialized
-                && sync
-                    .acknowledged
-                    .is_some_and(|t| t.elapsed().as_secs() < 30))
+        !sync.managed || sync.initialized
+    }
+    // Synchronization freshness is diagnostic; it is never a serving lease.
+    pub(crate) fn manager_connected(&self) -> bool {
+        self.sync
+            .lock()
+            .unwrap()
+            .acknowledged
+            .is_some_and(|t| t.elapsed().as_secs() < 30)
     }
     pub(crate) fn initialize(&self, mut data: Data) -> Result<()> {
         let mut current = self.lock()?;

@@ -184,7 +184,7 @@ pub(super) async fn admin_metrics(
 ) -> Result<Json<Value>, ApiError> {
     let engine = runtime.engine();
     Ok(Json(
-        json!({"runtime":engine.status(),"ingress":runtime.ingress.used(),"maintenance":runtime.maintenance_status(),"storage":engine.vault.storage_status().map_err(storage)?,"accounts":engine.account_status()?,"discovery":engine.discovery_status()}),
+        json!({"runtime":engine.status(),"lifecycle":runtime.lifecycle_status(),"ingress":runtime.ingress.used(),"maintenance":runtime.maintenance_status(),"storage":engine.vault.storage_status().map_err(storage)?,"accounts":engine.account_status()?,"discovery":engine.discovery_status()}),
     ))
 }
 pub(super) async fn admin_maintenance(
@@ -244,4 +244,35 @@ pub(super) async fn admin_initialize(
 ) -> Result<Json<Value>, ApiError> {
     let (secret, body) = input(&runtime, request).await?;
     runtime.initialize(body, &secret).await.map(Json)
+}
+
+pub(super) async fn admin_quiesce(
+    State(runtime): State<Arc<Runtime>>,
+    request: Request,
+) -> Result<Json<Value>, ApiError> {
+    let (secret, body) = input(&runtime, request).await?;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Quiesce {
+        boot_id: String,
+        quiescing: bool,
+    }
+    let input: Quiesce = serde_json::from_value(body).map_err(|_| invalid())?;
+    let engine = runtime.engine();
+    if !engine.authenticate_admin(&secret) {
+        return Err(ApiError::new(
+            401,
+            "authentication_error",
+            "Admin credential was revoked",
+        ));
+    }
+    if input.boot_id != engine.vault.boot_id {
+        return Err(ApiError::new(
+            409,
+            "boot_conflict",
+            "Reload router boot identity",
+        ));
+    }
+    runtime.set_quiescing(input.quiescing);
+    Ok(Json(runtime.lifecycle_status()))
 }

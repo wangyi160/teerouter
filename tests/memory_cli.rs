@@ -127,7 +127,7 @@ async fn post(r: &Running, path: &str, body: Value) -> reqwest::Response {
         .unwrap()
 }
 #[tokio::test]
-async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_ack() {
+async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
     let dir = tempfile::tempdir().unwrap();
     let first = start(dir.path()).await;
     let response = reqwest::get(format!("{}/v1/models", first.url))
@@ -161,16 +161,40 @@ async fn empty_boot_recovery_requires_authenticated_initialization_and_durable_a
             .await
             .unwrap()
             .status(),
-        503
+        401
     );
     let mut saved = get(&first, "/admin/checkpoint").await;
     assert_eq!(post(&first,"/admin/checkpoint/ack",json!({"boot_id":saved["boot_id"],"generation":saved["state"]["generation"],"sequence":saved["state"]["sequence"],"balances":{}})).await.status(),200);
     let key = "sk-fixture-user";
     assert_eq!(post(&first,"/admin/apply",json!({"config":{"users":[{"id":"test-user"}],"keys":[{"name":"client","user_id":"test-user","key_ref":"client","enabled":true}]},"secrets":{"client":key}})).await.status(),200);
     saved = get(&first, "/admin/checkpoint").await;
+    // No manager contact for longer than the former lease. Catalog access and
+    // the initialized platform remain available without another ACK.
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    assert_eq!(get(&first, "/admin/status").await["platform_ready"], true);
+    assert_eq!(
+        reqwest::Client::new()
+            .get(format!("{}/v1/models", first.url))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
     assert_eq!(post(&first, "/admin/quota", json!({})).await.status(), 404);
     drop(first);
     let second = start(dir.path()).await;
+    assert_eq!(
+        reqwest::Client::new()
+            .get(format!("{}/v1/models", second.url))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
     let c = get(&second, "/admin/checkpoint").await;
     assert_ne!(c["boot_id"], saved["boot_id"]);
     let mut unowned = saved["state"].clone();

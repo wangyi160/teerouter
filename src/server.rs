@@ -123,6 +123,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
         .route("/admin/checkpoint", get(admin_checkpoint))
         .route("/admin/checkpoint/ack", post(admin_acknowledge))
         .route("/admin/initialize", post(admin_initialize))
+        .route("/admin/quiesce", post(admin_quiesce))
         .route("/admin/logs", get(admin_logs))
         .route("/admin/metrics", get(admin_metrics))
         .route("/admin/maintenance", post(admin_maintenance))
@@ -170,7 +171,7 @@ async fn authenticate(
         Err(ApiError::new(
             503,
             "manager_unavailable",
-            "Router awaits initialization or management synchronization",
+            "Router awaits initialization after startup",
         ))
     } else {
         credential(request.headers())
@@ -213,6 +214,18 @@ async fn authenticate(
     } else {
         None
     };
+    // Admission precedes the pause check: a request racing with quiesce is
+    // either counted by the drain barrier or rejected before its handler runs.
+    let drain_control = path.starts_with("/admin/")
+        && (request.method() == axum::http::Method::GET
+            || matches!(path, "/admin/quiesce" | "/admin/checkpoint/ack"));
+    if result.is_ok() && !health_request && !drain_control && runtime.quiescing() {
+        result = Err(ApiError::new(
+            503,
+            "router_draining",
+            "Router is paused for an administrative shutdown",
+        ));
+    }
     let mut response = match result {
         Ok(account) => {
             request.extensions_mut().insert(Identity {
@@ -261,7 +274,10 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
         .unwrap()
         .values()
         .any(|m| m.runtime.engine().ready());
-    if (!runtime.is_platform() && engine.ready()) || (engine.vault.serving() && merchant_ready) {
+    if !runtime.quiescing()
+        && ((!runtime.is_platform() && engine.ready())
+            || (engine.vault.serving() && merchant_ready))
+    {
         Json(json!({"status":"ready"})).into_response()
     } else {
         ApiError::new(
@@ -347,8 +363,12 @@ async fn usage(request: Request) -> Result<Json<Value>, ApiError> {
 async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
     let engine = runtime.engine();
     let mut status = engine.status();
+    status["lifecycle"] = runtime.lifecycle_status();
+    if runtime.quiescing() {
+        status["ready"] = false.into();
+    }
     if runtime.is_platform() {
-        status["platform_ready"] = engine.vault.serving().into();
+        status["platform_ready"] = (engine.vault.serving() && !runtime.quiescing()).into();
         status["merchant_only"] = true.into();
         status["pool_multiplier_pricing"] = true.into();
         status["provider_billing_version"] = 1.into();

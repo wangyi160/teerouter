@@ -10,9 +10,9 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 管理 API 沿用 Bearer 认证，快照响应禁止缓存；业务 API key 不能读取快照或初始化。充值和持久化账务由独立管理平台负责；Router 通过同步 ACK 接收余额，通过价格 API 管理报价。
 
-每轮同步后等待 1 秒。管理确认超过 30 秒未更新时暂停新业务请求；已经开始的请求继续完成。达到待同步 usage 上限也暂停新请求，避免长期断联占满内存。模型目录查询同样要求管理连接健康。
+管理平台每轮同步后等待 1 秒。初始化完成后，Router 独立处理业务请求、模型目录查询、账号令牌维护及价格更新；管理平台断联不会触发停服。断联期间继续使用上次同步余额减去未同步消费检查余款，消费等待管理平台恢复连接后结算。达到待同步 usage 上限仍暂停新模型请求，避免占满内存。`storage.manager_connected` 仅表示最近 30 秒收到过 ACK，不参与请求准入。
 
-计划重启：暂停新请求，等待在途请求结束，通过 `/admin/checkpoint` 保存最新状态并 ACK 后停止 router。新进程等待外部管理服务恢复；不要用首次空初始化覆盖已有状态。
+计划重启：管理平台暂停自己的同步任务，向 `/admin/quiesce` 提交当前 `boot_id` 和 `quiescing: true`，然后轮询 `/admin/metrics`，直到 `lifecycle.drained: true`。此时新业务、商户操作和配置写入返回 503 / `router_draining`，已经开始的请求以及所有商户的后台刷新完成后才视为排空。管理读取、checkpoint 与 ACK 仍可使用。保存最终 checkpoint 后停止 Router。停机前保存失败应提交 `quiescing: false` 恢复服务；云端停机结果不明时先确认状态，显式启动可以恢复仍在运行的暂停实例。暂停状态不写入快照；新进程必须重新初始化。不要用首次空初始化覆盖已有状态。
 
 注意：周期快照有崩溃丢失窗口，包括用量和轮换 refresh token。需要更强保证时必须引入同步持久化协议，当前精简版本没有承诺零丢失。
 
@@ -56,7 +56,7 @@ Router 内存保存上次同步余额 `balances` 和尚未同步的消费 `consu
 
 ## 上游拒答审计
 
-拒答审计默认启用，无需额外密钥。`/admin/status` 返回 `moderation_mode: "upstream_refusal"`、`lockllm_enabled: false`、`refusal_audit_enabled: true`。模型可用性仍受账号、目录、权限、限流和管理同步约束。缺少 LockLLM 配置不再阻止推理或目录查询；旧快照里的 `config.moderation` 仅在导入时兼容读取，新导出省略，既不会调用扫描服务，也不要求恢复它的密钥。
+拒答审计默认启用，无需额外密钥。`/admin/status` 返回 `moderation_mode: "upstream_refusal"`、`lockllm_enabled: false`、`refusal_audit_enabled: true`。模型可用性仍受账号、目录、权限、余额、限流和记录队列容量约束。缺少 LockLLM 配置不再阻止推理或目录查询；旧快照里的 `config.moderation` 仅在导入时兼容读取，新导出省略，既不会调用扫描服务，也不要求恢复它的密钥。
 
 `GET /admin/refusals?after_id=0&limit=100` 按 ID 升序读取所有用户的未归档拒答。记录包含 `user_id`、密钥名称和拒答详情；用户详情与列表不再提供 `refusals`。router 不维护按用户累计统计，完整历史与统计由管理端保存。原 `user.moderation` 仅兼容已有 LockLLM 历史，不再增长。接口与字段见 [API 文档](docs/API.md#上游拒答队列)。
 

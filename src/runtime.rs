@@ -1,6 +1,17 @@
 //! Validated, atomic configuration generations. Existing requests retain their engine.
 use crate::{error::ApiError, resources::Gate, router::Engine, vault::operations::Update};
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    Arc, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
+
+// Shared by the platform and every merchant, including newly unlocked ones.
+// This is an explicit, process-local shutdown barrier, never a manager lease.
+#[derive(Default)]
+struct Lifecycle {
+    quiescing: AtomicBool,
+    background: Arc<Gate>,
+}
 
 pub(crate) struct Runtime {
     merchant: bool,
@@ -10,18 +21,23 @@ pub(crate) struct Runtime {
     pub pricing_sync: Arc<tokio::sync::Mutex<()>>,
     write: tokio::sync::Mutex<()>,
     maintenance: RwLock<serde_json::Value>,
+    lifecycle: Arc<Lifecycle>,
 }
 impl Runtime {
     pub fn new(engine: Arc<Engine>) -> Arc<Self> {
-        Self::scoped(engine, false)
+        Self::scoped(engine, false, Arc::default())
     }
+    #[cfg(test)]
     pub(super) fn merchant(engine: Arc<Engine>) -> Arc<Self> {
-        Self::scoped(engine, true)
+        Self::scoped(engine, true, Arc::default())
+    }
+    pub(super) fn merchant_child(&self, engine: Arc<Engine>) -> Arc<Self> {
+        Self::scoped(engine, true, self.lifecycle.clone())
     }
     pub fn is_platform(&self) -> bool {
         !self.merchant
     }
-    fn scoped(engine: Arc<Engine>, merchant: bool) -> Arc<Self> {
+    fn scoped(engine: Arc<Engine>, merchant: bool, lifecycle: Arc<Lifecycle>) -> Arc<Self> {
         let runtime = Arc::new(Self {
             merchant,
             merchants: Default::default(),
@@ -30,6 +46,7 @@ impl Runtime {
             pricing_sync: Arc::new(tokio::sync::Mutex::new(())),
             write: tokio::sync::Mutex::new(()),
             maintenance: RwLock::new(serde_json::json!({"last_run":null,"last_error":null})),
+            lifecycle,
         });
         let weak = Arc::downgrade(&runtime);
         tokio::spawn(async move {
@@ -44,17 +61,19 @@ impl Runtime {
                     .maintenance_secs
                     .min(engine.config.discovery.refresh_secs);
                 // Refresh jobs hold only this generation for a bounded iteration.
-                if runtime.merchant {
-                    engine.refresh_models(false).await;
-                    if engine.vault.serving() {
-                        engine.maintain_accounts().await;
+                if let Some(_job) = runtime.background_job() {
+                    if runtime.merchant {
+                        engine.refresh_models(false).await;
+                        if engine.vault.serving() {
+                            engine.maintain_accounts().await;
+                        }
                     }
-                }
-                let vault = engine.vault.clone();
-                let ops = engine.config.operations.clone();
-                let result = tokio::task::spawn_blocking(move || vault.maintain(&ops)).await;
-                *runtime.maintenance.write().unwrap() = serde_json::json!({"last_run":crate::oauth::tokens::now() as u64,
+                    let vault = engine.vault.clone();
+                    let ops = engine.config.operations.clone();
+                    let result = tokio::task::spawn_blocking(move || vault.maintain(&ops)).await;
+                    *runtime.maintenance.write().unwrap() = serde_json::json!({"last_run":crate::oauth::tokens::now() as u64,
                     "last_error":if matches!(result,Ok(Ok(()))) {None} else {Some("maintenance_failed")}});
+                }
                 drop(engine);
                 drop(runtime);
                 tokio::time::sleep(std::time::Duration::from_secs(interval.min(30))).await;
@@ -65,6 +84,24 @@ impl Runtime {
     }
     pub fn engine(&self) -> Arc<Engine> {
         self.current.read().unwrap().clone()
+    }
+    pub fn quiescing(&self) -> bool {
+        self.lifecycle.quiescing.load(Ordering::SeqCst)
+    }
+    pub fn set_quiescing(&self, value: bool) {
+        self.lifecycle.quiescing.store(value, Ordering::SeqCst);
+    }
+    pub fn background_job(&self) -> Option<crate::resources::Permit> {
+        let permit = self.lifecycle.background.acquire(usize::MAX)?;
+        // Acquire before checking the flag so a concurrent drain sees this job.
+        (!self.quiescing()).then_some(permit)
+    }
+    pub fn lifecycle_status(&self) -> serde_json::Value {
+        let quiescing = self.quiescing();
+        let background = self.lifecycle.background.used();
+        serde_json::json!({"quiesce_version":1,"quiescing":quiescing,
+            "background_jobs":background,
+            "drained":quiescing && background == 0 && self.ingress.used() <= 1})
     }
     pub async fn initialize(
         &self,

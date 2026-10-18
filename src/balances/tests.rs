@@ -91,10 +91,15 @@ fn negative_balance_and_restart_use_the_last_durable_balance() {
     saved.consumption.insert("user".into(), 999); // Derived, never trusted on restore.
     let next = Vault::memory().unwrap();
     next.require_manager();
+    assert!(!next.serving());
     next.initialize(saved).unwrap();
     assert!(next.lock().unwrap().consumption.is_empty());
     assert_eq!(next.lock().unwrap().balances["user"], -20);
-    assert!(!next.serving());
+    assert!(next.serving());
+    assert_eq!(
+        admit(&next.lock().unwrap(), "user").unwrap_err().status,
+        402
+    );
     sync(&next, 80);
     assert!(next.serving());
     assert!(admit(&next.lock().unwrap(), "user").is_ok());

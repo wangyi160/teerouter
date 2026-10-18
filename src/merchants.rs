@@ -371,7 +371,7 @@ pub(crate) async fn unlock(
                 sum.saturating_add(u.input_tokens)
                     .saturating_add(u.output_tokens)
             });
-    let child = Runtime::merchant(engine);
+    let child = runtime.merchant_child(engine);
     runtime.merchants.live.lock().unwrap().insert(
         item.id.clone(),
         Arc::new(Live {

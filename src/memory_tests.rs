@@ -92,7 +92,7 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
         )
         .is_err()
     );
-    assert!(!v.serving());
+    assert!(v.serving());
     v.acknowledge(
         &v.boot_id,
         saved["state"]["generation"].as_u64().unwrap(),
@@ -109,10 +109,11 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
     );
     let next = Vault::memory().unwrap();
     next.require_manager();
+    assert!(!next.serving());
     next.initialize(serde_json::from_value(saved["state"].clone()).unwrap())
         .unwrap();
     assert_ne!(next.boot_id, v.boot_id);
-    assert!(!next.serving());
+    assert!(next.serving());
     assert_eq!(
         next.account("one", Provider::OpenAI).unwrap().0["refresh_token"],
         "rotated"
@@ -172,12 +173,15 @@ fn management_cannot_restore_official_catalog_or_session_bindings() {
 }
 
 #[test]
-fn manager_disconnect_expires_permission() {
+fn manager_disconnect_does_not_expire_initialized_router() {
     let v = Vault::memory().unwrap();
     v.provision(&bundle()).unwrap();
     v.require_manager();
+    assert!(!v.serving());
     let data = v.lock().unwrap().clone();
     v.initialize(data).unwrap();
+    assert!(v.serving()); // No ACK is needed to activate restored state.
+    assert!(!v.manager_connected());
     let checkpoint = v.checkpoint().unwrap();
     v.acknowledge(
         &v.boot_id,
@@ -187,6 +191,35 @@ fn manager_disconnect_expires_permission() {
     )
     .unwrap();
     assert!(v.serving());
-    v.sync.lock().unwrap().acknowledged = Some(Instant::now() - std::time::Duration::from_secs(31));
-    assert!(!v.serving());
+    assert!(v.manager_connected());
+    for seconds in [31, 3600, 86400 * 7] {
+        v.sync.lock().unwrap().acknowledged =
+            Some(Instant::now() - std::time::Duration::from_secs(seconds));
+        assert!(!v.manager_connected());
+        assert!(v.serving());
+    }
+    v.lock().unwrap().balances.insert("user".into(), 100);
+    let ledger = crate::ledger::Ledger::new(v.clone());
+    ledger.record(
+        "client",
+        &crate::ledger::Usage::default(),
+        &json!({"user_id":"user","billing":{"state":"calculated","charge_microusd":40}}),
+        None,
+    );
+    {
+        let data = v.lock().unwrap();
+        assert_eq!(data.balances["user"], 100);
+        assert_eq!(data.consumption["user"], 40);
+        assert!(crate::balances::admit(&data, "user").is_ok());
+    }
+    let saved = v.checkpoint().unwrap();
+    v.acknowledge(
+        &v.boot_id,
+        saved["state"]["generation"].as_u64().unwrap(),
+        saved["state"]["sequence"].as_u64().unwrap(),
+        BTreeMap::from([("user".into(), 60)]),
+    )
+    .unwrap();
+    assert_eq!(v.lock().unwrap().balances["user"], 60);
+    assert!(v.lock().unwrap().consumption.is_empty());
 }
