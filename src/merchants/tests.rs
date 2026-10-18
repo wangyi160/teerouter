@@ -4,6 +4,8 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+#[path = "probe_tests.rs"]
+mod account_probes;
 #[path = "pool_model_tests.rs"]
 mod pool_models;
 #[path = "public_catalog_tests.rs"]

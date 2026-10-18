@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type ModelCatalog = (BTreeMap<String, ModelInfo>, Option<i64>);
 
-pub(super) async fn models(client: &Client, version: &str) -> Result<ModelCatalog, Error> {
+pub(crate) async fn models(client: &Client, version: &str) -> Result<ModelCatalog, Error> {
     let revision = || client.oauth.as_ref().map(|a| a.revision()).transpose();
     let mut headers = HeaderMap::new();
     let mut stable = false;

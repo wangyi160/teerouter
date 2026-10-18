@@ -1,6 +1,6 @@
 //! One official model/capability catalog per pool, fetched through one usable account.
 pub(crate) mod capabilities;
-mod fetch;
+pub(crate) mod fetch;
 
 use crate::{
     Client, Error,

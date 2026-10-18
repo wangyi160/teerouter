@@ -26,10 +26,15 @@
 | `GET /merchant/state` | 本商户设置、账号状态、账号池与目录；不返回账号凭证 |
 | `PUT /merchant/config` | 完整配置更新，须带 `expected_revision`，冲突返回 409 |
 | `POST /merchant/models/refresh` | 刷新官方模型目录 |
+| `POST /merchant/accounts/test` | 测试尚未保存的凭证与代理；不修改账号或配置 |
 | `GET /merchant/usage?after_seq=0&limit=500` | 本商户用量队列及实例 ID |
 | `POST /merchant/usage/ack` | `{"instance_id":"…","through_seq":123}`；删除已持久化的前缀 |
 | `GET /merchant/refusals?after_id=0&limit=500` | 本商户递增 ID 的拒答队列 |
 | `DELETE /merchant/refusals?through_id=123` | 删除该 ID 及以前的拒答记录 |
+
+账号测试输入为 `{"pool":"已同步的本商户账号池","proxy":"socks5h://proxy.example:1080","credential":{"access_token":"…"}}`，也可用 `api_key` 替代 `credential`。Router 从账号池确定服务商，使用正式转发的官方客户端和代理访问模型目录，再选择一个已开放、有文本报价的模型发送最多 32 输出 token 的短请求；Workbuddy 测试池可使用目录中的文本模型。可选 `model` 指定待测模型。成功返回 `ok:true`、`model`、`model_count`、`provider` 和 `latency_ms`；失败返回 `ok:false`、`stage`、脱敏错误 `code` 及可用的上游状态码。列出模型成功不代表测试成功，模型生成也必须成功。
+
+测试总超时 75 秒，每商户同时最多一次、全局最多八次，凭证只进入临时内存，不保存、不刷新 refresh token，不记入用户消费或商户收入。上游可能收取这条短请求的实际费用。正式账号必须填写独立代理，不允许 `direct://`，只有授权且编译启用的 Workbuddy 测试池例外。测试结果仅证明所测模型当时可用。
 
 完整配置包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
 

@@ -17,6 +17,7 @@ mod crypto;
 mod customers;
 pub(crate) mod http;
 mod model_catalog;
+mod probe;
 pub(crate) mod public_catalog;
 pub(crate) mod route_metrics;
 pub(crate) mod route_rule;
@@ -156,6 +157,7 @@ struct Recovery {
 }
 
 pub(crate) struct Live {
+    probe_gate: Arc<crate::resources::Gate>,
     pub runtime: Arc<Runtime>,
     pub settings: Mutex<Settings>,
     admin: zeroize::Zeroizing<String>,
@@ -170,6 +172,7 @@ pub(crate) struct RateMeter {
 }
 #[derive(Default)]
 pub(crate) struct Registry {
+    probe_gate: Arc<crate::resources::Gate>,
     pub routing: Arc<route_metrics::State>,
     pub live: Mutex<BTreeMap<String, Arc<Live>>>,
     pub write: tokio::sync::Mutex<()>,
@@ -372,6 +375,7 @@ pub(crate) async fn unlock(
     runtime.merchants.live.lock().unwrap().insert(
         item.id.clone(),
         Arc::new(Live {
+            probe_gate: Arc::default(),
             runtime: child,
             settings: Mutex::new(settings),
             admin: zeroize::Zeroizing::new(admin),

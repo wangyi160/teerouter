@@ -76,6 +76,10 @@ pub(crate) async fn dispatch(
             live.runtime.engine().refresh_models(true).await;
             state(&runtime, &item)?
         }
+        ("POST", "/merchant/accounts/test") => {
+            let (_, body) = crate::server::admin::input(&runtime, request).await?;
+            probe::test(&runtime, &item, body).await?
+        }
         ("GET", "/merchant/usage") => {
             let live = live(&runtime, &item.id)?;
             let engine = live.runtime.engine();
