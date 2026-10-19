@@ -67,7 +67,7 @@ impl Account {
     fn with_user<T>(
         &self,
         check_balance: bool,
-        action: impl FnOnce(&crate::config::User) -> Result<T, ApiError>,
+        action: impl FnOnce(&crate::config::User, usize) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         use subtle::ConstantTimeEq;
         let invalid = || {
@@ -101,17 +101,19 @@ impl Account {
             .iter()
             .find(|u| u.id == key.user_id && u.enabled)
             .ok_or_else(invalid)?;
-        if check_balance && self.vault.managed() {
-            crate::balances::admit(&data, &user.id)?;
-        }
-        action(user)
+        let limit = if check_balance && self.vault.managed() {
+            crate::balances::concurrency_limit(&data, user, &bundle.config.balance_concurrency)?
+        } else {
+            user.max_concurrent
+        };
+        action(user, limit)
     }
     pub(crate) fn authorize(&self) -> Result<(), ApiError> {
-        self.with_user(false, |_| Ok(()))
+        self.with_user(false, |_, _| Ok(()))
     }
     pub(crate) fn has_capacity(&self) -> bool {
         if !self
-            .with_user(false, |u| Ok(self.user_slots.used() < u.max_concurrent))
+            .with_user(true, |_, limit| Ok(self.user_slots.used() < limit))
             .unwrap_or(false)
             || self.slots.used() >= self.config.max_concurrent
         {
@@ -140,13 +142,21 @@ impl Account {
         let _global = global.acquire(global_limit.min(4096)).ok_or_else(|| {
             ApiError::new(503, "router_busy", "Router concurrency limit exceeded")
         })?;
-        let _user = self.with_user(true, |u| {
-            self.user_slots.acquire(u.max_concurrent).ok_or_else(|| {
-                ApiError::new(
-                    429,
-                    "user_concurrency_limit",
-                    "User concurrency limit exceeded",
-                )
+        let _user = self.with_user(true, |u, limit| {
+            self.user_slots.acquire(limit).ok_or_else(|| {
+                if limit < u.max_concurrent {
+                    ApiError::new(
+                        429,
+                        "balance_concurrency_limit",
+                        "Concurrency is limited by remaining user balance",
+                    )
+                } else {
+                    ApiError::new(
+                        429,
+                        "user_concurrency_limit",
+                        "User concurrency limit exceeded",
+                    )
+                }
             })
         })?;
         let _key = self

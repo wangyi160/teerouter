@@ -21,6 +21,8 @@ pub struct Config {
     #[serde(default)]
     pub operations: Operations,
     #[serde(default)]
+    pub balance_concurrency: BalanceConcurrency,
+    #[serde(default)]
     pub compatibility: std::collections::BTreeMap<String, crate::compatibility::Profile>,
     #[serde(default)]
     pub restrictions: Vec<crate::policy::Restriction>,
@@ -47,6 +49,62 @@ pub struct Server {
     pub max_event_bytes: usize,
     pub stream_idle_secs: u64,
     pub allow_empty_routes: bool,
+}
+
+/// Per-user concurrency caps selected from the remaining synchronized balance.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BalanceConcurrency {
+    pub tiers: Vec<BalanceTier>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BalanceTier {
+    pub up_to_microusd: u64,
+    pub max_concurrent: usize,
+}
+
+impl Default for BalanceConcurrency {
+    fn default() -> Self {
+        Self {
+            tiers: [(1_000_000, 1), (5_000_000, 2), (10_000_000, 4)]
+                .into_iter()
+                .map(|(up_to_microusd, max_concurrent)| BalanceTier {
+                    up_to_microusd,
+                    max_concurrent,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl BalanceConcurrency {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.tiers.is_empty()
+            || self.tiers.len() > 5
+            || self.tiers[0].max_concurrent != 1
+            || self.tiers.iter().any(|t| {
+                t.up_to_microusd == 0
+                    || t.up_to_microusd > i64::MAX as u64
+                    || !(1..=100_000).contains(&t.max_concurrent)
+            })
+            || self.tiers.windows(2).any(|pair| {
+                pair[0].up_to_microusd >= pair[1].up_to_microusd
+                    || pair[0].max_concurrent > pair[1].max_concurrent
+            })
+        {
+            return Err("balance concurrency requires 1..5 ascending positive balance thresholds, nondecreasing concurrency caps, and a lowest cap of 1".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn limit(&self, remaining: u64, configured: usize) -> usize {
+        self.tiers
+            .iter()
+            .find(|t| remaining <= t.up_to_microusd)
+            .map_or(configured, |t| configured.min(t.max_concurrent))
+    }
 }
 
 impl Default for Server {
@@ -302,6 +360,7 @@ impl Config {
         if self.server.allow_empty_routes && self.server.admin_key_env.is_none() {
             return Err("empty routes require an admin key".into());
         }
+        self.balance_concurrency.validate()?;
         if !self.server.allow_empty_routes && (self.keys.is_empty() || self.models.is_empty()) {
             return Err("at least one API key and model group is required".into());
         }

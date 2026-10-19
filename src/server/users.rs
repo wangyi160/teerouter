@@ -1,4 +1,4 @@
-//! User CRUD. All monetary data remains outside the router.
+//! User CRUD and effective admission limits. Balances arrive through checkpoint ACKs.
 use super::*;
 use crate::{
     config::User,
@@ -25,6 +25,14 @@ fn view(
 ) -> Result<Value, ApiError> {
     let mut value = serde_json::to_value(user).expect("serializable user");
     value["in_flight"] = json!(vault.user_gate(&user.id).used());
+    let effective = if vault.managed() {
+        let data = vault.lock().map_err(storage)?;
+        crate::balances::concurrency_limit(&data, user, &bundle.config.balance_concurrency)
+            .unwrap_or(0)
+    } else {
+        user.max_concurrent
+    };
+    value["effective_max_concurrent"] = json!(effective);
     value["keys"] = json!(
         bundle
             .config

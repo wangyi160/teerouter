@@ -129,3 +129,231 @@ fn pending_usage_does_not_invent_a_charge_and_large_sums_do_not_wrap() {
     let restored: Data = serde_json::from_value(checkpoint["state"].clone()).unwrap();
     assert_eq!(restored.consumption["user"], u128::from(u64::MAX) * 2);
 }
+
+#[test]
+fn tier_boundaries_and_invalid_policies() {
+    use crate::config::BalanceConcurrency;
+    let policy = BalanceConcurrency::default();
+    policy.validate().unwrap();
+    for (remaining, cap) in [
+        (1, 1),
+        (1_000_000, 1),
+        (1_000_001, 2),
+        (5_000_000, 2),
+        (5_000_001, 4),
+        (10_000_000, 4),
+        (10_000_001, 16),
+    ] {
+        assert_eq!(policy.limit(remaining, 16), cap);
+        assert_eq!(policy.limit(remaining, 1), 1);
+    }
+    for bad in [
+        json!([]),
+        json!([{"up_to_microusd":1,"max_concurrent":2}]),
+        json!([{"up_to_microusd":0,"max_concurrent":1}]),
+        json!([{"up_to_microusd":1,"max_concurrent":1},{"up_to_microusd":1,"max_concurrent":2}]),
+        json!([{"up_to_microusd":2,"max_concurrent":1},{"up_to_microusd":1,"max_concurrent":2}]),
+        json!([{"up_to_microusd":1,"max_concurrent":1},{"up_to_microusd":2,"max_concurrent":4},{"up_to_microusd":3,"max_concurrent":2}]),
+        json!([{"up_to_microusd":1,"max_concurrent":1},{"up_to_microusd":2,"max_concurrent":100001}]),
+        json!([{"up_to_microusd":u64::MAX,"max_concurrent":1}]),
+        json!(
+            (1..=6)
+                .map(|i| json!({"up_to_microusd":i,"max_concurrent":i}))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        let policy: BalanceConcurrency = serde_json::from_value(json!({"tiers":bad})).unwrap();
+        assert!(policy.validate().is_err());
+    }
+}
+
+struct Admission {
+    vault: Arc<Vault>,
+    ledger: Arc<Ledger>,
+    global: Arc<crate::resources::Gate>,
+    keys: Vec<Arc<crate::accounting::Account>>,
+}
+impl Admission {
+    fn new(managed: bool, balance: i64) -> Self {
+        let vault = Vault::memory().unwrap();
+        let config: crate::config::Config = serde_json::from_value(json!({
+            "server":{"allow_empty_routes":true,"admin_key_ref":"admin"},
+            "users":[{"id":"user","max_concurrent":16}],
+            "keys":[{"name":"one","user_id":"user","key_ref":"first"},
+                    {"name":"two","user_id":"user","key_ref":"second"}],
+            "models":[]
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        vault.lock().unwrap().bundle = Some(crate::vault::Provision {
+            config: config.clone(),
+            secrets: BTreeMap::from([
+                ("first".into(), "secret".into()),
+                ("second".into(), "secret".into()),
+            ]),
+            accounts: BTreeMap::new(),
+        });
+        if managed {
+            vault.require_manager();
+            let initial = vault.lock().unwrap().clone();
+            vault.initialize(initial).unwrap();
+            sync(&vault, balance);
+        }
+        let keys = config
+            .keys
+            .into_iter()
+            .map(|key| {
+                crate::accounting::Account::inherit(key, "secret".into(), vault.clone(), None)
+            })
+            .collect();
+        Self {
+            ledger: Arc::new(Ledger::new(vault.clone())),
+            vault,
+            global: Default::default(),
+            keys,
+        }
+    }
+    fn request(&self, key: usize) -> Result<crate::accounting::Ticket, crate::error::ApiError> {
+        self.keys[key].admit(
+            self.ledger.clone(),
+            self.global.clone(),
+            64,
+            "test".into(),
+            "model".into(),
+        )
+    }
+}
+
+#[test]
+fn spending_lowers_shared_capacity_immediately_and_topup_restores_it() {
+    let a = Admission::new(true, 11_000_000);
+    let mut active: Vec<_> = (0..6).map(|i| a.request(i % 2).unwrap()).collect();
+    record(&a.ledger, "one", "user", 1_000_000); // Exactly $10: cap 4.
+    assert_eq!(
+        a.request(1).err().unwrap().code,
+        "balance_concurrency_limit"
+    );
+    assert_eq!(a.vault.user_gate("user").used(), 6); // Existing work is retained.
+    for _ in 0..3 {
+        active.pop();
+    }
+    active.push(a.request(1).unwrap());
+    assert_eq!(a.request(0).err().unwrap().status, 429);
+    record(&a.ledger, "two", "user", 9_000_000); // $1 remaining: cap 1.
+    active.clear();
+    let one = a.request(0).unwrap();
+    assert!(!a.keys[1].has_capacity());
+    assert_eq!(
+        a.request(1).err().unwrap().code,
+        "balance_concurrency_limit"
+    );
+    drop(one);
+    record(&a.ledger, "one", "user", 1_000_000);
+    assert_eq!(a.request(0).err().unwrap().code, "insufficient_balance");
+    assert_eq!(a.global.used(), 0);
+    sync(&a.vault, 20_000_000); // ACK clears only persisted spending; recharge restores cap.
+    let held: Vec<_> = (0..16).map(|i| a.request(i % 2).unwrap()).collect();
+    assert_eq!(a.request(0).err().unwrap().code, "user_concurrency_limit");
+    drop(held);
+    assert_eq!(a.global.used(), 0);
+    assert_eq!(a.vault.user_gate("user").used(), 0);
+}
+
+#[test]
+fn simultaneous_keys_cannot_bypass_low_balance_and_child_vaults_are_unaffected() {
+    let a = Arc::new(Admission::new(true, 1_000_000));
+    let barrier = Arc::new(std::sync::Barrier::new(16));
+    let threads: Vec<_> = (0..16)
+        .map(|i| {
+            let a = a.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                a.request(i % 2)
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert!(
+        results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| e.code == "balance_concurrency_limit")
+    );
+    drop(results);
+    assert_eq!(a.global.used(), 0);
+    let child = Admission::new(false, 0);
+    let held: Vec<_> = (0..16).map(|i| child.request(i % 2).unwrap()).collect();
+    assert_eq!(
+        child.request(0).err().unwrap().code,
+        "user_concurrency_limit"
+    );
+    drop(held);
+}
+
+#[test]
+fn live_policy_and_key_recreation_keep_inflight_count_and_lower_key_limits() {
+    let a = Admission::new(true, 2_000_000);
+    let first = a.request(0).unwrap();
+    {
+        let mut data = a.vault.lock().unwrap();
+        let policy = &mut data.bundle.as_mut().unwrap().config.balance_concurrency;
+        policy.tiers[0].up_to_microusd = 3_000_000;
+        policy.validate().unwrap();
+    }
+    let recreated = crate::accounting::Account::inherit(
+        a.keys[1].config.clone(),
+        "secret".into(),
+        a.vault.clone(),
+        None,
+    );
+    assert_eq!(
+        recreated
+            .admit(
+                a.ledger.clone(),
+                a.global.clone(),
+                64,
+                "test".into(),
+                "model".into()
+            )
+            .err()
+            .unwrap()
+            .code,
+        "balance_concurrency_limit"
+    );
+    drop(first);
+    sync(&a.vault, 20_000_000);
+    let mut key = a.keys[0].config.clone();
+    key.max_concurrent = 1;
+    let key = crate::accounting::Account::inherit(
+        key,
+        "secret".into(),
+        a.vault.clone(),
+        Some(&a.keys[0]),
+    );
+    let first = key
+        .admit(
+            a.ledger.clone(),
+            a.global.clone(),
+            64,
+            "test".into(),
+            "model".into(),
+        )
+        .unwrap();
+    assert_eq!(
+        key.admit(
+            a.ledger.clone(),
+            a.global.clone(),
+            64,
+            "test".into(),
+            "model".into()
+        )
+        .err()
+        .unwrap()
+        .status,
+        429
+    );
+    assert_eq!(a.vault.user_gate("user").used(), 1);
+    drop(first);
+}

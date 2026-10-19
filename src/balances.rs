@@ -29,7 +29,7 @@ pub(crate) fn consumption(events: &VecDeque<Value>) -> BTreeMap<String, u128> {
     spending
 }
 
-pub(crate) fn admit(data: &Data, user: &str) -> Result<(), ApiError> {
+pub(crate) fn available(data: &Data, user: &str) -> Result<u64, ApiError> {
     let balance = data.balances.get(user).ok_or_else(|| {
         ApiError::new(
             503,
@@ -37,14 +37,28 @@ pub(crate) fn admit(data: &Data, user: &str) -> Result<(), ApiError> {
             "User balance has not been synchronized",
         )
     })?;
-    if *balance <= 0 || data.consumption.get(user).copied().unwrap_or(0) >= *balance as u128 {
+    let consumed = data.consumption.get(user).copied().unwrap_or(0);
+    if *balance <= 0 || consumed >= *balance as u128 {
         return Err(ApiError::new(
             402,
             "insufficient_balance",
             "User balance is insufficient",
         ));
     }
-    Ok(())
+    Ok(*balance as u64 - consumed as u64)
+}
+
+pub(crate) fn concurrency_limit(
+    data: &Data,
+    user: &crate::config::User,
+    policy: &crate::config::BalanceConcurrency,
+) -> Result<usize, ApiError> {
+    Ok(policy.limit(available(data, &user.id)?, user.max_concurrent))
+}
+
+#[cfg(test)]
+pub(crate) fn admit(data: &Data, user: &str) -> Result<(), ApiError> {
+    available(data, user).map(|_| ())
 }
 
 #[cfg(test)]

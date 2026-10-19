@@ -54,6 +54,22 @@ OAuth 凭证允许只提供 `access_token`，省略或清空 `refresh_token` 表
 
 Router 内存保存上次同步余额 `balances` 和尚未同步的消费 `consumption`，请求只累加消费。新模型请求检查「余额 − 消费」，不足时返回 402 / `insufficient_balance`；用户尚未同步余额时返回 503 / `balance_unavailable`。同一用户的所有 key 共享余额，模型目录查询不受余额限制。已开始的并发请求仍会完成，因此可能出现负余额。
 
+受管理的 Router 按上述可用余额降低用户共享并发：`0 < 余额 ≤ $1` 为 1，`$1 < 余额 ≤ $5` 为 2，`$5 < 余额 ≤ $10` 为 4，高于 $10 使用原用户上限。实际取阶梯与原用户上限的较小值；key、商户和全局限额继续独立生效。每次准入在余额及消费的同一把锁内选档并取得用户许可，无需请求管理平台。消费入账后立即降档，充值 ACK 后自动恢复。旧快照缺少配置时采用这些默认值，商户子引擎不重复执行平台余额限制。
+
+`GET /admin/config` 的 `config.balance_concurrency` 返回当前规则；通过 `PATCH /admin/config` 热更新，例如：
+
+```json
+{"expected_revision":42,"patch":{"balance_concurrency":{"tiers":[
+  {"up_to_microusd":1000000,"max_concurrent":1},
+  {"up_to_microusd":5000000,"max_concurrent":2},
+  {"up_to_microusd":10000000,"max_concurrent":4}
+]}}}
+```
+
+金额为整数 micro-USD（1 USD = 1000000 micro-USD），1 至 5 档，阈值为正数且严格递增，并发上限不递减、最低档必须为 1。`GET /admin/users` 和 `GET /admin/users/{id}` 增加 `effective_max_concurrent`，表示用户并发与余额阶梯合并后的上限；余额未同步或耗尽时为 0。阶梯导致的拒绝返回 429 / `balance_concurrency_limit`，不会排队；余额耗尽仍返回 402。
+
+降档不取消已经执行的请求。此机制降低同时在途请求造成的透支风险，不是费用预留或透支金额保证；在途请求及单次高费用请求仍可能使余额变负，尚待核算的费用也不计入已知消费。
+
 `/admin/status` 和 `/admin/checkpoint` 的 `balance_sync_version: 1` 表示支持此协议。先升级管理端，再升级 Router；ACK 必须包含完整的 `balances`，可以为空，但未列出的用户不能发起模型请求。重复 ACK 不允许修改余额；充值等后续余额变动应读取新 checkpoint 后确认。官方价格计算与账单格式见 [billing v1](docs/BILLING.md)。
 
 ## 上游拒答审计

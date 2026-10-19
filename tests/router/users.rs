@@ -85,6 +85,92 @@ async fn managed_balance_blocks_upstream_but_keeps_catalog_access_and_accepts_to
 }
 
 #[tokio::test]
+async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
+    let mock = mock(vec![]).await;
+    let engine = engine(configuration(&mock));
+    engine.vault.require_manager();
+    let initial = engine.vault.lock().unwrap().clone();
+    engine.vault.initialize(initial).unwrap();
+    let checkpoint = engine.vault.checkpoint().unwrap();
+    engine
+        .vault
+        .acknowledge(
+            &engine.vault.boot_id,
+            checkpoint["state"]["generation"].as_u64().unwrap(),
+            checkpoint["state"]["sequence"].as_u64().unwrap(),
+            std::collections::BTreeMap::from([("test-user".into(), 2_000_000)]),
+        )
+        .unwrap();
+    let g = run(server::app_upstream_fixture(engine.clone())).await;
+    let current: Value = admin(&g, "GET", "/admin/config", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let u: Value = admin(&g, "GET", "/admin/users/test-user", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(u["user"]["effective_max_concurrent"], 2);
+    let policy = json!({"tiers":[{"up_to_microusd":3_000_000,"max_concurrent":1}]});
+    assert_eq!(
+        admin(
+            &g,
+            "PATCH",
+            "/admin/config",
+            json!({"expected_revision":current["revision"], "patch":{"balance_concurrency":policy}})
+        )
+        .await
+        .status(),
+        200
+    );
+    let u: Value = admin(&g, "GET", "/admin/users/test-user", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(u["user"]["effective_max_concurrent"], 1);
+    let changed: Value = admin(&g, "GET", "/admin/config", Value::Null)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        admin(
+            &g,
+            "PATCH",
+            "/admin/config",
+            json!({"expected_revision":current["revision"], "patch":{"balance_concurrency":policy}})
+        )
+        .await
+        .status(),
+        409
+    );
+    assert_eq!(admin(&g, "PATCH", "/admin/config", json!({"expected_revision":changed["revision"], "patch":{"balance_concurrency":{"tiers":[]}}})).await.status(), 400);
+    let saved = engine.vault.checkpoint().unwrap();
+    assert_eq!(
+        saved["state"]["bundle"]["config"]["balance_concurrency"],
+        policy
+    );
+    let restored: crate::vault::Data = serde_json::from_value(saved["state"].clone()).unwrap();
+    let next = crate::vault::Vault::memory().unwrap();
+    next.require_manager();
+    next.initialize(restored).unwrap();
+    let data = next.lock().unwrap();
+    let bundle = data.bundle.as_ref().unwrap();
+    assert_eq!(
+        crate::balances::concurrency_limit(
+            &data,
+            &bundle.config.users[0],
+            &bundle.config.balance_concurrency
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn user_crud_is_atomic_admin_only_and_contains_no_money() {
     let mock = mock(vec![]).await;
     let g = gateway(configuration(&mock)).await;
