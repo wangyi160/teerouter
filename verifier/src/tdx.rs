@@ -1,6 +1,6 @@
 //! Client-owned dstack/TDX appraisal. A quote is never its own allowlist.
 //! Intel signatures, revocation/freshness, measured production OS, the complete
-//! RTMR3 launch sequence and the current TLS certificate must all agree.
+//! RTMR3 launch sequence and the receipt key / boot / nonce binding must agree.
 use crate::protocol::{Check, hex};
 use anyhow::{Context, Result, ensure};
 use dcap_qvl::{
@@ -176,7 +176,7 @@ fn appraise(
 ) -> Result<()> {
     ensure!(
         &td.report_data == binding,
-        "REPORT_DATA 与本次挑战/TLS 证书不匹配"
+        "REPORT_DATA 与消费签名公钥、启动标识或随机挑战不匹配"
     );
     ensure!(td.td_attributes[0] & 1 == 0, "拒绝 TDX 调试模式");
     ensure!(
@@ -344,7 +344,7 @@ impl TdxVerifier {
             .releases
             .iter()
             .find(|release| appraise(td, &events, release, binding).is_ok())
-            .context("TDX 证明未匹配任何获准 OS/router/启动策略，或 TLS 挑战绑定不一致")?;
+            .context("TDX 证明未匹配任何获准 OS/router/启动策略，或消费签名公钥绑定不一致")?;
         Ok(vec![
             Check::new(
                 "Intel TDX 硬件与证书链",
@@ -364,7 +364,7 @@ impl TdxVerifier {
             Check::new(
                 "TDX REPORT_DATA",
                 "passed",
-                format!("本次 TLS/随机挑战绑定：{}", hex(binding)),
+                format!("消费签名公钥、启动标识和随机挑战绑定：{}", hex(binding)),
             ),
         ])
     }
