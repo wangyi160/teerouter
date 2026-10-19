@@ -1,7 +1,7 @@
 # teerouter
 
 运行在 TEE 中的精简 Rust 大模型 router。此仓库包含 Router 源码、构建依赖、测试和协议文档。
-管理平台、客户端 SDK 和演示页面属于独立项目，不随此仓库发布。
+部署脚本、容器构建文件、云平台配置与运维工具由运营方独立维护，不随此仓库发布。管理平台、客户端 SDK 和演示页面属于独立项目。
 另提供可独立构建的 [消费流水校验器](verifier/README.md)，用于核验 Router 签名凭据和 TEE 证明，无需安装桌面客户端。
 
 管理服务可通过 `GET /admin/public-catalog` 读取供公开 Portal 展示的账号池目录。接口仍要求平台管理认证，但响应仅包含启用且已解锁商户的池名称、模型提供商、商户名称、账号聚合数量、并发占用/容量、商户共享限额及开放模型的官方基准价格和池倍率。模型目录遵守池级开放名单、官方目录有效期与模型限制；不返回账号明细、凭证、代理、用户关系或原始错误。不触发上游刷新、不建立客户关系、不改变调用授权。并发和限速是采样状态，商户额度由各池共享；报价缺失、过期或商户限速耗尽时不报告可用容量。
@@ -27,21 +27,23 @@
 | `src/`、`tests/` | router 源码与自身测试 |
 | `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml` | 独立 Rust 构建与依赖锁定 |
 | `config*.example.toml`、`*.example.json` | router 配置和管理 API 请求示例 |
+| `egress/` | Router 使用的 VLESS 网络出口组件源码 |
+| `verifier/` | 消费流水协议的独立校验器与测试 |
 | `docs/`、根目录文档和许可证 | router 接口、运行、信任边界及来源说明 |
 
 管理 API 是 router 的配置、权限执行和状态同步接口，保留在核心中；逐请求费用按 [计费协议](docs/BILLING.md) 在 router 内计算。管理页面、数据库、充值与持久化结算不属于本仓库。构建和测试无需安装管理平台或客户端。
 
 ## 构建
 
-仓库名为 teerouter，当前 Rust crate 和可执行文件名保留 `teellm`，以兼容已有部署。
+仓库名为 teerouter，当前 Rust crate 和可执行文件名保留 `teellm`。
 
 ```sh
 cargo build --release --locked --features dstack-tdx
 ```
 
-冷启动等待管理 API 初始化；初始化后独立服务，管理平台断联不触发停服。外部管理平台主动同步、持久化并确认快照，恢复连接后继续结算。
+冷启动等待管理 API 初始化。外部管理平台主动同步、持久化并确认快照；初始化后的服务准入与待确认队列容量见 [运行协议](OPERATIONS.md)。
 
-生产运行需要真实硬件取证接口、审核后的 OS / 启动链 / 镜像和客户端信任策略。普通主机不能产生有效硬件证明。`sample-demo` 和 `workbuddy-lab` 均为默认关闭的开发特性。Workbuddy 默认固定为 `http://127.0.0.1:8001/v1`；兼容既有测试服务时，可以在构建时设置 `TEEROUTER_WORKBUDDY_BASE_URL`。该地址编译进二进制，只允许同源 `/v1` 路径，运行时不能修改，也不能替换其他供应商的官方地址。HTTP 测试上游没有传输加密；启用此功能的镜像应单独审核和固定摘要。Workbuddy 如返回兼容协议中的明确拒答信号，也会写入统一拒答队列。
+真实硬件取证接口、审核后的 OS / 启动链及客户端信任策略属于 TEE 信任边界，普通主机不能产生有效硬件证明。`sample-demo` 和 `workbuddy-lab` 均为默认关闭的开发特性。Workbuddy 默认固定为 `http://127.0.0.1:8001/v1`；兼容测试服务时，可以在启用 `workbuddy-lab` 的构建中设置 `TEEROUTER_WORKBUDDY_BASE_URL`。该地址编译进二进制，只允许同源 `/v1` 路径，运行时不能修改，也不能替换其他供应商的官方地址。HTTP 测试上游没有传输加密。Workbuddy 如返回兼容协议中的明确拒答信号，也会写入统一拒答队列。
 
 ## 初始化
 
@@ -54,6 +56,7 @@ cargo build --release --locked --features dstack-tdx
 - [架构](ARCHITECTURE.md)、[运行和恢复](OPERATIONS.md)、[接口索引](docs/API.md)、[TEE 安全边界](SECURITY-TEE.md)。
 - [多商户、统一平台 key 与商户 TEE 通道](docs/MERCHANTS.md)。商户工作台独立于 router 和平台管理端。
 - [上游拒答记录](docs/API.md#上游拒答队列)、[同步与保留范围](OPERATIONS.md#上游拒答审计)。无需额外安全 API 密钥；普通文本拒答不自动分类，未收到拒答信号不表示请求合规。
+- 客户端需要独立实现或集成符合安全文档的证明验证与 TLS 绑定。
 
 ```sh
 cargo test --locked --features workbuddy-lab,sample-demo

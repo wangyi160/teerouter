@@ -1,8 +1,8 @@
 # TEE 安全边界
 
-Router 提供 dstack Intel TDX 与 Linux SNP 取证能力。具体基础设施配置和部署工具由运营方独立维护。用户保护目标是运营者不能读取请求内容；上游账号和账务由运营者管理。
+Router 提供 dstack Intel TDX 与 Linux SNP 取证能力。本文描述程序的信任边界与证明协议；具体基础设施配置和部署工具由运营方独立维护。用户保护目标是运营者不能读取请求内容；上游账号和账务由运营者管理。
 
-Phala 构建启用 `dstack-tdx`，通过 guest 内固定 Unix socket 获取绑定当前 TLS 证书与挑战的 TDX quote；客户端使用本地发布策略独立验证 Intel 生产证书链、吊销与 TCB、MRTD、RTMR0–2、完整 RTMR3 启动序列和 REPORT_DATA。网络只能提供证据/证书材料，不能提供可信的验证结论。运行环境、OS 和管理通道仍需完成独立验收；本地测试不代表已经上线或完成安全审计。
+`dstack-tdx` 特性通过 guest 内固定 Unix socket 获取绑定当前 TLS 证书与挑战的 TDX quote；客户端使用本地发布策略独立验证 Intel 生产证书链、吊销与 TCB、MRTD、RTMR0–2、完整 RTMR3 启动序列和 REPORT_DATA。网络只能提供证据/证书材料，不能提供可信的验证结论。运行环境、OS 和管理通道仍需完成独立验收；本地测试不代表已经上线或完成安全审计。
 
 ## 单程序与内存状态
 
