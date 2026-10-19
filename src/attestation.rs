@@ -221,6 +221,30 @@ async fn attest(
     }
 }
 
+/// Dedicated domain-separated report data for the consumption signing key.
+/// No caller-supplied digest signing and no simulator fallback.
+pub(crate) async fn receipt_evidence(binding: [u8; 64]) -> Result<Value, ()> {
+    static REPORTS: Semaphore = Semaphore::const_new(2);
+    let permit = REPORTS.try_acquire().map_err(|_| ())?;
+    #[cfg(feature = "dstack-tdx")]
+    {
+        let _permit = permit;
+        dstack_report(binding).await
+    }
+    #[cfg(not(feature = "dstack-tdx"))]
+    {
+        let task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            hardware_report(binding)
+        });
+        timeout(Duration::from_secs(10), task)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(Err(()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

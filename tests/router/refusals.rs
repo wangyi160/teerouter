@@ -369,6 +369,9 @@ async fn queue_pagination_deletion_and_checkpoint_ack_have_independent_cursors()
     assert_eq!(repeat["deleted"], 0);
     assert_eq!(repeat["deleted_through"], 25);
     let mut saved = admin(&g, "/admin/checkpoint").await;
+    // Usage receipts are archived by management; the independent refusal queue
+    // remains in the recovery state, but historical usage must not be re-signed.
+    saved["state"]["events"] = json!([]);
     saved["state"]["moderation"] = json!({"test-user":{"blocked_requests":7}});
     let next = engine(config);
     next.vault.require_manager();

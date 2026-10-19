@@ -5,6 +5,94 @@ use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
 #[tokio::test]
+async fn signed_checkpoint_requires_its_proof_hash_and_rejects_arbitrary_digest_attestation() {
+    let r = root();
+    let server = serve(crate::server::app_runtime(r)).await;
+    let (status, first) = call(
+        &server,
+        Method::POST,
+        "/admin/checkpoint/diff",
+        ADMIN,
+        json!({"sign_receipts":true}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let manifest: Value =
+        serde_json::from_str(first["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
+    assert_eq!(manifest["record_count"], 0);
+    let mut ack = json!({"boot_id":first["boot_id"],"generation":first["state"]["generation"],
+        "sequence":first["state"]["sequence"],"balances_patch":{}});
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/checkpoint/ack",
+            ADMIN,
+            ack.clone()
+        )
+        .await
+        .0,
+        409
+    );
+    ack["receipt_batch_hash"] = first["receipt_batch"]["batch_hash"].clone();
+    assert_eq!(
+        call(&server, Method::POST, "/admin/checkpoint/ack", ADMIN, ack)
+            .await
+            .0,
+        200
+    );
+    let (_, next) = call(
+        &server,
+        Method::POST,
+        "/admin/checkpoint/diff",
+        ADMIN,
+        json!({}),
+    )
+    .await;
+    let next_manifest: Value =
+        serde_json::from_str(next["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        next_manifest["previous_batch_hash"],
+        first["receipt_batch"]["batch_hash"]
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/receipts/evidence",
+            "alice-key",
+            json!({"nonce":"a".repeat(64)})
+        )
+        .await
+        .0,
+        401
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/receipts/evidence",
+            ADMIN,
+            json!({"nonce":"bad"})
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        call(
+            &server,
+            Method::POST,
+            "/admin/receipts/evidence",
+            ADMIN,
+            json!({"nonce":"a".repeat(64),"digest":"b".repeat(64)})
+        )
+        .await
+        .0,
+        400
+    );
+}
+#[tokio::test]
 async fn checkpoint_diff_is_admin_only_and_survives_explicit_quiesce() {
     let r = root();
     let server = serve(crate::server::app_runtime(r.clone())).await;

@@ -1,0 +1,21 @@
+{
+  "batch": {
+    "manifest": "{\"schema\":\"teerouter.consumption-batch.v1\",\"scope\":\"router_consumption_only\",\"algorithm\":\"ed25519\",\"public_key\":\"197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61\",\"instance_id\":\"11111111111111111111111111111111\",\"boot_id\":\"22222222222222222222222222222222\",\"batch_no\":1,\"previous_batch_hash\":null,\"previous_boot_id\":null,\"continuity\":\"start\",\"created_at_ms\":1792368000000,\"sequence_before\":0,\"sequence_through\":3,\"record_count\":3,\"priced_record_count\":3,\"charge_microusd\":\"72\",\"currency\":\"USD\",\"merkle_root\":\"121855782a64e9c2fef6ae58f5ee47eab132f828bcff8b3c20e3c7ce4c3c7d6f\"}",
+    "signature": "063cec421405867657efe1b8e146993edef94336c5ebb6ab663b4b2cbb08175d6bb05b99b8c072badf7b16a7bbbc9888648692c9fc76a8d29c1362de86173b0c",
+    "batch_hash": "28cfce8639070bf60ef4dec4e6366d6b97e7370bbff76b4c560e04939506596c",
+    "records": [
+      {
+        "salt": "0101010101010101010101010101010101010101010101010101010101010101",
+        "payload": "{\"seq\":1,\"event\":{\"user_id\":\"u\",\"key\":\"k\",\"merchant_id\":\"m_fixture\",\"model\":\"grok-4.7\",\"provider\":\"xai\",\"created_at\":1792368000,\"billing\":{\"state\":\"calculated\",\"charge_microusd\":24},\"request_id\":\"test-1\"}}"
+      },
+      {
+        "salt": "0202020202020202020202020202020202020202020202020202020202020202",
+        "payload": "{\"seq\":2,\"event\":{\"user_id\":\"u\",\"key\":\"k\",\"merchant_id\":\"m_fixture\",\"model\":\"grok-4.7\",\"provider\":\"xai\",\"created_at\":1792368000,\"billing\":{\"state\":\"calculated\",\"charge_microusd\":24},\"request_id\":\"test-2\"}}"
+      },
+      {
+        "salt": "0303030303030303030303030303030303030303030303030303030303030303",
+        "payload": "{\"seq\":3,\"event\":{\"user_id\":\"u\",\"key\":\"k\",\"merchant_id\":\"m_fixture\",\"model\":\"grok-4.7\",\"provider\":\"xai\",\"created_at\":1792368000,\"billing\":{\"state\":\"calculated\",\"charge_microusd\":24},\"request_id\":\"test-3\"}}"
+      }
+    ]
+  }
+}

@@ -18,6 +18,7 @@ pub mod policy;
 mod pricing;
 mod provider;
 mod reasoning;
+mod receipts;
 mod refusal;
 mod resources;
 pub mod router;

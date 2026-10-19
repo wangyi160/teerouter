@@ -122,6 +122,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
         )
         .route("/admin/checkpoint", get(admin_checkpoint))
         .route("/admin/checkpoint/diff", post(admin_checkpoint_diff))
+        .route("/admin/receipts/evidence", post(admin_receipt_evidence))
         .route("/admin/checkpoint/ack", post(admin_acknowledge))
         .route("/admin/initialize", post(admin_initialize))
         .route("/admin/quiesce", post(admin_quiesce))
@@ -221,7 +222,10 @@ async fn authenticate(
         && (request.method() == axum::http::Method::GET
             || matches!(
                 path,
-                "/admin/quiesce" | "/admin/checkpoint/ack" | "/admin/checkpoint/diff"
+                "/admin/quiesce"
+                    | "/admin/checkpoint/ack"
+                    | "/admin/checkpoint/diff"
+                    | "/admin/receipts/evidence"
             ));
     if result.is_ok() && !health_request && !drain_control && runtime.quiescing() {
         result = Err(ApiError::new(

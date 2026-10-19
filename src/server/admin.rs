@@ -224,6 +224,7 @@ pub(super) async fn admin_acknowledge(
         sequence: u64,
         balances: Option<BTreeMap<String, i64>>,
         balances_patch: Option<BTreeMap<String, Option<i64>>>,
+        receipt_batch_hash: Option<String>,
     }
     let ack: Ack = serde_json::from_value(body).map_err(|_| invalid())?;
     if ack.balances.is_some() == ack.balances_patch.is_some() {
@@ -232,12 +233,13 @@ pub(super) async fn admin_acknowledge(
     runtime
         .engine()
         .vault
-        .acknowledge_balances(
+        .acknowledge_receipts(
             &ack.boot_id,
             ack.generation,
             ack.sequence,
             ack.balances,
             ack.balances_patch.unwrap_or_default(),
+            ack.receipt_batch_hash.as_deref(),
         )
         .map_err(|_| {
             ApiError::new(
@@ -266,6 +268,8 @@ pub(super) async fn admin_checkpoint_diff(
     struct Base {
         boot_id: Option<String>,
         base_id: Option<String>,
+        #[serde(default)]
+        sign_receipts: bool,
     }
     let base: Base = serde_json::from_value(body).map_err(|_| invalid())?;
     if base.boot_id.as_ref().is_some_and(|id| id.len() > 64)
@@ -277,9 +281,45 @@ pub(super) async fn admin_checkpoint_diff(
     let result = runtime
         .engine()
         .vault
-        .checkpoint_diff(base.boot_id.as_deref(), base.base_id.as_deref())
+        .checkpoint_export(
+            base.boot_id.as_deref(),
+            base.base_id.as_deref(),
+            base.sign_receipts,
+        )
         .map_err(storage)?;
     Ok(([("cache-control", "no-store")], Json(result)))
+}
+pub(super) async fn admin_receipt_evidence(
+    State(runtime): State<Arc<Runtime>>,
+    request: Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let (_, body) = input(&runtime, request).await?;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Challenge {
+        nonce: String,
+    }
+    let challenge: Challenge = serde_json::from_value(body).map_err(|_| invalid())?;
+    let vault = runtime.engine().vault.clone();
+    let binding = vault
+        .receipt_signer
+        .identity_binding(&vault.boot_id, &challenge.nonce)
+        .ok_or_else(invalid)?;
+    let evidence = crate::attestation::receipt_evidence(binding)
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                503,
+                "attestation_unavailable",
+                "Receipt key hardware attestation unavailable",
+            )
+        })?;
+    Ok((
+        [("cache-control", "no-store")],
+        Json(json!({"schema":"teerouter.receipt-key.v1",
+        "public_key":vault.receipt_signer.public_key(),"boot_id":vault.boot_id,"nonce":challenge.nonce,
+        "evidence_type":if cfg!(feature="dstack-tdx") {"dstack_tdx"} else {"snp"},"evidence":evidence})),
+    ))
 }
 pub(super) async fn admin_initialize(
     State(runtime): State<Arc<Runtime>>,

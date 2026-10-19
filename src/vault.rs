@@ -42,6 +42,8 @@ fn account_enabled() -> bool {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Data {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_head: Option<crate::receipts::Head>,
     /// Last balances committed by management. Requests never modify this map.
     #[serde(default)]
     pub balances: BTreeMap<String, i64>,
@@ -106,6 +108,7 @@ impl Data {
     }
 }
 struct SyncState {
+    receipt_export: Option<crate::receipts::Export>,
     managed: bool,
     initialized: bool,
     acknowledged: Option<Instant>,
@@ -114,6 +117,7 @@ struct SyncState {
     diff_base: Option<(String, Value)>,
 }
 pub struct Vault {
+    pub(crate) receipt_signer: crate::receipts::Signer,
     pub(crate) data: Mutex<Data>,
     pub(crate) boot_id: String,
     sync: Mutex<SyncState>,
@@ -128,12 +132,14 @@ pub(crate) fn random_id() -> Result<String> {
 impl Vault {
     pub fn memory() -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
+            receipt_signer: crate::receipts::Signer::new()?,
             data: Mutex::new(Data {
                 instance: random_id()?,
                 ..Data::default()
             }),
             boot_id: random_id()?,
             sync: Mutex::new(SyncState {
+                receipt_export: None,
                 managed: false,
                 initialized: true,
                 acknowledged: None,
@@ -162,6 +168,7 @@ impl Vault {
     }
     pub fn require_manager(&self) {
         *self.sync.lock().unwrap() = SyncState {
+            receipt_export: None,
             managed: true,
             initialized: false,
             acknowledged: None,
@@ -194,6 +201,16 @@ impl Vault {
         if sync.initialized {
             return Err(VaultError("router is already initialized"));
         }
+        // Restored balances/configuration are management input. Historical events
+        // must never be re-signed as if this process had observed them.
+        if !data.events.is_empty()
+            || data
+                .receipt_head
+                .as_ref()
+                .is_some_and(|h| !h.valid(data.sequence))
+        {
+            return Err(VaultError("invalid receipt recovery state"));
+        }
         data.pending_event_bytes = data
             .events
             .iter()
@@ -207,10 +224,23 @@ impl Vault {
     pub(crate) fn checkpoint(&self) -> Result<Value> {
         let data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
-        sync.exported = (data.generation, data.sequence);
-        Ok(
-            json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":*data}),
-        )
+        if data.receipt_head.is_some() && sync.initialized && sync.receipt_export.is_none() {
+            sync.receipt_export = Some(self.receipt_signer.seal(&data, &self.boot_id)?);
+        }
+        let state = sync
+            .receipt_export
+            .as_ref()
+            .map(|e| e.state.clone())
+            .unwrap_or(serde_json::to_value(&*data).map_err(|_| VaultError("invalid snapshot"))?);
+        sync.exported = (
+            state["generation"].as_u64().unwrap(),
+            state["sequence"].as_u64().unwrap(),
+        );
+        let mut result = json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":state});
+        if let Some(export) = &sync.receipt_export {
+            result["receipt_batch"] = export.batch.clone();
+        }
+        Ok(result)
     }
     #[cfg(test)]
     pub(crate) fn acknowledge(
@@ -223,6 +253,7 @@ impl Vault {
         self.acknowledge_balances(boot, generation, sequence, Some(balances), BTreeMap::new())
     }
 
+    #[cfg(test)]
     pub(crate) fn acknowledge_balances(
         &self,
         boot: &str,
@@ -231,10 +262,33 @@ impl Vault {
         full: Option<BTreeMap<String, i64>>,
         patch: BTreeMap<String, Option<i64>>,
     ) -> Result<()> {
+        self.acknowledge_receipts(boot, generation, sequence, full, patch, None)
+    }
+    pub(crate) fn acknowledge_receipts(
+        &self,
+        boot: &str,
+        generation: u64,
+        sequence: u64,
+        full: Option<BTreeMap<String, i64>>,
+        patch: BTreeMap<String, Option<i64>>,
+        batch_hash: Option<&str>,
+    ) -> Result<()> {
         let mut data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if boot != self.boot_id || !sync.initialized || (generation, sequence) != sync.exported {
             return Err(VaultError("checkpoint acknowledgement mismatch"));
+        }
+        if let Some(export) = &sync.receipt_export {
+            if batch_hash != Some(export.head.batch_hash.as_str()) {
+                return Err(VaultError("receipt acknowledgement mismatch"));
+            }
+        } else if let Some(hash) = batch_hash
+            && data
+                .receipt_head
+                .as_ref()
+                .is_none_or(|head| head.batch_hash != hash)
+        {
+            return Err(VaultError("receipt acknowledgement mismatch"));
         }
         if patch.len() > 100_000 || patch.keys().any(|id| !crate::config::valid_name(id)) {
             return Err(VaultError("invalid balance changes"));
@@ -256,6 +310,9 @@ impl Vault {
         // One atomic boundary: replace the saved balance and clear only the
         // consumption already included in management's committed snapshot.
         data.balances = balances;
+        if let Some(export) = sync.receipt_export.take() {
+            data.receipt_head = Some(export.head);
+        }
         data.events
             .retain(|e| e["seq"].as_u64().unwrap_or(u64::MAX) > sequence);
         data.pending_event_bytes = data

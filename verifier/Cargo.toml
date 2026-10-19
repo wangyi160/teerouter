@@ -1,0 +1,24 @@
+[package]
+name = "teerouter-verify"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Independent verifier for TEE Router signed consumption receipts"
+repository = "https://github.com/wangyi160/teerouter"
+
+[dependencies]
+anyhow = "1"
+dcap-qvl = { version = "=0.6.5", default-features = false, features = ["std", "ring", "report", "default-x509"] }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true

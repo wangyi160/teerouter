@@ -1,5 +1,10 @@
 # Router API
 
+消费流水签名协议见 [CONSUMPTION-PROOFS.md](CONSUMPTION-PROOFS.md)：
+`POST /admin/checkpoint/diff` 可设置 `sign_receipts:true`，返回独立签名批次；
+`POST /admin/checkpoint/ack` 同时提交 `receipt_batch_hash`；
+`POST /admin/receipts/evidence` 用新随机 nonce 获取消费签名公钥的硬件证明。
+
 
 路径相对于 router 地址；业务请求须先由独立客户端验证 TLS / TEE。
 

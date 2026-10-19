@@ -110,7 +110,10 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
     let next = Vault::memory().unwrap();
     next.require_manager();
     assert!(!next.serving());
-    next.initialize(serde_json::from_value(saved["state"].clone()).unwrap())
+    let mut recovered = saved["state"].clone();
+    // Management archives receipts before restoring configuration/counters.
+    recovered["events"] = json!([]);
+    next.initialize(serde_json::from_value(recovered).unwrap())
         .unwrap();
     assert_ne!(next.boot_id, v.boot_id);
     assert!(next.serving());
