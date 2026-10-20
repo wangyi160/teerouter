@@ -1,5 +1,11 @@
 # teerouter-verify
 
+0.1.2 支持 `teerouter.public-consumption-batch.v1`：验证公开流水的签名、原始
+`records_json` 摘要、顺序、金额汇总和批次衔接。用户及 key 代号按批次变化，拒答只保留类型。
+公开批次没有 Merkle 单条证明；单条下载包含所在批次的全部公开记录。
+不带 `records_json` 的归档摘要只能核验签名和承诺的哈希，不能核验明细。
+下文关于私有记录、Merkle 证明和空批次的说明适用于旧版私有流水协议。
+
 独立的开源消费流水校验器。无需安装 teeproxy、teemerchant 或运行 Router。
 支持 Windows / Linux，通过本机代码验证 Ed25519 签名、Merkle 包含证明、
 Intel TDX 硬件证明和独立指定的 Router 发布策略。

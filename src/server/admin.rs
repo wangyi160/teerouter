@@ -29,6 +29,65 @@ pub(crate) async fn input(
 fn invalid() -> ApiError {
     ApiError::new(400, "invalid_update", "Invalid management update")
 }
+pub(super) async fn admin_relay_status(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<Value>, ApiError> {
+    runtime
+        .engine()
+        .vault
+        .relay_status()
+        .map(Json)
+        .map_err(storage)
+}
+pub(super) async fn admin_relay_configure(
+    State(runtime): State<Arc<Runtime>>,
+    request: Request,
+) -> Result<Json<Value>, ApiError> {
+    let (secret, body) = input(&runtime, request).await?;
+    let engine = runtime.engine();
+    if !runtime.is_platform() || !engine.authenticate_admin(&secret) {
+        return Err(invalid());
+    }
+    let config = serde_json::from_value(body).map_err(|_| invalid())?;
+    engine.vault.configure_relay(config).map_err(|_| {
+        ApiError::new(
+            409,
+            "relay_configuration_conflict",
+            "Relay configuration conflicts with current state",
+        )
+    })?;
+    engine.vault.relay_status().map(Json).map_err(storage)
+}
+pub(super) async fn admin_relay_flush(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<Value>, ApiError> {
+    runtime
+        .engine()
+        .vault
+        .publish_public(true)
+        .await
+        .map(Json)
+        .map_err(|e| ApiError::new(503, e.0, "Public receipt upload has not been acknowledged"))
+}
+pub(super) async fn admin_relay_settle(
+    State(runtime): State<Arc<Runtime>>,
+    request: Request,
+) -> Result<Json<Value>, ApiError> {
+    let (secret, body) = input(&runtime, request).await?;
+    let engine = runtime.engine();
+    if !engine.authenticate_admin(&secret) {
+        return Err(invalid());
+    }
+    let ack = serde_json::from_value(body).map_err(|_| invalid())?;
+    engine.vault.relay_settle(ack).map_err(|_| {
+        ApiError::new(
+            409,
+            "relay_settlement_conflict",
+            "Relay settlement does not match an uploaded boundary",
+        )
+    })?;
+    engine.vault.relay_status().map(Json).map_err(storage)
+}
 
 pub(super) async fn admin_apply(
     State(runtime): State<Arc<Runtime>>,

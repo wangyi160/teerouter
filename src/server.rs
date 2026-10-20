@@ -123,6 +123,9 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
         .route("/admin/checkpoint", get(admin_checkpoint))
         .route("/admin/checkpoint/diff", post(admin_checkpoint_diff))
         .route("/admin/receipts/evidence", post(admin_receipt_evidence))
+        .route("/admin/receipts/relay", get(admin_relay_status).put(admin_relay_configure))
+        .route("/admin/receipts/relay/flush", post(admin_relay_flush))
+        .route("/admin/receipts/relay/settle", post(admin_relay_settle))
         .route("/admin/checkpoint/ack", post(admin_acknowledge))
         .route("/admin/initialize", post(admin_initialize))
         .route("/admin/quiesce", post(admin_quiesce))
@@ -226,6 +229,8 @@ async fn authenticate(
                     | "/admin/checkpoint/ack"
                     | "/admin/checkpoint/diff"
                     | "/admin/receipts/evidence"
+                    | "/admin/receipts/relay/flush"
+                    | "/admin/receipts/relay/settle"
             ));
     if result.is_ok() && !health_request && !drain_control && runtime.quiescing() {
         result = Err(ApiError::new(

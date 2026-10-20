@@ -43,6 +43,8 @@ fn account_enabled() -> bool {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Data {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_relay: Option<crate::receipt_relay::State>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_head: Option<crate::receipts::Head>,
     /// Last balances committed by management. Requests never modify this map.
     #[serde(default)]
@@ -117,6 +119,8 @@ struct SyncState {
     diff_base: Option<(String, Value)>,
 }
 pub struct Vault {
+    pub(crate) relay_publishing: Mutex<crate::receipt_relay::Publishing>,
+    pub(crate) relay_upload: tokio::sync::Mutex<()>,
     pub(crate) receipt_signer: crate::receipts::Signer,
     pub(crate) data: Mutex<Data>,
     pub(crate) boot_id: String,
@@ -132,6 +136,8 @@ pub(crate) fn random_id() -> Result<String> {
 impl Vault {
     pub fn memory() -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
+            relay_publishing: Mutex::default(),
+            relay_upload: tokio::sync::Mutex::new(()),
             receipt_signer: crate::receipts::Signer::new()?,
             data: Mutex::new(Data {
                 instance: random_id()?,
@@ -211,6 +217,9 @@ impl Vault {
         {
             return Err(VaultError("invalid receipt recovery state"));
         }
+        if let Some(relay) = &data.receipt_relay {
+            relay.validate_recovery(data.sequence)?;
+        }
         data.pending_event_bytes = data
             .events
             .iter()
@@ -224,7 +233,11 @@ impl Vault {
     pub(crate) fn checkpoint(&self) -> Result<Value> {
         let data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
-        if data.receipt_head.is_some() && sync.initialized && sync.receipt_export.is_none() {
+        if data.receipt_relay.is_none()
+            && data.receipt_head.is_some()
+            && sync.initialized
+            && sync.receipt_export.is_none()
+        {
             sync.receipt_export = Some(self.receipt_signer.seal(&data, &self.boot_id)?);
         }
         let state = sync
@@ -237,6 +250,8 @@ impl Vault {
             state["sequence"].as_u64().unwrap(),
         );
         let mut result = json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":state});
+        result["receipt_relay_version"] = 1.into();
+        result["receipt_public_key"] = self.receipt_signer.public_key().into();
         if let Some(export) = &sync.receipt_export {
             result["receipt_batch"] = export.batch.clone();
         }
@@ -275,6 +290,9 @@ impl Vault {
     ) -> Result<()> {
         let mut data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
+        if data.receipt_relay.is_some() {
+            return Err(VaultError("use relay settlement acknowledgement"));
+        }
         if boot != self.boot_id || !sync.initialized || (generation, sequence) != sync.exported {
             return Err(VaultError("checkpoint acknowledgement mismatch"));
         }
@@ -324,6 +342,60 @@ impl Vault {
         data.changed();
         sync.confirmed = Some((generation, sequence));
         sync.acknowledged = Some(Instant::now());
+        Ok(())
+    }
+    pub(crate) fn configure_relay(&self, config: crate::receipt_relay::Config) -> Result<()> {
+        config.validate()?;
+        let mut data = self.lock()?;
+        let mut sync = self.sync.lock().unwrap();
+        if !sync.managed || !sync.initialized || sync.receipt_export.is_some() {
+            return Err(VaultError(
+                "settle private checkpoint before enabling relay",
+            ));
+        }
+        if data.bundle.as_ref().is_some_and(|b| {
+            b.config
+                .keys
+                .iter()
+                .any(|k| !config.user_ids.contains_key(&k.user_id))
+        }) {
+            return Err(VaultError("private receipt identity missing"));
+        }
+        if let Some(state) = &mut data.receipt_relay {
+            if state.config.url.trim_end_matches('/') != config.url.trim_end_matches('/')
+                || state
+                    .config
+                    .user_ids
+                    .iter()
+                    .any(|(id, value)| config.user_ids.get(id) != Some(value))
+            {
+                return Err(VaultError(
+                    "relay destination and existing identities are immutable",
+                ));
+            }
+            state.config = config;
+        } else {
+            let before = data
+                .events
+                .front()
+                .and_then(|e| e["seq"].as_u64())
+                .map_or(data.sequence, |s| s - 1);
+            data.receipt_relay = Some(crate::receipt_relay::State {
+                config,
+                start_sequence: before,
+                uploaded: None,
+                settled: None,
+                retained: Default::default(),
+                balance_revision: 0,
+                last_settlement_hash: None,
+            });
+            data.receipt_head = None;
+            // Public relay records carry only a refusal type; retire old text copies.
+            let last = data.refusal_queue.last_id;
+            data.refusal_queue.delete_through(last);
+        }
+        sync.diff_base = None;
+        data.changed();
         Ok(())
     }
     pub fn verify(&self) -> Result<()> {

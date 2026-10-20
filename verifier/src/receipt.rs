@@ -54,6 +54,9 @@ pub fn verify_batch(batch: &Value) -> Result<(Value, usize)> {
         .context("missing signed manifest")?;
     ensure!(payload.len() <= 16384, "manifest too large");
     let m: Value = serde_json::from_str(payload)?;
+    if m["schema"] == "teerouter.public-consumption-batch.v1" {
+        return verify_public_batch(batch, &m, payload);
+    }
     ensure!(
         m["schema"] == "teerouter.consumption-batch.v1"
             && m["scope"] == "router_consumption_only"
@@ -194,10 +197,129 @@ pub fn verify_link(previous: &Value, hash: &Value, next: &Value) -> Result<()> {
             && number(&next["batch_no"])? == number(&previous["batch_no"])? + 1
             && next["sequence_before"] == previous["sequence_through"]
             && next["instance_id"] == previous["instance_id"]
-            && next["previous_boot_id"] == previous["boot_id"],
+            && (next["schema"] == "teerouter.public-consumption-batch.v1"
+                || next["previous_boot_id"] == previous["boot_id"]),
         "batch link mismatch"
     );
     Ok(())
+}
+fn verify_public_batch(batch: &Value, m: &Value, payload: &str) -> Result<(Value, usize)> {
+    ensure!(
+        m["algorithm"] == "ed25519" && m["currency"] == "USD",
+        "unsupported public batch"
+    );
+    let key = bytes(&m["public_key"], 32)?;
+    for field in ["boot_id", "instance_id"] {
+        bytes(&m[field], 16)?;
+    }
+    for field in ["batch_nonce", "records_sha256"] {
+        bytes(&m[field], 32)?;
+    }
+    let message = [
+        b"teerouter:public-consumption-batch:v1\0".as_slice(),
+        payload.as_bytes(),
+    ]
+    .concat();
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(&message, &bytes(&batch["signature"], 64)?)
+        .map_err(|_| anyhow::anyhow!("invalid public batch signature"))?;
+    ensure!(
+        hex(&Sha256::digest(&message)) == batch["batch_hash"],
+        "batch hash mismatch"
+    );
+    let before = number(&m["sequence_before"])?;
+    let through = number(&m["sequence_through"])?;
+    let count = number(&m["record_count"])?;
+    let number = number(&m["batch_no"])?;
+    ensure!(
+        number > 0
+            && through <= 9_007_199_254_740_991
+            && count <= 512
+            && through.checked_sub(before) == Some(count),
+        "invalid public sequence"
+    );
+    if number == 1 {
+        ensure!(m["previous_batch_hash"].is_null(), "invalid genesis");
+    } else {
+        bytes(&m["previous_batch_hash"], 32)?;
+    }
+    let total = m["charge_microusd"]
+        .as_str()
+        .context("missing total")?
+        .parse::<u128>()?;
+    if let Some(serialized) = batch.get("records_json") {
+        let serialized = serialized
+            .as_str()
+            .context("records_json must be string or omitted")?;
+        ensure!(serialized.len() <= 1024 * 1024, "public records too large");
+        ensure!(
+            hex(&Sha256::digest(serialized.as_bytes())) == m["records_sha256"],
+            "records hash mismatch"
+        );
+        let rows: Vec<Value> = serde_json::from_str(serialized)?;
+        ensure!(rows.len() as u64 == count, "record count mismatch");
+        let mut sum = 0u128;
+        let fields = [
+            "seq",
+            "user_hash",
+            "key_hash",
+            "merchant_id",
+            "pool_id",
+            "provider",
+            "model",
+            "status",
+            "attempts",
+            "input_tokens",
+            "output_tokens",
+            "cached_input_tokens",
+            "charge_microusd",
+            "billing_state",
+            "refusal_type",
+            "created_at",
+            "started_at_ms",
+            "duration_ms",
+            "usage",
+            "cache_usage",
+            "merchant_price_version",
+            "merchant_pricing",
+            "billing",
+        ];
+        for (i, row) in rows.iter().enumerate() {
+            ensure!(
+                row.as_object()
+                    .context("invalid public record")?
+                    .keys()
+                    .all(|k| fields.contains(&k.as_str())),
+                "unknown public field"
+            );
+            ensure!(
+                row["seq"].as_u64() == Some(before + i as u64 + 1),
+                "record sequence mismatch"
+            );
+            bytes(&row["user_hash"], 32)?;
+            bytes(&row["key_hash"], 32)?;
+            ensure!(
+                row["refusal_type"].is_null()
+                    || matches!(
+                        row["refusal_type"].as_str(),
+                        Some("refusal" | "content_filter" | "safety" | "policy_violation")
+                    ),
+                "invalid refusal type"
+            );
+            let charge = row["charge_microusd"]
+                .as_str()
+                .context("missing record charge")?
+                .parse::<u128>()?;
+            ensure!(
+                row["billing_state"] == "calculated" || charge == 0,
+                "unpriced nonzero charge"
+            );
+            sum = sum.checked_add(charge).context("charge overflow")?;
+        }
+        ensure!(sum == total, "charge total mismatch");
+        return Ok((m.clone(), rows.len()));
+    }
+    Ok((m.clone(), 0))
 }
 pub fn identity_binding(identity: &Value, expected_nonce: Option<&str>) -> Result<[u8; 64]> {
     ensure!(

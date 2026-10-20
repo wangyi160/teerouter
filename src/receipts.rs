@@ -61,6 +61,15 @@ impl Signer {
     pub(crate) fn public_key(&self) -> String {
         hex(self.0.public_key().as_ref())
     }
+    pub(crate) fn sign_public(&self, manifest: &str) -> Value {
+        let message = [
+            b"teerouter:public-consumption-batch:v1\0".as_slice(),
+            manifest.as_bytes(),
+        ]
+        .concat();
+        json!({"manifest":manifest,"signature":hex(self.0.sign(&message).as_ref()),
+            "batch_hash":hex(&digest(&message))})
+    }
     pub(crate) fn identity_binding(&self, boot: &str, nonce: &str) -> Option<[u8; 64]> {
         let mut hash = Sha512::new();
         hash.update(b"teerouter:receipt-key:v1\0");

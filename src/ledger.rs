@@ -48,6 +48,7 @@ impl Ledger {
         self.vault.serving()
             && self.vault.lock().is_ok_and(|d| {
                 d.events.len() < 4096
+                    && d.receipt_relay.as_ref().is_none_or(|r| r.healthy())
                     && d.pending_event_bytes < crate::refusal::PENDING_BYTES
                     && d.refusal_queue.healthy()
             })
@@ -93,9 +94,19 @@ impl Ledger {
             object.remove("refusal");
         }
         if let Some(result) = refusal {
-            let mut event = crate::refusal::Event::from_audit(0, &audit, result.clone());
-            event.key = key.into();
-            audit["refusal_id"] = data.refusal_queue.push(event).into();
+            audit["refusal_type"] = if result.reasons.contains("content_filter") {
+                "content_filter"
+            } else if result.error.is_some() {
+                "policy_violation"
+            } else {
+                "refusal"
+            }
+            .into();
+            if data.receipt_relay.is_none() {
+                let mut event = crate::refusal::Event::from_audit(0, &audit, result.clone());
+                event.key = key.into();
+                audit["refusal_id"] = data.refusal_queue.push(event).into();
+            }
         }
         let event = serde_json::json!({"seq":seq,"event":audit});
         // Only the platform ledger enforces user balances. Merchant ledgers

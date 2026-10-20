@@ -42,6 +42,7 @@ impl Vault {
         let data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if (signed || data.receipt_head.is_some())
+            && data.receipt_relay.is_none()
             && sync.initialized
             && sync.receipt_export.is_none()
         {
@@ -53,6 +54,7 @@ impl Vault {
         };
         let id = random_id()?;
         let mut result = json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,
+            "receipt_relay_version":1,"receipt_public_key":self.receipt_signer.public_key(),
             "boot_id":self.boot_id,"initialized":sync.initialized,"checkpoint_id":id});
         if let Some((previous_id, previous)) = &sync.diff_base
             && boot == Some(self.boot_id.as_str())
