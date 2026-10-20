@@ -1,6 +1,22 @@
 //! Pool candidates use the same official evidence and account affinity as dispatch.
 use super::*;
+use crate::network::latency::{Reading, State, Target};
+
+pub(crate) struct PoolChoice {
+    pub cost: u128,
+    pub sticky: bool,
+    pub binding: Option<String>,
+    pub latency: Reading,
+}
 impl Engine {
+    pub(crate) fn latency_targets(&self) -> Vec<Arc<Target>> {
+        self.groups
+            .values()
+            .flat_map(|g| &g.backends)
+            .filter(|b| b.client.oauth.as_ref().is_none_or(|a| a.available()))
+            .filter_map(|b| b.client.latency.clone())
+            .collect()
+    }
     pub(crate) fn routing_context_owner(
         &self,
         account: usize,
@@ -95,8 +111,24 @@ impl Engine {
         body: &Value,
         bindings: &[String],
         quote: &crate::pricing::Quote,
-    ) -> Option<(u128, bool, Option<String>)> {
-        let provider = self.groups.get(&quote.price.pool)?.config.provider?;
+        latency: Option<&State>,
+    ) -> Option<PoolChoice> {
+        let group = self.groups.get(&quote.price.pool)?;
+        let provider = group.config.provider?;
+        let readings: HashMap<_, _> = latency
+            .map(|state| {
+                group
+                    .backends
+                    .iter()
+                    .filter_map(|b| {
+                        b.client
+                            .latency
+                            .as_ref()
+                            .map(|t| (Backend::binding(&b.config), state.reading(t)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut choices: Vec<_> = bindings
             .iter()
             .filter_map(|binding| {
@@ -105,13 +137,33 @@ impl Engine {
                         .estimate(request, binding, provider, body, quote)?,
                     self.cache.sticky(request, binding),
                     binding,
+                    readings.get(binding).copied().unwrap_or_default(),
                 ))
             })
             .collect();
-        choices.sort_by_key(|(cost, sticky, _)| (*cost, !*sticky));
-        let (cost, sticky, binding) = choices.first()?;
-        // A new conversation leaves the account scheduler free to balance load.
-        let prefer = *sticky || choices.last().is_some_and(|v| v.0 > *cost);
-        Some((*cost, *sticky, prefer.then(|| (*binding).clone())))
+        choices.sort_by(|a, b| {
+            let price = a.0.cmp(&b.0).then(b.1.cmp(&a.1));
+            if latency.is_some() {
+                a.3.failed()
+                    .cmp(&b.3.failed())
+                    .then(b.1.cmp(&a.1))
+                    .then(a.3.cmp(&b.3))
+                    .then(price)
+            } else {
+                price
+            }
+        });
+        let (cost, sticky, binding, reading) = choices.first()?;
+        // Equal cost/latency leaves the account scheduler free to balance load.
+        let prefer = *sticky
+            || choices
+                .iter()
+                .any(|v| v.0 > *cost || (latency.is_some() && v.3 != *reading));
+        Some(PoolChoice {
+            cost: *cost,
+            sticky: *sticky,
+            binding: prefer.then(|| (*binding).clone()),
+            latency: *reading,
+        })
     }
 }

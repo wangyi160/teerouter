@@ -1,4 +1,4 @@
-//! Passive, bounded router-side speed samples; no prompt/response text is retained.
+//! Passive generation diagnostics and routing selection using active link probes.
 use super::route_rule::Priority;
 use crate::router::Protocol;
 use serde_json::Value;
@@ -17,6 +17,7 @@ pub(crate) struct Candidate {
     pub estimated_cost: Option<u128>,
     pub sticky: bool,
     pub binding: Option<String>,
+    pub latency: crate::network::latency::Reading,
 }
 impl Candidate {
     pub fn new(pool: String, model: &str, protocol: Protocol, multiplier: u64) -> Self {
@@ -32,6 +33,7 @@ impl Candidate {
             estimated_cost: None,
             sticky: false,
             binding: None,
+            latency: Default::default(),
         }
     }
     fn key(&self) -> String {
@@ -86,23 +88,6 @@ impl State {
         let history = self.history.lock().unwrap();
         let now = Instant::now();
         let metric = |c: &Candidate| history.get(&c.key());
-        let fresh = |c: &Candidate| {
-            metric(c)
-                .filter(|m| {
-                    m.sampled
-                        .is_some_and(|t| now.duration_since(t) < Duration::from_secs(600))
-                })
-                .and_then(|m| m.first)
-        };
-        let rank = |c: &Candidate| {
-            if fresh(c).is_some() {
-                1
-            } else if metric(c).is_some_and(|m| m.in_flight > 0) {
-                2
-            } else {
-                0
-            }
-        };
         rows.iter()
             .enumerate()
             .filter(|(_, c)| {
@@ -119,29 +104,12 @@ impl State {
                 if priority == Priority::Price {
                     return price;
                 }
-                b.sticky.cmp(&a.sticky).then_with(|| {
-                    rank(a)
-                        .cmp(&rank(b))
-                        .then_with(|| match (fresh(a), fresh(b)) {
-                            (Some(a_first), Some(b_first)) => (a_first * 10.0)
-                                .floor()
-                                .total_cmp(&(b_first * 10.0).floor())
-                                .then_with(|| {
-                                    metric(b)
-                                        .and_then(|m| m.tokens_per_sec)
-                                        .unwrap_or(0.0)
-                                        .total_cmp(
-                                            &metric(a)
-                                                .and_then(|m| m.tokens_per_sec)
-                                                .unwrap_or(0.0),
-                                        )
-                                }),
-                            _ => metric(a)
-                                .and_then(|m| m.sampled)
-                                .cmp(&metric(b).and_then(|m| m.sampled)),
-                        })
-                        .then(price)
-                })
+                a.latency
+                    .failed()
+                    .cmp(&b.latency.failed())
+                    .then(b.sticky.cmp(&a.sticky))
+                    .then(a.latency.cmp(&b.latency))
+                    .then(price)
             })
             .map(|(i, _)| i)
     }
@@ -287,16 +255,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
-    fn router_speed_samples_ignore_headers_use_content_and_compare_real_rates() {
+    fn passive_generation_samples_remain_diagnostics_not_latency_ranking() {
         let state = Arc::new(State::default());
-        let rows = vec![
+        let mut rows = vec![
             Candidate::new("m_a.pool".into(), "model", Protocol::Chat, 200000),
             Candidate::new("m_b.pool".into(), "model", Protocol::Chat, 500000),
         ];
         let a = state.select(&rows, Priority::Speed, true).unwrap();
         let mut first = state.observe(rows[a].clone());
-        let b = state.select(&rows, Priority::Speed, true).unwrap();
-        assert_ne!(a, b);
+        let b = 1;
         let mut second = state.observe(rows[b].clone());
         for (observation, latency, tokens) in [(&mut first, 2, 10), (&mut second, 1, 20)] {
             observation.value(&json!({"choices":[{"delta":{"role":"assistant"}}]}));
@@ -309,10 +276,31 @@ mod tests {
         }
         drop(first);
         drop(second);
-        assert_eq!(state.select(&rows, Priority::Speed, true), Some(b));
+        rows[a].latency = crate::network::latency::Reading::Measured(100000);
+        rows[b].latency = crate::network::latency::Reading::Measured(300000);
+        assert_eq!(state.select(&rows, Priority::Speed, true), Some(a));
         assert_eq!(state.select(&rows, Priority::Price, true), Some(a));
         let history = state.history.lock().unwrap();
         assert!(history[&rows[b].key()].tokens_per_sec.unwrap() > 18.0);
+    }
+    #[test]
+    fn latency_preserves_healthy_stickiness_and_falls_back_without_samples() {
+        use crate::network::latency::Reading;
+        let state = State::default();
+        let mut rows = vec![
+            Candidate::new("m_a.pool".into(), "model", Protocol::Chat, 200000),
+            Candidate::new("m_b.pool".into(), "model", Protocol::Chat, 500000),
+        ];
+        assert_eq!(state.select(&rows, Priority::Speed, true), Some(0));
+        rows[1].latency = Reading::Measured(100000);
+        assert_eq!(state.select(&rows, Priority::Speed, true), Some(1));
+        rows[0].sticky = true;
+        assert_eq!(state.select(&rows, Priority::Speed, true), Some(0));
+        rows[0].latency = Reading::Failed;
+        assert_eq!(state.select(&rows, Priority::Speed, true), Some(1));
+        assert_eq!(state.select(&rows, Priority::Price, true), Some(0));
+        rows[1].latency = Reading::Failed;
+        assert_eq!(state.select(&rows, Priority::Speed, true), Some(0));
     }
     #[test]
     fn cancellation_failures_and_buffered_bursts_never_create_fast_successes() {

@@ -17,6 +17,7 @@ pub struct Client {
     headers: HeaderMap,
     pub(crate) base_url: reqwest::Url,
     pub(crate) oauth: Option<Arc<crate::oauth::TokenStore>>,
+    pub(crate) latency: Option<Arc<crate::network::latency::Target>>,
 }
 
 impl Client {
@@ -72,6 +73,7 @@ impl Client {
             headers,
             base_url: parse_base_url(provider.base_url())?,
             oauth: None,
+            latency: None,
             refusal: None,
             billing: None,
             activity: None,
@@ -99,6 +101,7 @@ impl Client {
             headers,
             base_url: parse_base_url(base)?,
             oauth: Some(account),
+            latency: None,
             refusal: None,
             billing: None,
             activity: None,

@@ -51,7 +51,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
             "/health/live",
-            get(|| async { Json(json!({"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache"})) }),
+            get(|| async { Json(json!({"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache","speed_routing":"proxy_https_latency","proxy_probe_interval_secs":300})) }),
         )
         .route("/health/ready", get(ready))
         .route("/v1/models", get(models))

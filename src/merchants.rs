@@ -175,6 +175,7 @@ pub(crate) struct RateMeter {
 pub(crate) struct Registry {
     probe_gate: Arc<crate::resources::Gate>,
     pub routing: Arc<route_metrics::State>,
+    pub latency: Arc<crate::network::latency::State>,
     pub live: Mutex<BTreeMap<String, Arc<Live>>>,
     pub write: tokio::sync::Mutex<()>,
 }

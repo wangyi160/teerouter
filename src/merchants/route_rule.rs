@@ -212,11 +212,13 @@ pub(super) async fn choose(
                 .find(|c| c.0 == *pool)
                 .expect("eligible pool")
                 .1;
-            let Some((cost, sticky, binding)) =
-                selection
-                    .engine
-                    .routing_cache_choice(&cache_request, body, bindings, &quote)
-            else {
+            let Some(choice) = selection.engine.routing_cache_choice(
+                &cache_request,
+                body,
+                bindings,
+                &quote,
+                (rule.priority == Priority::Speed).then_some(runtime.merchants.latency.as_ref()),
+            ) else {
                 continue;
             };
             let mut candidate = super::route_metrics::Candidate::new(
@@ -225,9 +227,10 @@ pub(super) async fn choose(
                 protocol,
                 quote.multiplier_millionths,
             );
-            candidate.estimated_cost = Some(cost);
-            candidate.sticky = sticky;
-            candidate.binding = binding;
+            candidate.estimated_cost = Some(choice.cost);
+            candidate.sticky = choice.sticky;
+            candidate.binding = choice.binding;
+            candidate.latency = choice.latency;
             rows.push((index, pool.clone(), candidate));
         }
     }

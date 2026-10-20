@@ -80,6 +80,7 @@ impl Runtime {
             }
         });
         crate::pricing::source::start(&runtime);
+        crate::network::latency::start(&runtime);
         runtime
     }
     pub fn engine(&self) -> Arc<Engine> {

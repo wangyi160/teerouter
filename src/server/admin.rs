@@ -184,7 +184,7 @@ pub(super) async fn admin_metrics(
 ) -> Result<Json<Value>, ApiError> {
     let engine = runtime.engine();
     Ok(Json(
-        json!({"runtime":engine.status(),"lifecycle":runtime.lifecycle_status(),"ingress":runtime.ingress.used(),"maintenance":runtime.maintenance_status(),"storage":engine.vault.storage_status().map_err(storage)?,"accounts":engine.account_status()?,"discovery":engine.discovery_status()}),
+        json!({"runtime":engine.status(),"lifecycle":runtime.lifecycle_status(),"ingress":runtime.ingress.used(),"maintenance":runtime.maintenance_status(),"storage":engine.vault.storage_status().map_err(storage)?,"accounts":engine.account_status()?,"discovery":engine.discovery_status(),"proxy_probes":runtime.merchants.latency.status()}),
     ))
 }
 pub(super) async fn admin_maintenance(

@@ -194,6 +194,18 @@ impl Engine {
                         format!("invalid api_base for deployment {}", deployment.id)
                     })?;
                 }
+                let proxy = deployment
+                    .oauth_account
+                    .as_ref()
+                    .and_then(|name| bundle.accounts.get(name))
+                    .and_then(|account| account.proxy.as_deref())
+                    .or(deployment.proxy.as_deref())
+                    .ok_or("missing proxy")?;
+                client.latency = Some(crate::network::latency::Target::new(
+                    deployment.provider,
+                    proxy,
+                    &client.base_url,
+                ));
                 let binding = if let Some(name) = &deployment.oauth_account {
                     bundle.accounts[name]
                         .proxy

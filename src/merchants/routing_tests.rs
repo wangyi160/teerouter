@@ -2,6 +2,93 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
+async fn latency_routing_uses_each_accounts_proxy_preserves_sessions_and_enforces_caps() {
+    use crate::network::latency::Target;
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let first = add(&r, &a).await;
+    let second = add(&r, &b).await;
+    let (ma, ca) = observed_fixture(&first).await;
+    let (mb, cb) = observed_fixture(&second).await;
+    let cc = Arc::new(AtomicUsize::new(0));
+    let count = cc.clone();
+    let mc = serve(Router::new().fallback(any(move |Json(body): Json<Value>| {
+        let count = count.clone(); async move {
+            assert_eq!(body["model"], "model-test");
+            count.fetch_add(1, Ordering::SeqCst);
+            Json(json!({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1}}))
+        }
+    }))).await;
+    let mut config = first.runtime.engine().config.clone();
+    let mut extra = config.models[0].deployments[0].clone();
+    extra.id = "second-account".into();
+    extra.api_base = Some(format!("{}/v1", mc.url));
+    extra.proxy = Some(mc.url.clone());
+    config.models[0].deployments.push(extra);
+    first
+        .runtime
+        .apply(
+            Update {
+                config: Some(serde_json::to_value(config).unwrap()),
+                ..Default::default()
+            },
+            &first.admin,
+        )
+        .await
+        .unwrap();
+    multiplier(&first, 100000);
+    multiplier(&second, 500000);
+    let target = |server: &Server| {
+        Target::new(
+            crate::Provider::OpenAI,
+            &server.url,
+            &format!("{}/v1", server.url).parse().unwrap(),
+        )
+    };
+    for (server, ms) in [(&ma, 800), (&mb, 200), (&mc, 50)] {
+        r.merchants
+            .latency
+            .record(&target(server), Some(std::time::Duration::from_millis(ms)));
+    }
+    let pa = format!("{}.official", crypto::identity(&a));
+    let pb = format!("{}.official", crypto::identity(&b));
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let mut policy = rule(None, 1000000);
+    policy["priority"] = "speed".into();
+    let mut body =
+        json!({"model":"model-test","messages":[{"role":"user","content":"session-one"}]});
+    let response = request(&server, "alice-key", policy.clone(), body.clone()).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-pool"], pa);
+    response.bytes().await.unwrap();
+    assert_eq!(ca.load(Ordering::SeqCst), 0);
+    assert_eq!(cc.load(Ordering::SeqCst), 1); // chooses second account, not pool's first
+    r.merchants.latency.record(&target(&mb), None);
+    r.merchants
+        .latency
+        .record(&target(&mb), Some(std::time::Duration::from_millis(5)));
+    let response = request(&server, "alice-key", policy.clone(), body.clone()).await;
+    assert_eq!(response.headers()["x-router-pool"], pa); // same conversation stays
+    response.bytes().await.unwrap();
+    assert_eq!(cc.load(Ordering::SeqCst), 2);
+    body["messages"][0]["content"] = "new-conversation".into();
+    let response = request(&server, "alice-key", policy.clone(), body.clone()).await;
+    assert_eq!(response.headers()["x-router-pool"], pb);
+    response.bytes().await.unwrap();
+    assert_eq!(cb.load(Ordering::SeqCst), 1);
+    policy["max_multiplier_millionths"] = 100000.into();
+    let response = request(&server, "alice-key", policy.clone(), body.clone()).await;
+    assert_eq!(response.headers()["x-router-pool"], pa); // absolute cap beats latency/stickiness
+    response.bytes().await.unwrap();
+    r.merchants.latency.record(&target(&mc), None);
+    let response = request(&server, "alice-key", policy, body).await;
+    assert_eq!(response.headers()["x-router-pool"], pa);
+    response.bytes().await.unwrap();
+    assert_eq!(ca.load(Ordering::SeqCst), 1); // failed sticky proxy gives way to healthy account
+}
+
+#[tokio::test]
 async fn price_priority_compares_cached_total_cost_and_rechecks_multiplier_caps() {
     let r = root();
     r.engine().vault.lock().unwrap().official_pricing.providers[0].models[0]

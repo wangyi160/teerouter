@@ -1,6 +1,7 @@
 //! Explicit outbound bindings. Never inherit system proxies or bypass lists.
 use crate::{Error, Provider};
 use std::time::Duration;
+pub(crate) mod latency;
 mod vless;
 
 pub(crate) fn proxy(value: &str) -> Result<reqwest::Proxy, Error> {
