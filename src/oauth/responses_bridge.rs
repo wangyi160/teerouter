@@ -57,6 +57,8 @@ pub(super) fn request(body: &Value) -> Result<Value, Error> {
         "truncation",
         "service_tier",
         "include",
+        "prompt_cache_key",
+        "prompt_cache_retention",
     ] {
         if let Some(value) = body.get(key) {
             request[key] = value.clone();

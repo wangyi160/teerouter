@@ -12,7 +12,7 @@ pub(crate) fn request(input: Value, streaming: bool) -> Result<Value, Error> {
     for (key, value) in input {
         match key.as_str() {
             "model" | "temperature" | "top_p" | "top_k" | "metadata" | "thinking"
-            | "output_config" | "service_tier" | "speed" | "inference_geo" => {
+            | "output_config" | "service_tier" | "speed" | "inference_geo" | "cache_control" => {
                 body.insert(key.clone(), value.clone());
             }
             "messages"

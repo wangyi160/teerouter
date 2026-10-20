@@ -5,6 +5,18 @@ impl Engine {
         old: &Engine,
         update: &crate::vault::operations::Update,
     ) {
+        let current: HashSet<_> = self
+            .groups
+            .values()
+            .flat_map(|g| &g.backends)
+            .map(|b| Backend::binding(&b.config))
+            .collect();
+        for backend in old.groups.values().flat_map(|g| &g.backends) {
+            let binding = Backend::binding(&backend.config);
+            if !current.contains(&binding) {
+                self.cache.invalidate(&binding);
+            }
+        }
         for backend in self.groups.values().flat_map(|g| &g.backends) {
             let changed = backend.config.oauth_account.as_ref().is_some_and(|n| {
                 update.accounts.contains_key(n) || update.proxy_bindings.contains_key(n)
@@ -23,6 +35,7 @@ impl Engine {
                     });
             if changed {
                 backend.recover();
+                self.cache.invalidate(&Backend::binding(&backend.config));
             }
         }
     }

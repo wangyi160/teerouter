@@ -26,6 +26,8 @@ use crate::{
 pub use crate::upstream::Protocol;
 #[path = "router/affinity.rs"]
 mod affinity;
+#[path = "router/cache.rs"]
+pub(crate) mod cache;
 #[path = "router/operations.rs"]
 mod operations;
 #[path = "router/pools.rs"]
@@ -44,6 +46,7 @@ pub struct Engine {
     global: Arc<crate::resources::Gate>,
     sequence: Arc<AtomicU64>,
     request_prefix: Arc<str>,
+    cache: Arc<cache::State>,
 }
 
 pub(crate) struct Routed {
@@ -241,6 +244,7 @@ impl Engine {
             accounts,
             admin_secret,
             groups,
+            cache: previous.map(|p| p.cache.clone()).unwrap_or_default(),
             ledger,
             global,
             sequence: previous
@@ -694,6 +698,23 @@ impl Engine {
                 ),
             ));
         }
+        let cache_request = cache::Request::new(
+            &self.accounts[account].config.user_id,
+            protocol,
+            alias,
+            &body,
+            &headers,
+        );
+        // Client identifiers are routing hints; only the scoped, hashed provider
+        // identifier is allowed upstream.
+        for name in [
+            "x-grok-conv-id",
+            "session_id",
+            "x-session-id",
+            "x-conversation-id",
+        ] {
+            headers.remove(name);
+        }
         let mut affinity = affinity::Affinity::new(self, account, &groups, &body, &mut headers)
             .map_err(|e| reject(&mut parent, e))?;
         let mut ticket = self.accounts[account]
@@ -778,14 +799,30 @@ impl Engine {
                 }
                 break;
             }
-            let mut selected = groups
-                .iter()
-                .find_map(|g| g.select(protocol, &tried, affinity.pinned.as_deref(), &eligible));
+            let select = |tried: &HashSet<String>| {
+                self.cache.select(&cache_request, |sticky| {
+                    let preferred = route_observation
+                        .as_ref()
+                        .and_then(|o| o.preferred_account())
+                        .or(sticky);
+                    let acquire = |binding| {
+                        groups
+                            .iter()
+                            .find_map(|g| g.select(protocol, tried, binding, &eligible))
+                    };
+                    if let Some(hard) = affinity.pinned.as_deref() {
+                        acquire(Some(hard))
+                    } else {
+                        preferred
+                            .and_then(|p| acquire(Some(p)))
+                            .or_else(|| acquire(None))
+                    }
+                })
+            };
+            let mut selected = select(&tried);
             if selected.is_none() && !tried.is_empty() {
                 tried.clear();
-                selected = groups.iter().find_map(|g| {
-                    g.select(protocol, &tried, affinity.pinned.as_deref(), &eligible)
-                });
+                selected = select(&tried);
             }
             let Some(lease) = selected else {
                 break;
@@ -829,14 +866,24 @@ impl Engine {
             request_client.refusal = Some(observer.clone());
             request_client.billing = ticket.billing.clone();
             request_client.activity = ticket.activity();
+            let mut upstream_body = body.clone();
+            let mut upstream_headers = headers.clone();
+            cache::prepare(
+                &cache_request,
+                backend.config.provider,
+                protocol,
+                &mut upstream_body,
+                &mut request_client,
+                &mut upstream_headers,
+            );
             let result = timeout_at(deadline, async {
                 let output = upstream::call(
                     &request_client,
                     protocol,
                     alias,
-                    body.clone(),
+                    upstream_body,
                     streaming,
-                    headers.clone(),
+                    upstream_headers,
                 )
                 .await?;
                 match output {
@@ -855,6 +902,9 @@ impl Engine {
             match result {
                 Ok(Ok((Output::Json(value), _))) => {
                     ticket.tokens.observe(protocol, &value);
+                    if value["status"] != "incomplete" && value["status"] != "failed" {
+                        self.cache.complete(&cache_request, backend, ticket.tokens);
+                    }
                     if let Err(error) = affinity.response(protocol, &value, backend) {
                         ticket.finish(error.status);
                         return Err(error);
@@ -889,6 +939,9 @@ impl Engine {
                         include_usage,
                         ended: false,
                         affinity,
+                        cache: self.cache.clone(),
+                        cache_request,
+                        cache_ok: true,
                         route_observation,
                     }));
                     return Ok(Routed {
@@ -898,6 +951,7 @@ impl Engine {
                     });
                 }
                 Ok(Err(error)) => {
+                    self.cache.failed(&cache_request, backend);
                     if matches!(error, Error::Api { status: 401, .. })
                         && let Some(account) = &backend.client.oauth
                     {
@@ -931,6 +985,7 @@ impl Engine {
                     }
                 }
                 Err(_) => {
+                    self.cache.failed(&cache_request, backend);
                     lease.failure(None, false);
                     last_error =
                         ApiError::new(504, "request_timeout", "Router request deadline exceeded");
@@ -957,6 +1012,9 @@ fn retryable(error: &Error) -> bool {
 }
 
 struct StreamState {
+    cache_ok: bool,
+    cache: Arc<cache::State>,
+    cache_request: cache::Request,
     route_observation: Option<crate::merchants::route_metrics::Observation>,
     affinity: affinity::Affinity,
     stream: EventStream,
@@ -985,6 +1043,11 @@ fn forward_stream(state: StreamState) -> EventStream {
                 match next {
                     Ok(Some(Ok(frame))) => {
                         if let Some(value) = &frame.value {
+                            state.cache_ok &=
+                                !matches!(
+                                    value["type"].as_str(),
+                                    Some("error" | "response.failed" | "response.incomplete")
+                                ) && !value.get("error").is_some_and(|v| !v.is_null());
                             if let Some(observation) = &mut state.route_observation {
                                 observation.value(value);
                             }
@@ -1014,6 +1077,13 @@ fn forward_stream(state: StreamState) -> EventStream {
                         return Some((Ok(frame), state));
                     }
                     Ok(None) => {
+                        if state.cache_ok {
+                            state.cache.complete(
+                                &state.cache_request,
+                                &state.lease.backend,
+                                state.ticket.tokens,
+                            );
+                        }
                         if let Some(observation) = &mut state.route_observation {
                             observation.finish();
                         }
@@ -1026,6 +1096,9 @@ fn forward_stream(state: StreamState) -> EventStream {
                         return None;
                     }
                     error => {
+                        state
+                            .cache
+                            .failed(&state.cache_request, &state.lease.backend);
                         let timeout = error.is_err();
                         state.ticket.finish(if timeout { 504 } else { 502 });
                         if let Some(observation) = &mut state.route_observation {

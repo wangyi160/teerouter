@@ -35,12 +35,19 @@ fn replies(provider: Provider) -> Vec<Reply> {
 }
 
 async fn generate(gateway: &Running, provider: Provider) -> reqwest::Response {
+    generate_session(gateway, provider, "hello").await
+}
+async fn generate_session(
+    gateway: &Running,
+    provider: Provider,
+    content: &str,
+) -> reqwest::Response {
     let (path, body) = match provider {
         Provider::Anthropic => (
             "/v1/messages",
-            json!({"model":"chat","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}),
+            json!({"model":"chat","max_tokens":8,"messages":[{"role":"user","content":content}]}),
         ),
-        _ => ("/v1/responses", json!({"model":"chat","input":"hello"})),
+        _ => ("/v1/responses", json!({"model":"chat","input":content})),
     };
     post(gateway, path, body).await
 }
@@ -75,8 +82,8 @@ async fn each_account_uses_its_own_authenticated_proxy_for_every_request(
         Engine::from_vault(vault).unwrap(),
     ))
     .await;
-    for _ in 0..2 {
-        let response = generate(&gateway, provider).await;
+    for i in 0..2 {
+        let response = generate_session(&gateway, provider, &format!("independent {i}")).await;
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     }
     for (i, proxy) in proxies.iter().enumerate() {

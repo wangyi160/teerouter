@@ -184,6 +184,26 @@ impl Cost {
     }
 }
 
+pub(crate) fn routing_rates(quote: &Quote, body: &Value, input: u64) -> Option<TokenRates> {
+    let tier = match body["service_tier"].as_str().unwrap_or("default") {
+        "default" | "standard" | "standard_only" | "auto" => "default",
+        "priority" | "fast" => "priority",
+        "flex" => "flex",
+        "scale" => "scale",
+        _ => return None,
+    };
+    rates(
+        quote,
+        &Dimensions {
+            service_tier: tier.into(),
+            speed: body["speed"].as_str().unwrap_or("standard").into(),
+            inference_geo: body["inference_geo"].as_str().unwrap_or("global").into(),
+        },
+        input,
+    )
+    .ok()
+}
+
 fn rates(quote: &Quote, dimensions: &Dimensions, total_input: u64) -> Checked<TokenRates> {
     let (base, long) = if dimensions.service_tier == "default"
         && dimensions.speed == "standard"

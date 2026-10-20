@@ -2,6 +2,78 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
+async fn price_priority_compares_cached_total_cost_and_rechecks_multiplier_caps() {
+    let r = root();
+    r.engine().vault.lock().unwrap().official_pricing.providers[0].models[0]
+        .rates
+        .cache_read = Some(100000);
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let first = add(&r, &a).await;
+    let second = add(&r, &b).await;
+    let (_ma, ca) = observed_fixture(&first).await;
+    let reply = json!({"model":"model-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":6000,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":5000}}});
+    let mock = serve(Router::new().route("/v1/models",any(|| async {Json(json!({"data":[{"id":"model-test"}]}))}))
+        .fallback(any(move |Json(body): Json<Value>| { let reply = reply.clone(); async move {
+            if body["stream"] == true {
+                use axum::response::IntoResponse;
+                let first = json!({"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]});
+                let usage = json!({"choices":[],"usage":reply["usage"]});
+                ([("content-type","text/event-stream")],format!("data: {first}\n\ndata: {usage}\n\ndata: [DONE]\n\n")).into_response()
+            } else { use axum::response::IntoResponse; Json(reply).into_response() }
+        }}))).await;
+    let mut config = second.runtime.engine().config.clone();
+    let d = &mut config.models[0].deployments[0];
+    d.enabled = true;
+    d.api_base = Some(format!("{}/v1", mock.url));
+    d.proxy = Some(mock.url.clone());
+    second
+        .runtime
+        .apply(
+            Update {
+                config: Some(serde_json::to_value(config).unwrap()),
+                ..Default::default()
+            },
+            &second.admin,
+        )
+        .await
+        .unwrap();
+    multiplier(&first, 800000);
+    multiplier(&second, 1000000);
+    let pa = format!("{}.official", crypto::identity(&a));
+    let pb = format!("{}.official", crypto::identity(&b));
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let mut body = json!({"model":"model-test","messages":[{"role":"user","content":"x".repeat(24000)}],"max_tokens":1,"stream":true});
+    let response = request(&server, "alice-key", rule(Some(&pb), 1000000), body.clone()).await;
+    assert_eq!(response.status(), 200);
+    response.bytes().await.unwrap();
+    body["stream"] = false.into();
+    // A stream's final usage warmed the expensive pool; even the conservative
+    // read estimate beats the lower multiplier of a cold account.
+    let response = request(&server, "alice-key", rule(None, 1000000), body.clone()).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-pool"], pb);
+    response.bytes().await.unwrap();
+    assert_eq!(ca.load(Ordering::SeqCst), 0);
+    // The cap is absolute, regardless of cache savings or stickiness.
+    let response = request(&server, "alice-key", rule(Some(&pb), 900000), body.clone()).await;
+    assert_eq!(response.status(), 403);
+    multiplier(&second, 1500000);
+    let response = request(&server, "alice-key", rule(None, 2000000), body.clone()).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-pool"], pa);
+    response.bytes().await.unwrap();
+    assert_eq!(ca.load(Ordering::SeqCst), 1);
+    // A new prompt cannot borrow an unrelated conversation's cache discount.
+    body["messages"][0]["content"] = "y".repeat(24000).into();
+    multiplier(&second, 1000000);
+    let response = request(&server, "alice-key", rule(None, 2000000), body).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-router-pool"], pa);
+    response.bytes().await.unwrap();
+}
+
+#[tokio::test]
 async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_routes() {
     let r = root();
     let a = "a".repeat(64);
@@ -155,6 +227,39 @@ fn rule(pool: Option<&str>, cap: u64) -> Value {
         v["pool"] = pool.into();
     }
     v
+}
+
+#[tokio::test]
+async fn soft_session_remembers_the_latest_pool_across_merchants_in_speed_mode() {
+    let r = root();
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let first = add(&r, &a).await;
+    let second = add(&r, &b).await;
+    let (_ma, _) = observed_fixture(&first).await;
+    let (_mb, _) = observed_fixture(&second).await;
+    let pa = format!("{}.official", crypto::identity(&a));
+    let pb = format!("{}.official", crypto::identity(&b));
+    let server = serve(crate::server::app_runtime(r)).await;
+    let body =
+        json!({"model":"model-test","messages":[{"role":"user","content":"one conversation"}]});
+    for pool in [&pb, &pa, &pb] {
+        let response = request(
+            &server,
+            "alice-key",
+            rule(Some(pool), 1000000),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        response.bytes().await.unwrap();
+        let mut policy = rule(None, 1000000);
+        policy["priority"] = "speed".into();
+        let response = request(&server, "alice-key", policy, body.clone()).await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["x-router-pool"], *pool);
+        response.bytes().await.unwrap();
+    }
 }
 async fn request(server: &Server, token: &str, policy: Value, body: Value) -> reqwest::Response {
     reqwest::Client::builder()

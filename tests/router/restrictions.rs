@@ -108,7 +108,7 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
     );
     let mut expected = body;
     expected["store"] = false.into();
-    assert_eq!(proxy.calls.lock().unwrap().last().unwrap().body, expected);
+    assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
 }
 
 #[tokio::test]
@@ -153,7 +153,7 @@ async fn blocked_effort_is_separate_from_official_capabilities_and_never_downgra
         );
         let mut expected = body;
         expected["store"] = false.into();
-        assert_eq!(proxy.calls.lock().unwrap().last().unwrap().body, expected);
+        assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
     }
     for (model, effort) in [("official-alias", "low"), ("other", "high")] {
         let body = request(model, effort);
@@ -163,7 +163,7 @@ async fn blocked_effort_is_separate_from_official_capabilities_and_never_downgra
         );
         let mut expected = body;
         expected["store"] = false.into();
-        assert_eq!(proxy.calls.lock().unwrap().last().unwrap().body, expected);
+        assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
     }
 }
 
@@ -188,7 +188,7 @@ async fn blocked_thinking_type_does_not_require_thinking_on_native_messages() {
         post(&gateway, "/v1/messages", body.clone()).await.status(),
         200
     );
-    assert_eq!(proxy.calls.lock().unwrap().last().unwrap().body, body);
+    assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &body);
     let mut blocked = body;
     blocked["thinking"] = json!({"type":"adaptive"});
     assert_eq!(post(&gateway, "/v1/messages", blocked).await.status(), 403);
@@ -331,5 +331,5 @@ async fn official_refresh_updates_evidence_without_erasing_the_independent_deny_
     );
     let mut expected = body;
     expected["store"] = false.into();
-    assert_eq!(proxy.calls.lock().unwrap().last().unwrap().body, expected);
+    assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
 }

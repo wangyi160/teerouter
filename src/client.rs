@@ -20,6 +20,12 @@ pub struct Client {
 }
 
 impl Client {
+    pub(crate) fn cache_session(&mut self, name: &'static str, id: &str) {
+        self.headers.insert(
+            name,
+            HeaderValue::from_str(id).expect("hashed cache identity"),
+        );
+    }
     pub fn new(provider: Provider, api_key: impl AsRef<str>) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
@@ -110,6 +116,11 @@ impl Client {
             );
         }
         headers.extend(extra);
+        for name in ["session_id", "x-grok-conv-id"] {
+            if let Some(value) = self.headers.get(name) {
+                headers.insert(name, value.clone());
+            }
+        }
         if let Some(account) = &self.oauth {
             let credential = account.credential().await?;
             let mut value = HeaderValue::from_str(&format!("Bearer {}", credential.access_token))
@@ -134,11 +145,13 @@ impl Client {
                         "codex_cli_rs/0.0.0 (Unknown 0; unknown) unknown",
                     ));
                 headers.insert("accept", HeaderValue::from_static("text/event-stream"));
-                headers.insert(
-                    "session_id",
-                    HeaderValue::from_str(&crate::oauth::random_string()?)
-                        .expect("base64 session ID"),
-                );
+                if !headers.contains_key("session_id") {
+                    headers.insert(
+                        "session_id",
+                        HeaderValue::from_str(&crate::oauth::random_string()?)
+                            .expect("base64 session ID"),
+                    );
+                }
                 if let Some(id) = credential.account_id {
                     headers.insert(
                         "chatgpt-account-id",

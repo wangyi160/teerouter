@@ -23,6 +23,8 @@ use teellm::{
 };
 use tokio::{net::TcpListener, sync::Notify, task::JoinHandle};
 
+#[path = "router/cache.rs"]
+mod cache;
 #[path = "router/catalog_policy.rs"]
 mod catalog_policy;
 #[path = "router/compatibility.rs"]
@@ -73,6 +75,20 @@ struct Capture {
     uri: String,
     headers: HeaderMap,
     body: Value,
+}
+fn assert_cached_forward(actual: &Value, expected: &Value) {
+    let mut actual = actual.clone();
+    if let Some(key) = actual.as_object_mut().unwrap().remove("prompt_cache_key") {
+        let key = key.as_str().unwrap();
+        assert_eq!(key.len(), 64);
+        assert!(key.bytes().all(|b| b.is_ascii_hexdigit()));
+    } else {
+        assert_eq!(
+            actual.as_object_mut().unwrap().remove("cache_control"),
+            Some(json!({"type":"ephemeral"}))
+        );
+    }
+    assert_eq!(&actual, expected);
 }
 struct Mock {
     running: Running,
@@ -508,11 +524,11 @@ async fn weighted_round_robin_balances_requests() {
     config.models[0].deployments.push(b);
     let gateway = gateway(config).await;
     let mut chosen = Vec::new();
-    for _ in 0..6 {
+    for i in 0..6 {
+        let mut body = request();
+        body["messages"][0]["content"] = format!("independent conversation {i}").into();
         chosen.push(
-            post(&gateway, "/v1/chat/completions", request())
-                .await
-                .headers()["x-router-deployment"]
+            post(&gateway, "/v1/chat/completions", body).await.headers()["x-router-deployment"]
                 .to_str()
                 .unwrap()
                 .to_owned(),
@@ -671,8 +687,10 @@ async fn least_busy_avoids_an_inflight_deployment() {
             .unwrap()
     });
     mock.called.notified().await;
+    let mut independent = request();
+    independent["messages"][0]["content"] = "independent request".into();
     assert_eq!(
-        post(&gateway, "/v1/chat/completions", request())
+        post(&gateway, "/v1/chat/completions", independent)
             .await
             .headers()["x-router-deployment"],
         "b"

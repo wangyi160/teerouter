@@ -143,6 +143,13 @@ pub(super) async fn choose(
     }
     let mut rows = Vec::new();
     let mut over_limit = false;
+    let cache_request = crate::router::cache::Request::new(
+        &root.config.keys[account].user_id,
+        protocol,
+        model,
+        body,
+        headers,
+    );
     for (index, selection) in selections.iter().enumerate() {
         let candidates = selection
             .engine
@@ -180,7 +187,7 @@ pub(super) async fn choose(
                     .price
                     .valid_until
                     .is_some_and(|t| t <= crate::oauth::tokens::now() as u64)
-                || !candidates.contains(pool)
+                || !candidates.iter().any(|c| c.0 == *pool)
                 || (!selection.item.allow_test
                     && selection
                         .engine
@@ -200,20 +207,34 @@ pub(super) async fn choose(
             if !super::routing::merchant_ready(selection)? {
                 continue;
             }
-            rows.push((
-                index,
-                pool.clone(),
-                super::route_metrics::Candidate::new(
-                    qualified,
-                    model,
-                    protocol,
-                    quote.multiplier_millionths,
-                ),
-            ));
+            let bindings = &candidates
+                .iter()
+                .find(|c| c.0 == *pool)
+                .expect("eligible pool")
+                .1;
+            let Some((cost, sticky, binding)) =
+                selection
+                    .engine
+                    .routing_cache_choice(&cache_request, body, bindings, &quote)
+            else {
+                continue;
+            };
+            let mut candidate = super::route_metrics::Candidate::new(
+                qualified,
+                model,
+                protocol,
+                quote.multiplier_millionths,
+            );
+            candidate.estimated_cost = Some(cost);
+            candidate.sticky = sticky;
+            candidate.binding = binding;
+            rows.push((index, pool.clone(), candidate));
         }
     }
     let metrics = &runtime.merchants.routing;
-    let candidates: Vec<_> = rows.iter().map(|r| r.2.clone()).collect();
+    let session = cache_request.identity();
+    let mut candidates: Vec<_> = rows.iter().map(|r| r.2.clone()).collect();
+    metrics.prefer_session(&mut candidates, &session);
     let Some(selected) = metrics.select(&candidates, rule.priority, rule.mode == Mode::Auto) else {
         return Err(if rule.mode == Mode::Fixed && over_limit {
             ApiError::new(
@@ -230,6 +251,7 @@ pub(super) async fn choose(
         });
     };
     let (index, pool, candidate) = rows.swap_remove(selected);
+    metrics.remember_session(session, candidate.pool.clone());
     Ok(Choice {
         selection: selections.swap_remove(index),
         pool,

@@ -51,7 +51,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
             "/health/live",
-            get(|| async { Json(json!({"status":"ok", "routing_protocol_versions":[1]})) }),
+            get(|| async { Json(json!({"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache"})) }),
         )
         .route("/health/ready", get(ready))
         .route("/v1/models", get(models))
@@ -464,6 +464,10 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         "x-router-price-version",
         "x-router-official-price-revision",
         "x-router-routing",
+        "x-grok-conv-id",
+        "session_id",
+        "x-session-id",
+        "x-conversation-id",
     ] {
         if let Some(value) = parts.headers.get(name) {
             headers.insert(name, value.clone());

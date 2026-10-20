@@ -258,7 +258,7 @@ async fn pool_is_discovered_from_model_and_continuations_stay_on_the_original_ac
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let mut expected = body;
     expected["store"] = false.into();
-    assert_eq!(b.calls.lock().unwrap().last().unwrap().body, expected);
+    assert_cached_forward(&b.calls.lock().unwrap().last().unwrap().body, &expected);
     let continuation = post(
         &gateway,
         "/v1/responses",

@@ -14,6 +14,9 @@ pub(crate) struct Candidate {
     model: String,
     protocol: &'static str,
     multiplier: u64,
+    pub estimated_cost: Option<u128>,
+    pub sticky: bool,
+    pub binding: Option<String>,
 }
 impl Candidate {
     pub fn new(pool: String, model: &str, protocol: Protocol, multiplier: u64) -> Self {
@@ -26,6 +29,9 @@ impl Candidate {
                 Protocol::Messages => "messages",
             },
             multiplier,
+            estimated_cost: None,
+            sticky: false,
+            binding: None,
         }
     }
     fn key(&self) -> String {
@@ -43,8 +49,33 @@ struct Metric {
 #[derive(Default)]
 pub(crate) struct State {
     history: Mutex<HashMap<String, Metric>>,
+    sessions: Mutex<HashMap<String, (String, Instant)>>,
 }
 impl State {
+    pub(crate) fn prefer_session(&self, rows: &mut [Candidate], session: &str) {
+        let sessions = self.sessions.lock().unwrap();
+        if let Some((pool, _)) = sessions
+            .get(session)
+            .filter(|(_, at)| at.elapsed() < Duration::from_secs(86400))
+        {
+            for row in rows {
+                row.sticky = row.sticky && row.pool == *pool;
+            }
+        }
+    }
+    pub(crate) fn remember_session(&self, session: String, pool: String) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if sessions.len() >= 4096
+            && !sessions.contains_key(&session)
+            && let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(key, _)| key.clone())
+        {
+            sessions.remove(&oldest);
+        }
+        sessions.insert(session, (pool, Instant::now()));
+    }
     #[cfg(test)]
     pub(super) fn sample(&self, pool: &str, model: &str) -> Option<(f64, Option<f64>)> {
         let history = self.history.lock().unwrap();
@@ -78,29 +109,39 @@ impl State {
                 !automatic || !metric(c).is_some_and(|m| m.cooldown.is_some_and(|t| t > now))
             })
             .min_by(|(_, a), (_, b)| {
-                let price = a.multiplier.cmp(&b.multiplier).then(a.pool.cmp(&b.pool));
+                let price = a
+                    .estimated_cost
+                    .unwrap_or(u128::from(a.multiplier))
+                    .cmp(&b.estimated_cost.unwrap_or(u128::from(b.multiplier)))
+                    .then(b.sticky.cmp(&a.sticky))
+                    .then(a.multiplier.cmp(&b.multiplier))
+                    .then(a.pool.cmp(&b.pool));
                 if priority == Priority::Price {
                     return price;
                 }
-                rank(a)
-                    .cmp(&rank(b))
-                    .then_with(|| match (fresh(a), fresh(b)) {
-                        (Some(a_first), Some(b_first)) => (a_first * 10.0)
-                            .floor()
-                            .total_cmp(&(b_first * 10.0).floor())
-                            .then_with(|| {
-                                metric(b)
-                                    .and_then(|m| m.tokens_per_sec)
-                                    .unwrap_or(0.0)
-                                    .total_cmp(
-                                        &metric(a).and_then(|m| m.tokens_per_sec).unwrap_or(0.0),
-                                    )
-                            }),
-                        _ => metric(a)
-                            .and_then(|m| m.sampled)
-                            .cmp(&metric(b).and_then(|m| m.sampled)),
-                    })
-                    .then(price)
+                b.sticky.cmp(&a.sticky).then_with(|| {
+                    rank(a)
+                        .cmp(&rank(b))
+                        .then_with(|| match (fresh(a), fresh(b)) {
+                            (Some(a_first), Some(b_first)) => (a_first * 10.0)
+                                .floor()
+                                .total_cmp(&(b_first * 10.0).floor())
+                                .then_with(|| {
+                                    metric(b)
+                                        .and_then(|m| m.tokens_per_sec)
+                                        .unwrap_or(0.0)
+                                        .total_cmp(
+                                            &metric(a)
+                                                .and_then(|m| m.tokens_per_sec)
+                                                .unwrap_or(0.0),
+                                        )
+                                }),
+                            _ => metric(a)
+                                .and_then(|m| m.sampled)
+                                .cmp(&metric(b).and_then(|m| m.sampled)),
+                        })
+                        .then(price)
+                })
             })
             .map(|(i, _)| i)
     }
@@ -119,6 +160,7 @@ impl State {
         }
         history.entry(candidate.key()).or_default().in_flight += 1;
         Observation {
+            binding: candidate.binding.clone(),
             state: self.clone(),
             key: candidate.key(),
             started: Instant::now(),
@@ -132,6 +174,7 @@ impl State {
     }
 }
 pub(crate) struct Observation {
+    binding: Option<String>,
     state: Arc<State>,
     key: String,
     started: Instant,
@@ -143,6 +186,9 @@ pub(crate) struct Observation {
     finished: bool,
 }
 impl Observation {
+    pub(crate) fn preferred_account(&self) -> Option<&str> {
+        self.binding.as_deref()
+    }
     pub fn value(&mut self, value: &Value) {
         if value.get("error").is_some_and(|v| !v.is_null())
             || matches!(

@@ -38,7 +38,7 @@ impl Engine {
         body: &Value,
         headers: &HeaderMap,
         pool: Option<&str>,
-    ) -> Result<Vec<String>, ApiError> {
+    ) -> Result<Vec<(String, Vec<String>)>, ApiError> {
         if !self.accounts[account].has_capacity()
             || !self.storage_ready()
             || !self.ledger.healthy()
@@ -69,19 +69,49 @@ impl Engine {
         let affinity = affinity::Affinity::new(self, account, &groups, body, &mut headers.clone())?;
         Ok(groups
             .into_iter()
-            .filter(|g| {
-                g.backends.iter().any(|b| {
-                    protocol.supports(b.config.provider)
-                        && b.has_capacity()
-                        && affinity
-                            .pinned
-                            .as_ref()
-                            .is_none_or(|p| Backend::binding(&b.config) == *p)
-                        && b.validate_model(protocol, model, body, &self.config.restrictions)
-                            .is_ok()
-                })
+            .filter_map(|g| {
+                let bindings: Vec<_> = g
+                    .backends
+                    .iter()
+                    .filter(|b| {
+                        protocol.supports(b.config.provider)
+                            && b.has_capacity()
+                            && affinity
+                                .pinned
+                                .as_ref()
+                                .is_none_or(|p| Backend::binding(&b.config) == *p)
+                            && b.validate_model(protocol, model, body, &self.config.restrictions)
+                                .is_ok()
+                    })
+                    .map(|b| Backend::binding(&b.config))
+                    .collect();
+                (!bindings.is_empty()).then(|| (g.config.name.clone(), bindings))
             })
-            .map(|g| g.config.name.clone())
             .collect())
+    }
+    pub(crate) fn routing_cache_choice(
+        &self,
+        request: &cache::Request,
+        body: &Value,
+        bindings: &[String],
+        quote: &crate::pricing::Quote,
+    ) -> Option<(u128, bool, Option<String>)> {
+        let provider = self.groups.get(&quote.price.pool)?.config.provider?;
+        let mut choices: Vec<_> = bindings
+            .iter()
+            .filter_map(|binding| {
+                Some((
+                    self.cache
+                        .estimate(request, binding, provider, body, quote)?,
+                    self.cache.sticky(request, binding),
+                    binding,
+                ))
+            })
+            .collect();
+        choices.sort_by_key(|(cost, sticky, _)| (*cost, !*sticky));
+        let (cost, sticky, binding) = choices.first()?;
+        // A new conversation leaves the account scheduler free to balance load.
+        let prefer = *sticky || choices.last().is_some_and(|v| v.0 > *cost);
+        Some((*cost, *sticky, prefer.then(|| (*binding).clone())))
     }
 }
