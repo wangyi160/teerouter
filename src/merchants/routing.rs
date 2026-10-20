@@ -81,7 +81,7 @@ pub(crate) async fn pools(
 ) -> Result<Vec<Value>, ApiError> {
     let mut rows = vec![];
     for s in selections(runtime, &root.config.keys[account].user_id).await? {
-        let mut pools = s.engine.pools(s.account);
+        let mut pools = s.engine.pools(s.account, &runtime.merchants.latency);
         for pool in pools["data"].as_array_mut().into_iter().flatten() {
             let name = pool["id"]
                 .as_str()

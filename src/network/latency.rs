@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub(crate) const INTERVAL: Duration = Duration::from_secs(300);
@@ -63,13 +63,80 @@ impl Reading {
 }
 struct Sample {
     at: Instant,
+    checked_at: u64,
     latency: Option<u64>,
+}
+/// Display-only view. Never contains the target, proxy, credentials or raw errors.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct Snapshot {
+    pub status: &'static str,
+    pub latency_ms: Option<f64>,
+    pub checked_at: Option<u64>,
+    pub expires_at: Option<u64>,
+}
+impl Snapshot {
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            status: "unavailable",
+            latency_ms: None,
+            checked_at: None,
+            expires_at: None,
+        }
+    }
+    /// Best measured link among ready, visible accounts; never average in failures.
+    pub(crate) fn fastest(samples: impl Iterator<Item = Self>) -> Self {
+        fn rank(s: &Snapshot) -> u8 {
+            match s.status {
+                "measured" => 0,
+                "unknown" => 1,
+                "stale" => 2,
+                "failed" => 3,
+                _ => 4,
+            }
+        }
+        samples
+            .min_by(|a, b| {
+                rank(a).cmp(&rank(b)).then_with(|| {
+                    a.latency_ms
+                        .unwrap_or(f64::MAX)
+                        .total_cmp(&b.latency_ms.unwrap_or(f64::MAX))
+                })
+            })
+            .unwrap_or_else(Self::unavailable)
+    }
 }
 #[derive(Default)]
 pub(crate) struct State {
     samples: Mutex<BTreeMap<String, Sample>>,
 }
 impl State {
+    pub(crate) fn snapshot(&self, target: Option<&Target>) -> Snapshot {
+        let samples = self.samples.lock().unwrap();
+        let sample = target.and_then(|t| samples.get(&t.key));
+        let Some(sample) = sample else {
+            return Snapshot {
+                status: "unknown",
+                ..Snapshot::unavailable()
+            };
+        };
+        let stale = sample.at.elapsed() >= FRESH;
+        Snapshot {
+            status: if stale {
+                "stale"
+            } else if sample.latency.is_some() {
+                "measured"
+            } else {
+                "failed"
+            },
+            latency_ms: if stale {
+                None
+            } else {
+                sample.latency.map(|us| us as f64 / 1000.0)
+            },
+            checked_at: Some(sample.checked_at),
+            expires_at: Some(sample.checked_at.saturating_add(FRESH.as_secs())),
+        }
+    }
     pub(crate) fn status(&self) -> serde_json::Value {
         let samples = self.samples.lock().unwrap();
         let fresh: Vec<_> = samples
@@ -106,6 +173,10 @@ impl State {
             target.key.clone(),
             Sample {
                 at: Instant::now(),
+                checked_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
                 latency,
             },
         );
@@ -322,5 +393,34 @@ mod tests {
         assert_eq!(state.reading(&first), Reading::Unknown);
         state.record(&first, Some(Duration::from_millis(100)));
         assert_eq!(state.reading(&first), Reading::Measured(100000));
+    }
+    #[test]
+    fn display_snapshots_expire_hide_targets_and_choose_fastest_fresh_account() {
+        let state = State::default();
+        let a = target("http://private:secret@proxy.test:80");
+        let b = target("http://other:secret@proxy.test:80");
+        assert_eq!(state.snapshot(Some(&a)).status, "unknown");
+        state.record(&a, Some(Duration::from_millis(240)));
+        state.record(&b, Some(Duration::from_millis(120)));
+        let best =
+            Snapshot::fastest([state.snapshot(Some(&a)), state.snapshot(Some(&b))].into_iter());
+        assert_eq!(best.latency_ms, Some(120.0));
+        assert_eq!(best.expires_at.unwrap() - best.checked_at.unwrap(), 600);
+        let value = serde_json::to_string(&best).unwrap();
+        for secret in ["secret", "proxy.test", &a.key, &b.key] {
+            assert!(!value.contains(secret));
+        }
+        state.samples.lock().unwrap().get_mut(&b.key).unwrap().at -= FRESH;
+        let stale = state.snapshot(Some(&b));
+        assert_eq!(stale.status, "stale");
+        assert_eq!(stale.latency_ms, None);
+        assert_eq!(
+            Snapshot::fastest([stale, state.snapshot(Some(&a))].into_iter()).latency_ms,
+            Some(240.0)
+        );
+        state.record(&a, None);
+        assert_eq!(state.snapshot(Some(&a)).status, "failed");
+        assert_eq!(state.snapshot(Some(&a)).latency_ms, None);
+        assert_eq!(Snapshot::fastest(std::iter::empty()).status, "unavailable");
     }
 }

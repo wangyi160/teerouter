@@ -51,7 +51,7 @@ pub(crate) async fn get(State(runtime): State<Arc<Runtime>>) -> Result<Json<Valu
                     || (tpm > 0 && total.saturating_sub(meter.initial_tokens) >= tpm)
             }
         };
-        for mut pool in engine.public_pool_inventory() {
+        for mut pool in engine.public_pool_inventory(&runtime.merchants.latency) {
             let name = pool["name"].as_str().unwrap().to_owned();
             pool["id"] = json!(format!("{}.{}", merchant.id, name));
             pool["merchant"] = json!({"id":merchant.id,"name":merchant.name});

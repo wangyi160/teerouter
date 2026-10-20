@@ -321,7 +321,10 @@ async fn pools(request: Request) -> Result<Json<Value>, ApiError> {
     let mut result = if identity.runtime.is_platform() {
         json!({"object":"list","data":[]})
     } else {
-        identity.engine.pools(identity.account.unwrap())
+        identity.engine.pools(
+            identity.account.unwrap(),
+            &identity.runtime.merchants.latency,
+        )
     };
     result["data"].as_array_mut().unwrap().extend(
         crate::merchants::routing::pools(

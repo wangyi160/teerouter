@@ -34,6 +34,10 @@ async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_ca
         .await
         .unwrap();
     live.runtime.engine().refresh_models(true).await;
+    let target = live.runtime.engine().latency_targets()[0].clone();
+    r.merchants
+        .latency
+        .record(&target, Some(std::time::Duration::from_millis(170)));
     {
         let mut settings = live.settings.lock().unwrap();
         settings.max_concurrent = 3;
@@ -77,6 +81,8 @@ async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_ca
     assert_eq!(pool["merchant_limits"]["in_flight"], 1);
     assert_eq!(pool["available_accounts"], 1);
     assert_eq!(pool["available"], true);
+    assert_eq!(pool["proxy_latency"]["status"], "measured");
+    assert_eq!(pool["proxy_latency"]["latency_ms"], 170.0);
     let text = catalog.to_string();
     for hidden in [
         "credential_hash",
@@ -84,7 +90,8 @@ async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_ca
         "private-model",
         "alice",
         "customers",
-        "proxy",
+        "\"proxy\":",
+        &upstream.url,
         "deployment",
         "api_key_ref",
         "backup",
@@ -97,6 +104,12 @@ async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_ca
     assert_eq!(
         serde_json::to_value(live.settings.lock().unwrap().clone()).unwrap(),
         before_settings
+    );
+    let (_, inventory) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    assert_eq!(inventory["data"][0]["proxy_latency"], pool["proxy_latency"]);
+    assert_eq!(
+        inventory["data"][0]["accounts"][0]["proxy_latency"],
+        pool["proxy_latency"]
     );
     drop(permit);
     live.settings.lock().unwrap().rpm = 1;

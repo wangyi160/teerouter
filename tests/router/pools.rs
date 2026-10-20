@@ -36,7 +36,8 @@ async fn pools_exist_before_discovery_include_disabled_and_empty_and_never_leak_
     vault.provision(&bundle).unwrap();
     let engine = Engine::from_vault(vault).unwrap();
     // Inspect before starting the server's automatic discovery task.
-    let before = engine.pools(0);
+    let latency = crate::network::latency::State::default();
+    let before = engine.pools(0, &latency);
     assert_eq!(
         proxy.calls.lock().unwrap().len(),
         0,
@@ -48,10 +49,12 @@ async fn pools_exist_before_discovery_include_disabled_and_empty_and_never_leak_
     assert_eq!(accounts[0]["available"], false);
     assert_eq!(accounts[1]["enabled"], false);
     assert_eq!(accounts[1]["catalog"]["state"], "disabled");
+    assert_eq!(accounts[1]["proxy_latency"]["status"], "unavailable");
+    assert_eq!(before["data"][1]["proxy_latency"]["status"], "unavailable");
     assert_eq!(before["data"][1]["accounts"], json!([]));
     assert_eq!(before["data"][1]["provider"], "xai");
     engine.refresh_models(true).await;
-    let after = engine.pools(0);
+    let after = engine.pools(0, &latency);
     assert_eq!(after["data"][0]["accounts"][0]["catalog"]["state"], "error");
     assert_eq!(
         after["data"][0]["accounts"][0]["catalog"]["last_error"],
@@ -71,7 +74,7 @@ async fn pools_exist_before_discovery_include_disabled_and_empty_and_never_leak_
         "sk-ant-oat-fixture",
         "api_base",
         "credential",
-        "proxy",
+        "\"proxy\":",
         "DO_NOT_LEAK",
     ] {
         assert!(!text.contains(secret), "leaked {secret}");

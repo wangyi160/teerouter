@@ -1,13 +1,15 @@
 use super::*;
+use crate::network::latency::{Snapshot, State};
 
 impl Engine {
     /// Public aggregate only. Never refresh upstreams, create customers, expose
     /// deployment IDs, account bindings, endpoints, credentials or raw errors.
-    pub(crate) fn public_pool_inventory(&self) -> Vec<Value> {
+    pub(crate) fn public_pool_inventory(&self, latency: &State) -> Vec<Value> {
         self.config.models.iter().map(|pool| {
             let group = &self.groups[&pool.name];
             let mut models = std::collections::BTreeMap::new();
             let mut bindings = HashSet::new();
+            let mut probes = Vec::new();
             let (mut used, mut limit, mut available, mut ready) = (0u64, 0u64, 0u64, 0usize);
             for backend in &group.backends {
                 let mut visible = false;
@@ -26,7 +28,10 @@ impl Engine {
                 let current = backend.status()["in_flight"].as_u64().unwrap_or(0);
                 used = used.saturating_add(current);
                 limit = limit.saturating_add(backend.config.max_concurrent as u64);
-                if visible && backend.ready() { ready += 1; }
+                if visible && backend.ready() {
+                    ready += 1;
+                    probes.push(latency.snapshot(backend.client.latency.as_deref()));
+                }
                 if visible && backend.has_capacity() {
                     available = available.saturating_add((backend.config.max_concurrent as u64).saturating_sub(current));
                 }
@@ -35,6 +40,7 @@ impl Engine {
             let provider = pool.provider.or_else(|| pool.deployments.first().map(|d| d.provider));
             json!({"name":pool.name,"provider":provider,"account_count":pool.deployments.len(),
                 "enabled_accounts":bindings.len(),"available_accounts":ready,
+                "proxy_latency":Snapshot::fastest(probes.into_iter()),
                 "concurrency":{"limit":limit.min(child_limit),"in_flight":used,
                     "available":available.min(child_limit.saturating_sub(self.global.used() as u64))},
                 "models":models.into_values().collect::<Vec<_>>()})
@@ -55,7 +61,7 @@ impl Engine {
 
     /// Client inventory, deliberately independent of model discovery success.
     /// Read local state only: no refresh, secrets, proxy, or raw errors.
-    pub(crate) fn pools(&self, account: usize) -> Value {
+    pub(crate) fn pools(&self, account: usize, latency: &State) -> Value {
         let data: Vec<_> = self
             .config
             .models
@@ -63,6 +69,7 @@ impl Engine {
             .filter(|pool| self.pool_visible(account, &pool.name))
             .map(|pool| {
                 let group = &self.groups[&pool.name];
+                let mut probes = Vec::new();
                 let accounts: Vec<_> = pool
                     .deployments
                     .iter()
@@ -102,12 +109,21 @@ impl Engine {
                         } else {
                             "fetched"
                         };
+                        let probe = if backend.is_some_and(|b| b.ready()) {
+                            latency.snapshot(backend.and_then(|b| b.client.latency.as_deref()))
+                        } else {
+                            Snapshot::unavailable()
+                        };
+                        if models > 0 && backend.is_some_and(|b| b.ready()) {
+                            probes.push(probe.clone());
+                        }
                         json!({
                             "id": deployment.oauth_account.as_deref().unwrap_or(&deployment.id),
                             "deployment": deployment.id,
                             "provider": deployment.provider,
                             "enabled": backend.is_some(),
                             "available": models > 0 && backend.is_some_and(|b| b.ready()),
+                            "proxy_latency": probe,
                             "catalog": {"state": catalog_state, "last_error": last_error,
                                 "fetched_at": fetched_at, "visible_models": models}
                         })
@@ -123,6 +139,7 @@ impl Engine {
                 json!({"id":pool.name, "object":"pool", "provider":provider,
                     "account_count":accounts.len(),
                     "available_accounts":accounts.iter().filter(|a| a["available"] == true).count(),
+                    "proxy_latency":Snapshot::fastest(probes.into_iter()),
                     "accounts":accounts})
             })
             .collect();
