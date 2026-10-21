@@ -191,6 +191,8 @@ impl Account {
                 .as_millis(),
             tokens: Tokens::default(),
             billing: None,
+            billing_records: Vec::new(),
+            billing_active: false,
             backend: None,
             attempts: 0,
             refusal: None,
@@ -216,6 +218,8 @@ pub(crate) struct Ticket {
     started_at_ms: u128,
     pub tokens: Tokens,
     pub(crate) billing: Option<crate::billing::Observer>,
+    billing_records: Vec<serde_json::Value>,
+    billing_active: bool,
     pub backend: Option<Arc<Backend>>,
     pub attempts: usize,
     pub refusal: Option<crate::refusal::Observer>,
@@ -225,6 +229,22 @@ pub(crate) struct Ticket {
 }
 
 impl Ticket {
+    pub(crate) fn begin_billing_attempt(&mut self) {
+        if let Some(billing) = &self.billing {
+            self.billing = Some(billing.fresh());
+            self.billing_active = true;
+        }
+    }
+    pub(crate) fn finish_billing_attempt(&mut self, status: u16) {
+        if self.billing_active {
+            if let Some(billing) = &self.billing {
+                self.billing_records
+                    .push(serde_json::json!({"number":self.attempts,
+                    "status":status,"billing":billing.finish(status, 1)}));
+            }
+            self.billing_active = false;
+        }
+    }
     pub(crate) fn activity(&self) -> Option<crate::ledger::Activity> {
         self.parent
             .as_ref()
@@ -244,13 +264,23 @@ impl Ticket {
             return;
         }
         self.settled = true;
+        self.finish_billing_attempt(status);
+        let billing = self
+            .billing
+            .as_ref()
+            .map(|_| crate::billing::aggregate(&self.billing_records, self.attempts));
+        if let Some(record) = &billing {
+            if self.attempts > 0 {
+                self.tokens = crate::billing::tokens(record);
+            }
+        }
         let usage = Usage {
             requests: 1,
             errors: u64::from(status >= 400),
             input_tokens: self.tokens.input,
             output_tokens: self.tokens.output,
             unknown_usage_requests: u64::from(
-                !self.tokens.known || status >= 400 || self.attempts > 1,
+                !self.tokens.known || (billing.is_none() && (status >= 400 || self.attempts > 1)),
             ),
         };
         let mut meter = self.account.meter.lock().unwrap();
@@ -272,8 +302,8 @@ impl Ticket {
         if let Some(extra) = self.context.as_object() {
             audit.as_object_mut().unwrap().extend(extra.clone());
         }
-        if let Some(billing) = &self.billing {
-            audit["billing"] = billing.finish(status, self.attempts);
+        if let Some(billing) = billing {
+            audit["billing"] = billing;
         }
         // Platform keeps all admission outcomes. A merchant must not learn an
         // unused user's identity from an error before any upstream contact.

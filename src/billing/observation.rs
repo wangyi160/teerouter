@@ -3,8 +3,9 @@ use crate::upstream::Protocol;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
-pub(crate) struct Observer(Arc<Mutex<State>>);
+pub(crate) struct Observer(Arc<Mutex<State>>, Arc<State>);
 
+#[derive(Clone)]
 struct State {
     provider: Provider,
     quote: Quote,
@@ -18,6 +19,10 @@ struct State {
     expected_tools: Vec<String>,
     hour_cache_requested: bool,
     hour_split_seen: bool,
+    estimate: super::estimate::Estimate,
+    upstream_status: Option<u16>,
+    upstream_failed: bool,
+    no_generation: bool,
 }
 
 fn tier(value: &str) -> Option<&str> {
@@ -158,7 +163,7 @@ impl Observer {
                 _ => false,
             }
         }
-        Ok(Self(Arc::new(Mutex::new(State {
+        let state = State {
             provider,
             quote,
             speed_unconfirmed: dimensions.speed != "standard",
@@ -171,14 +176,37 @@ impl Observer {
             expected_tools,
             hour_cache_requested: hour(body, 0),
             hour_split_seen: false,
-        }))))
+            estimate: super::estimate::Estimate::new(body),
+            upstream_status: None,
+            upstream_failed: false,
+            no_generation: false,
+        };
+        Ok(Self(Arc::new(Mutex::new(state.clone())), Arc::new(state)))
+    }
+
+    /// Retries never inherit usage, output text, dimensions or errors from another call.
+    pub(crate) fn fresh(&self) -> Self {
+        Self(Arc::new(Mutex::new((*self.1).clone())), self.1.clone())
+    }
+
+    pub(crate) fn headers(&self, status: u16) {
+        if let Ok(mut s) = self.0.lock() {
+            s.upstream_status = Some(status);
+        }
+    }
+
+    pub(crate) fn no_generation(&self) {
+        if let Ok(mut s) = self.0.lock() {
+            s.no_generation = true;
+        }
     }
 
     pub(crate) fn observe(&self, protocol: Protocol, value: &Value, streaming: bool) {
-        if let Ok(mut state) = self.0.lock()
-            && let Err(error) = state.observe(protocol, value, streaming)
-        {
-            state.error = Some(error);
+        if let Ok(mut state) = self.0.lock() {
+            state.estimate.observe(protocol, value, streaming);
+            if let Err(error) = state.observe(protocol, value, streaming) {
+                state.error = Some(error);
+            }
         }
     }
 
@@ -186,13 +214,99 @@ impl Observer {
         let Ok(s) = self.0.lock() else {
             return json!({"version":1,"state":"pending","reason":"billing_observer_unavailable"});
         };
-        let error = s.error.or_else(|| {
+        let mut usage = s.usage.clone();
+        let mut source = "official";
+        let mut estimate = Value::Null;
+        let metered = s.usage.input.is_some() || s.usage.output.is_some();
+        let processing_evidence = [
+            s.usage.input,
+            s.usage.output,
+            s.usage.cache_read,
+            s.usage.cache_write,
+        ]
+        .iter()
+        .any(|n| n.is_some_and(|n| n > 0))
+            || s.estimate.generated();
+        let failed =
+            status >= 400 || s.upstream_status.is_some_and(|n| n >= 400) || s.upstream_failed;
+        let rejected = s.no_generation
+            || matches!(
+                s.upstream_status,
+                Some(400 | 401 | 402 | 403 | 404 | 413 | 422 | 429)
+            );
+        let no_charge = rejected
+            && !s.estimate.generated()
+            && [
+                s.usage.input,
+                s.usage.output,
+                s.usage.total,
+                s.usage.cache_read,
+                s.usage.cache_write,
+                s.usage.reasoning,
+            ]
+            .iter()
+            .all(|n| n.unwrap_or(0) == 0)
+            && s.usage.tools.values().all(|n| *n == 0);
+        let mut missing = None;
+        if no_charge && s.error.is_none() {
+            usage = Metrics {
+                input: Some(0),
+                output: Some(0),
+                ..Metrics::default()
+            };
+            source = "none";
+        } else if !s.final_usage && s.error.is_none() {
+            // Missing usage is not itself a generation failure. In particular,
+            // successful JSON/SSE responses must never fall back to estimates.
+            if !failed || !s.estimate.model_request || !processing_evidence {
+                missing = Some("final_usage_missing");
+            } else {
+                let local_output = s.estimate.output();
+                let cache = usage
+                    .cache_read
+                    .unwrap_or(0)
+                    .checked_add(usage.cache_write.unwrap_or(0));
+                let local_input = s.estimate.input().zip(cache).map(|(n, cache)| {
+                    if s.provider == Provider::Anthropic {
+                        n.saturating_sub(cache)
+                    } else {
+                        n.max(cache)
+                    }
+                });
+                source = if metered { "mixed" } else { "estimated" };
+                let input_local = usage.input.is_none();
+                let output_local = local_output.is_some_and(|n| n > usage.output.unwrap_or(0))
+                    || usage.output.is_none();
+                if input_local {
+                    usage.input = local_input;
+                }
+                if output_local {
+                    usage.output = local_output;
+                }
+                // Partial counters cannot establish the final total or hidden reasoning.
+                // Preserve the original counters separately as evidence.
+                if input_local || output_local {
+                    usage.total = None;
+                    usage.reasoning = None;
+                }
+                if local_output.is_none() || usage.input.is_none() || usage.output.is_none() {
+                    missing = Some("estimation_limit_or_usage_missing");
+                }
+                estimate = json!({"method":"o200k_json_text_v1","input_tokens":local_input,
+                    "visible_output_tokens":local_output,"input_source":if input_local {"local"} else {"upstream"},
+                    "output_source":if output_local {"local"} else {"upstream"},
+                    "cache_policy":if usage.cache_read.is_none() && usage.cache_write.is_none() {"ordinary_input"} else {"upstream"},
+                    "context_incomplete":s.estimate.context_incomplete,"hidden_output_included":false});
+            }
+        }
+        let invalid_reported = calculate(s.provider, &s.quote, &s.usage, &s.dimensions)
+            .err()
+            .filter(|reason| reason.starts_with("inconsistent_") || *reason == "usage_overflow");
+        let error = s.error.or(invalid_reported).or(missing).or_else(|| {
             if attempts > 1 {
                 Some("multiple_upstream_attempts")
-            } else if status >= 400 {
-                Some("request_incomplete")
-            } else if !s.final_usage {
-                Some("final_usage_missing")
+            } else if no_charge {
+                None
             } else if s.auto_tier {
                 Some("actual_service_tier_missing")
             } else if s.speed_unconfirmed {
@@ -214,7 +328,28 @@ impl Observer {
                 None
             }
         });
-        result(s.provider, &s.quote, &s.usage, &s.dimensions, error)
+        let mut record = result(s.provider, &s.quote, &usage, &s.dimensions, error);
+        record["usage_source"] = source.into();
+        record["coverage"] = if source == "estimated" || source == "mixed" {
+            "partial"
+        } else if record["state"] == "calculated" {
+            "complete"
+        } else {
+            "unknown"
+        }
+        .into();
+        record["upstream_status"] = s.upstream_status.into();
+        if s.upstream_failed {
+            record["upstream_failed"] = true.into();
+        }
+        if source == "none" {
+            record["reason"] = "no_generation".into();
+        }
+        if !estimate.is_null() {
+            record["estimate"] = estimate;
+            record["reported_usage"] = json!(s.usage);
+        }
+        record
     }
 }
 
@@ -238,6 +373,14 @@ impl State {
             .get("response")
             .or_else(|| value.get("message"))
             .unwrap_or(value);
+        // Some providers report model errors inside an HTTP 200 response/SSE.
+        self.upstream_failed |= value.get("error").is_some_and(|v| !v.is_null())
+            || envelope.get("error").is_some_and(|v| !v.is_null())
+            || matches!(
+                value["type"].as_str(),
+                Some("error" | "response.failed" | "response.cancelled")
+            )
+            || matches!(envelope["status"].as_str(), Some("failed" | "cancelled"));
         // Hosted tools can carry fees that are absent from the token usage.
         let mut check_item = |item: &Value| -> Checked<()> {
             let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
@@ -441,10 +584,21 @@ impl State {
         let final_event = !streaming
             || match protocol {
                 Protocol::Chat => u.get(i).is_some() && u.get(o).is_some(),
-                Protocol::Messages => value["type"] == "message_delta" && u.get(o).is_some(),
+                Protocol::Messages => {
+                    value["type"] == "message_delta"
+                        && u.get(o).is_some()
+                        && value["delta"]
+                            .get("stop_reason")
+                            .is_some_and(|v| !v.is_null())
+                }
                 Protocol::Responses => matches!(
                     value["type"].as_str(),
-                    Some("response.completed" | "response.incomplete")
+                    Some(
+                        "response.completed"
+                            | "response.incomplete"
+                            | "response.failed"
+                            | "response.cancelled"
+                    )
                 ),
             };
         self.final_usage |=

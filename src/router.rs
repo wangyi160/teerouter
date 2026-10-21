@@ -872,6 +872,7 @@ impl Engine {
             }
             ticket.backend = Some(backend.clone());
             ticket.attempts += 1;
+            ticket.begin_billing_attempt();
             let observer = crate::refusal::Observer::new(backend.config.provider);
             ticket.refusal = Some(observer.clone());
             let mut request_client = backend.client.clone();
@@ -963,6 +964,15 @@ impl Engine {
                     });
                 }
                 Ok(Err(error)) => {
+                    if matches!(
+                        &error,
+                        Error::OAuth(_) | Error::InvalidRequest(_) | Error::Unsupported(_)
+                    ) || matches!(&error, Error::Http(e) if e.is_connect())
+                    {
+                        if let Some(billing) = &ticket.billing {
+                            billing.no_generation();
+                        }
+                    }
                     self.cache.failed(&cache_request, backend);
                     if matches!(error, Error::Api { status: 401, .. })
                         && let Some(account) = &backend.client.oauth
@@ -979,6 +989,7 @@ impl Engine {
                         ApiError::upstream(&error)
                     };
                     backend.diagnostic(last_error.code);
+                    ticket.finish_billing_attempt(last_error.status);
                     let retry = !observer.detected() && retryable(&error);
                     if retry {
                         lease.failure(

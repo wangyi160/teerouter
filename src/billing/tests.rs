@@ -106,16 +106,21 @@ fn openai_cache_and_reasoning_are_not_double_counted() {
 
 #[test]
 fn claude_stream_merges_cumulative_usage_and_cache_durations_before_conversion() {
-    let o = Observer::new(Provider::Anthropic, &json!({}), quote()).unwrap();
+    let o = Observer::new(
+        Provider::Anthropic,
+        &json!({"messages":[{"role":"user","content":"hello"}]}),
+        quote(),
+    )
+    .unwrap();
     let start = json!({"type":"message_start","message":{"usage":{"input_tokens":60,"output_tokens":1,
         "cache_read_input_tokens":30,"cache_creation_input_tokens":10,
         "cache_creation":{"ephemeral_5m_input_tokens":6,"ephemeral_1h_input_tokens":4}}}});
     o.observe(Protocol::Messages, &start, true);
-    assert_eq!(o.finish(200, 1)["state"], "pending");
+    assert_eq!(o.finish(499, 1)["coverage"], "partial");
     for _ in 0..2 {
         o.observe(
             Protocol::Messages,
-            &json!({"type":"message_delta","usage":{"output_tokens":20}}),
+            &json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}),
             true,
         );
     }
@@ -322,7 +327,6 @@ fn claude_search_is_charged_per_official_count_and_missing_count_is_pending() {
 #[test]
 fn unsupported_missing_interrupted_or_ambiguous_usage_never_becomes_zero_cost() {
     let cases = [
-        (json!({"input_tokens":10}), "final_usage_missing"),
         (
             json!({"input_tokens":10,"output_tokens":1,"input_tokens_details":{"cached_tokens":11}}),
             "inconsistent_cache_usage",
@@ -353,7 +357,7 @@ fn unsupported_missing_interrupted_or_ambiguous_usage_never_becomes_zero_cost() 
         &json!({"usage":{"prompt_tokens":10,"completion_tokens":1}}),
         false,
     );
-    assert_eq!(o.finish(499, 1)["reason"], "request_incomplete");
+    assert_eq!(o.finish(499, 1)["state"], "calculated");
     assert_eq!(o.finish(200, 2)["reason"], "multiple_upstream_attempts");
 }
 

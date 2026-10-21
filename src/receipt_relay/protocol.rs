@@ -17,6 +17,9 @@ fn select(value: &Value, fields: &[&str]) -> Value {
     Value::Object(out)
 }
 fn billing(value: &Value) -> Value {
+    billing_detail(value, true)
+}
+fn billing_detail(value: &Value, attempts: bool) -> Value {
     if !value.is_object() {
         return Value::Null;
     }
@@ -39,6 +42,11 @@ fn billing(value: &Value) -> Value {
             "charge_denominator",
             "rounding",
             "reason",
+            "usage_source",
+            "coverage",
+            "upstream_status",
+            "upstream_failed",
+            "unknown_attempts",
         ],
     );
     if value["items"].is_array() {
@@ -66,20 +74,47 @@ fn billing(value: &Value) -> Value {
             &["service_tier", "speed", "inference_geo"],
         );
     }
-    if value["usage"].is_object() {
-        out["usage"] = select(
-            &value["usage"],
+    for field in ["usage", "reported_usage"] {
+        if value[field].is_object() {
+            out[field] = select(
+                &value[field],
+                &[
+                    "input",
+                    "output",
+                    "total",
+                    "cache_read",
+                    "cache_write",
+                    "cache_write_hour",
+                    "reasoning",
+                    "reported_cost_in_usd_ticks",
+                ],
+            );
+        }
+    }
+    if value["estimate"].is_object() {
+        out["estimate"] = select(
+            &value["estimate"],
             &[
-                "input",
-                "output",
-                "total",
-                "cache_read",
-                "cache_write",
-                "cache_write_hour",
-                "reasoning",
-                "reported_cost_in_usd_ticks",
+                "method",
+                "input_tokens",
+                "visible_output_tokens",
+                "input_source",
+                "output_source",
+                "cache_policy",
+                "context_incomplete",
+                "hidden_output_included",
             ],
         );
+    }
+    if attempts && let Some(records) = value["attempt_records"].as_array() {
+        out["attempt_records"] = records
+            .iter()
+            .take(16)
+            .map(|r| {
+                json!({"number":r["number"],
+            "status":r["status"],"billing":billing_detail(&r["billing"], false)})
+            })
+            .collect();
     }
     out
 }

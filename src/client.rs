@@ -329,6 +329,9 @@ impl Client {
         if let Some(observer) = &self.refusal {
             observer.headers(&response, protocol);
         }
+        if let Some(observer) = &self.billing {
+            observer.headers(response.status().as_u16());
+        }
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let retry_after_secs = response
@@ -336,11 +339,16 @@ impl Client {
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse().ok());
-            let body = crate::resources::error_text(response).await;
-            if let Some(observer) = &self.refusal
-                && let Ok(value) = serde_json::from_str(&body)
+            let (body, value) = crate::resources::error_metering(response, self.limits.bytes).await;
+            if let Some(observer) = &self.billing
+                && let Some(value) = &value
             {
-                observer.observe(protocol, &value, false);
+                observer.observe(protocol, value, false);
+            }
+            if let Some(observer) = &self.refusal
+                && let Some(value) = &value
+            {
+                observer.observe(protocol, value, false);
             }
             return Err(Error::Api {
                 status,

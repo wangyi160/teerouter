@@ -139,6 +139,97 @@ fn public_wire_fixture_for_independent_consumer() {
         "boot_id":v.boot_id,"public_key":v.receipt_signer.public_key(),"evidence_type":"unattested_test"}});
     std::fs::write(path, serde_json::to_vec(&output).unwrap()).unwrap();
 }
+
+#[test]
+fn billing_v2_wire_fixture_preserves_evidence_without_text() {
+    use crate::{
+        Provider,
+        billing::{Observer, aggregate},
+        upstream::Protocol,
+    };
+    let mut cases = vec![];
+    for (provider, protocol) in [
+        (Provider::OpenAI, Protocol::Chat),
+        (Provider::Anthropic, Protocol::Messages),
+        (Provider::XAI, Protocol::Chat),
+    ] {
+        let o = Observer::new(
+            provider,
+            &json!({"messages":[{"role":"user","content":"PRIVATE_INPUT hello"}]}),
+            crate::billing::tests::quote(),
+        )
+        .unwrap();
+        let text = if protocol == Protocol::Messages {
+            json!({"type":"content_block_delta","index":0,"delta":{"text":"PRIVATE_REPLY hello"}})
+        } else {
+            json!({"choices":[{"index":0,"delta":{"content":"PRIVATE_REPLY hello"}}]})
+        };
+        o.observe(protocol, &text, true);
+        cases.push((
+            499,
+            aggregate(
+                &[json!({"number":1,"status":499,"billing":o.finish(499,1)})],
+                1,
+            ),
+        ));
+        let failed = o.fresh();
+        failed.headers(200);
+        failed.observe(protocol, &text, true);
+        failed.observe(protocol, &json!({"error":{"code":"server_error"}}), true);
+        cases.push((
+            200,
+            aggregate(
+                &[json!({"number":1,"status":200,"billing":failed.finish(200,1)})],
+                1,
+            ),
+        ));
+        o.observe(protocol, &if protocol == Protocol::Messages {
+            json!({"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}})
+        } else { json!({"usage":{"prompt_tokens":10,"completion_tokens":5}}) }, false);
+        cases.push((
+            502,
+            aggregate(
+                &[json!({"number":1,"status":502,"billing":o.finish(502,1)})],
+                1,
+            ),
+        ));
+    }
+    let v = vault();
+    let mut events = vec![];
+    for (status, billing) in cases {
+        let tokens = crate::billing::tokens(&billing);
+        let event = json!({"event":"request","user_id":"u","key":"private-key","request_id":"PRIVATE_REQUEST_ID",
+            "model":"model-test","pool":"pool","provider":billing["provider"],"merchant_id":"m_fixture",
+            "status":status,"attempts":1,"created_at":1,"started_at_ms":1000,"duration_ms":5,
+            "usage":{"requests":1,"errors":1,"input_tokens":tokens.input,"output_tokens":tokens.output,"unknown_usage_requests":u64::from(!tokens.known)},
+            "cache_usage":{"read":tokens.cache_read,"write":tokens.cache_write,"write_hour":tokens.cache_write_hour},
+            "merchant_price_version":1,"merchant_pricing":{"basis":"official_pool_multiplier","official_price_revision":3,"official_version":2,"multiplier_millionths":800000},
+            "billing":billing});
+        let mut d = v.lock().unwrap();
+        d.sequence += 1;
+        let seq = d.sequence;
+        crate::balances::add(&mut d.consumption, &event);
+        d.events.push_back(json!({"seq":seq,"event":event}));
+        events.push(event);
+    }
+    let (_, batch) = v.prepare_public(true).unwrap().unwrap();
+    let records: Vec<Value> =
+        serde_json::from_str(batch["records_json"].as_str().unwrap()).unwrap();
+    assert_eq!(records.len(), 9);
+    assert!(!batch.to_string().contains("PRIVATE_"));
+    assert!(
+        records
+            .iter()
+            .all(|r| r["billing"]["attempt_records"][0]["billing"]["usage_source"].is_string())
+    );
+    if let Some(path) = std::env::var_os("TEEROUTER_BILLING_FIXTURES") {
+        std::fs::write(path, serde_json::to_vec(&events).unwrap()).unwrap();
+    }
+    if let Some(path) = std::env::var_os("TEEROUTER_BILLING_PUBLIC_FIXTURE") {
+        std::fs::write(path,serde_json::to_vec(&json!({"batch":batch,"identity":{"schema":"teerouter.receipt-key.v1",
+            "boot_id":v.boot_id,"public_key":v.receipt_signer.public_key(),"evidence_type":"unattested_test"}})).unwrap()).unwrap();
+    }
+}
 #[test]
 fn configuration_and_recovery_reject_identity_changes_and_unsettled_replay() {
     let v = vault();

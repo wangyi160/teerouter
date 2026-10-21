@@ -63,20 +63,40 @@ pub(crate) async fn json(response: reqwest::Response, max: usize) -> Result<Valu
     }
     serde_json::from_slice(&data).map_err(|_| Error::InvalidResponse("invalid upstream JSON"))
 }
-pub(crate) async fn error_text(response: reqwest::Response) -> String {
+/// Meter the complete bounded error JSON before truncating diagnostic text.
+/// Truncated/failed reads never turn a partial body into authoritative usage.
+pub(crate) async fn error_metering(
+    response: reqwest::Response,
+    maximum: usize,
+) -> (String, Option<Value>) {
     let mut stream = bytes(
         response,
         Limits {
-            bytes: 4096,
-            event: 4096,
+            bytes: maximum,
             idle: 2,
+            ..Limits::default()
         },
     );
     let mut data = Vec::new();
-    while let Some(Ok(chunk)) = stream.next().await {
-        data.extend_from_slice(&chunk);
+    let mut complete = true;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(chunk) => data.extend_from_slice(&chunk),
+            Err(_) => {
+                complete = false;
+                break;
+            }
+        }
     }
-    String::from_utf8_lossy(&data).into_owned()
+    let value = if complete {
+        serde_json::from_slice(&data).ok()
+    } else {
+        None
+    };
+    (
+        String::from_utf8_lossy(&data[..data.len().min(4096)]).into_owned(),
+        value,
+    )
 }
 pub(crate) fn bytes(
     response: reqwest::Response,

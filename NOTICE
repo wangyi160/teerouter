@@ -55,3 +55,11 @@ The helper and Rust pipe/SOCKS lifecycle integration are new teerouter code.
 Exact transitive versions and checksums are recorded in egress/go.mod and go.sum.
 Container distributions include dependency notices and the Go license under
 /usr/share/doc/teerouter-egress; the helper is part of the measured router image.
+
+Error/interruption-only text estimation uses unmodified tiktoken-rs 0.12.1
+(MIT), https://github.com/zurawiki/tiktoken-rs,
+revision 72a5a800651a1cea1ad609292446ba02c80e3bcd. The bundled tokenizer
+assets originate from OpenAI tiktoken, https://github.com/openai/tiktoken
+(MIT). Their license texts are in LICENSES/tiktoken-rs-LICENSE.txt and
+LICENSES/tiktoken-LICENSE.txt. The bounded evidence collection and estimate
+billing policy are new teerouter code; estimated counts are not provider usage.

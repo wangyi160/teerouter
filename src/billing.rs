@@ -1,7 +1,11 @@
 //! Provider-specific, deterministic request charges. No request/response text is retained.
 mod anthropic;
+mod estimate;
+#[cfg(test)]
+mod interrupt_tests;
 mod observation;
 mod openai;
+mod settlement;
 #[cfg(test)]
 pub(crate) mod tests;
 mod xai;
@@ -15,6 +19,8 @@ use crate::{
 pub(crate) use observation::Observer;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+pub(crate) use settlement::aggregate;
+pub(crate) use settlement::tokens;
 use std::collections::BTreeMap;
 
 /// Public list-price variants, never merchant-specific discounts or upstream account costs.

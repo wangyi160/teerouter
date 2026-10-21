@@ -4,6 +4,8 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+#[path = "billing_tests.rs"]
+mod billing_tests;
 #[tokio::test]
 async fn signed_checkpoint_requires_its_proof_hash_and_rejects_arbitrary_digest_attestation() {
     let r = root();
