@@ -259,7 +259,6 @@ pub(super) async fn admin_maintenance(
 pub(super) async fn admin_checkpoint(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::merchants::checkpoint_all(&runtime).await?;
     let checkpoint = runtime.engine().vault.checkpoint().map_err(storage)?;
     Ok(([("cache-control", "no-store")], Json(checkpoint)))
 }
@@ -336,7 +335,6 @@ pub(super) async fn admin_checkpoint_diff(
     {
         return Err(invalid());
     }
-    crate::merchants::checkpoint_all(&runtime).await?;
     let result = runtime
         .engine()
         .vault

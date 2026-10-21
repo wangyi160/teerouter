@@ -13,7 +13,7 @@ async fn setup(
     attempts: usize,
 ) -> (Arc<Runtime>, Arc<Live>, Server, Server) {
     let r = root();
-    let live = add(&r, &"a".repeat(64)).await;
+    let live = add(&r, &control("a")).await;
     let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
     let upstream = serve(
         Router::new()
@@ -235,7 +235,7 @@ async fn interrupted_sse_without_final_usage_is_estimated_and_charged_once() {
 #[tokio::test]
 async fn dropping_downstream_after_official_usage_still_charges() {
     let r = root();
-    let live = add(&r, &"a".repeat(64)).await;
+    let live = add(&r, &control("a")).await;
     let sse = format!(
         "data: {}\n\n",
         json!({"id":"r","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}})

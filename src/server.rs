@@ -159,7 +159,13 @@ async fn authenticate(
             .ok_or_else(|| {
                 ApiError::new(401, "authentication_error", "Merchant credential required")
             })
-            .and_then(|token| crate::merchants::authenticate(&runtime, token).map(|_| None))
+            .and_then(|token| {
+                if path == "/merchant/bind" && request.method() == axum::http::Method::POST {
+                    crate::merchants::authorize_binding(&runtime, token).map(|_| None)
+                } else {
+                    crate::merchants::authenticate(&runtime, token).map(|_| None)
+                }
+            })
     } else if path.starts_with("/admin/") {
         if !engine.admin_enabled() {
             Err(ApiError::new(404, "not_found", "Admin API is disabled"))

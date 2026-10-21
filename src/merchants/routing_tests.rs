@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 async fn latency_routing_uses_each_accounts_proxy_preserves_sessions_and_enforces_caps() {
     use crate::network::latency::Target;
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let (ma, ca) = observed_fixture(&first).await;
@@ -94,8 +94,8 @@ async fn price_priority_compares_cached_total_cost_and_rechecks_multiplier_caps(
     r.engine().vault.lock().unwrap().official_pricing.providers[0].models[0]
         .rates
         .cache_read = Some(100000);
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let (_ma, ca) = observed_fixture(&first).await;
@@ -163,8 +163,8 @@ async fn price_priority_compares_cached_total_cost_and_rechecks_multiplier_caps(
 #[tokio::test]
 async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_routes() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let mut config = second.runtime.engine().config.clone();
@@ -256,7 +256,7 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
 async fn router_measures_stream_before_filtering_usage_for_the_client() {
     use axum::{body::Body, response::Response};
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let mock=serve(Router::new().route("/v1/models",any(||async {Json(json!({"data":[{"id":"model-test"}]}))}))
         .fallback(any(||async {
@@ -319,8 +319,8 @@ fn rule(pool: Option<&str>, cap: u64) -> Value {
 #[tokio::test]
 async fn soft_session_remembers_the_latest_pool_across_merchants_in_speed_mode() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let (_ma, _) = observed_fixture(&first).await;
@@ -401,8 +401,8 @@ fn multiplier(live: &Live, rate: u64) {
 #[tokio::test]
 async fn router_selects_across_merchants_and_enforces_live_fixed_caps_without_proxy() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let (_ma, ca) = observed_fixture(&first).await;
@@ -452,8 +452,8 @@ async fn router_selects_across_merchants_and_enforces_live_fixed_caps_without_pr
 #[tokio::test]
 async fn automatic_rules_respect_platform_permissions_and_unavailable_accounts() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let (_ma, ca) = observed_fixture(&first).await;
@@ -505,7 +505,7 @@ async fn automatic_rules_respect_platform_permissions_and_unavailable_accounts()
 #[tokio::test]
 async fn bad_rules_and_ambiguous_continuations_never_reach_a_provider() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let (_mock, count) = observed_fixture(&live).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
@@ -578,8 +578,8 @@ async fn bad_rules_and_ambiguous_continuations_never_reach_a_provider() {
 #[tokio::test]
 async fn session_bound_to_a_merchant_never_moves_to_a_cheaper_merchant() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let (_ma, ca) = observed_fixture(&first).await;

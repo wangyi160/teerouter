@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn account_probe_is_authenticated_scoped_bounded_and_does_not_save_or_refresh() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let before = state(&r, &registration(&token)).unwrap();
     let server = serve(crate::server::app_runtime(r.clone())).await;

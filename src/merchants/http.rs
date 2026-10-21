@@ -31,9 +31,16 @@ pub(crate) async fn dispatch(
             .unwrap_or("")
             .to_owned(),
     );
-    let item = authenticate(&runtime, &token)?;
     let method = request.method().as_str().to_owned();
     let path = request.uri().path().to_owned();
+    if method == "POST" && path == "/merchant/bind" {
+        return Ok((
+            [("cache-control", "no-store")],
+            Json(bind(&runtime, &token).await?),
+        )
+            .into_response());
+    }
+    let item = authenticate(&runtime, &token)?;
     let query: BTreeMap<String, String> =
         reqwest::Url::parse(&format!("http://local{}", request.uri()))
             .map_err(|_| invalid())?
@@ -141,7 +148,6 @@ pub(crate) async fn dispatch(
                     .sum();
                 data.changed();
             }
-            checkpoint_one(&runtime, &item.id)?;
             json!({"acknowledged":input.through_seq})
         }
         ("GET", "/merchant/refusals") => {
@@ -163,7 +169,6 @@ pub(crate) async fn dispatch(
                 .runtime
                 .delete_refusals(number("through_id", 0)?, &live.admin)
                 .await?;
-            checkpoint_one(&runtime, &item.id)?;
             result
         }
         _ => {

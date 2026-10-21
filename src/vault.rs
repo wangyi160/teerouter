@@ -62,7 +62,7 @@ pub(crate) struct Data {
     /// Independent of the bounded/acknowledged usage and refusal queues.
     #[serde(default)]
     pub upstream_users: BTreeSet<String>,
-    /// Public admission records and opaque merchant-owned recovery capsules only.
+    /// Public admission and control-key digests only. No merchant secret backups.
     #[serde(default)]
     pub merchants: BTreeMap<String, crate::merchants::Registration>,
     pub bundle: Option<Provision>,
@@ -211,6 +211,9 @@ impl Vault {
             .is_some_and(|t| t.elapsed().as_secs() < 630)
     }
     pub(crate) fn initialize(&self, mut data: Data) -> Result<()> {
+        for merchant in data.merchants.values_mut() {
+            merchant.backup = None;
+        }
         let mut current = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if sync.initialized {

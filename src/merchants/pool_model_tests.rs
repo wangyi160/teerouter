@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[tokio::test]
 async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_invalid_lists() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     add(&r, &token).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
     for invalid in [
@@ -26,19 +26,30 @@ async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_inval
     }
     let mut body = update(2);
     body["pools"][0]["allowed_models"] = json!(["model-test", "model-other"]);
-    let (status, saved) = call(&server, Method::PUT, "/merchant/config", &token, body).await;
+    let (status, saved) = call(
+        &server,
+        Method::PUT,
+        "/merchant/config",
+        &token,
+        body.clone(),
+    )
+    .await;
     assert_eq!(status, 200, "{saved}");
     assert_eq!(
         saved["pools"][0]["allowed_models"],
         json!(["model-test", "model-other"])
     );
     r.merchants.live.lock().unwrap().clear();
-    let restored = unlock(&r, &token, 3).await.unwrap();
+    let empty = unlock(&r, &token, 3).await.unwrap();
+    assert_eq!(empty["pools"], json!([]));
+    body["expected_revision"] = 3.into();
+    let (status, restored) = call(&server, Method::PUT, "/merchant/config", &token, body).await;
+    assert_eq!(status, 200);
     assert_eq!(
         restored["pools"][0]["allowed_models"],
         saved["pools"][0]["allowed_models"]
     );
-    let mut body = update(3);
+    let mut body = update(4);
     body["pools"][0]["allowed_models"] = json!([]);
     assert_eq!(
         call(&server, Method::PUT, "/merchant/config", &token, body)
@@ -46,14 +57,14 @@ async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_inval
             .1["pools"][0]["allowed_models"],
         json!([])
     );
-    let (_, saved) = call(&server, Method::PUT, "/merchant/config", &token, update(4)).await;
+    let (_, saved) = call(&server, Method::PUT, "/merchant/config", &token, update(5)).await;
     assert!(saved["pools"][0].get("allowed_models").is_none());
 }
 
 #[tokio::test]
 async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let ids: Vec<_> = (0..20).map(|i| format!("model-{i:02}")).collect();
     let calls = Arc::new(AtomicUsize::new(0));

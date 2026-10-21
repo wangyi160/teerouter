@@ -208,6 +208,7 @@ pub(crate) fn quotes(settings: &Settings, config: &Config, book: &Book) -> Vec<Q
 
 // Convert an old per-model quote only when every rate (including context/cache)
 // proves the same pool multiplier. Ambiguous free test books use neutral 1x.
+#[cfg(test)]
 pub(crate) fn migrate(
     settings: &mut Settings,
     config: &Config,

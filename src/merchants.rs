@@ -1,9 +1,11 @@
-//! Isolated merchant runtimes. Platform keys identify users; merchant keys never leave their owners.
+//! Merchant secrets exist only in merchant-owned storage and the live TEE runtime.
+#[cfg(test)]
+use crate::vault::Data;
 use crate::{
     config::{ApiKey, Config, Model, User},
     error::ApiError,
     runtime::{Runtime, storage},
-    vault::{Data, Provision, Vault, operations::Update},
+    vault::{Provision, Vault, operations::Update},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -36,6 +38,9 @@ pub(crate) struct Capsule {
 pub(crate) struct Registration {
     pub id: String,
     pub credential_hash: String,
+    /// Independent merchant-local control secret. Only its digest may reach management.
+    #[serde(default)]
+    pub owner_hash: Option<String>,
     pub name: String,
     pub enabled: bool,
     pub max_concurrent: usize,
@@ -45,7 +50,8 @@ pub(crate) struct Registration {
     pub allow_test: bool,
     #[serde(default)]
     pub users: BTreeSet<String>,
-    #[serde(default)]
+    // Read legacy checkpoints for migration, but never export or restore their capsules.
+    #[serde(default, skip_serializing)]
     pub backup: Option<Capsule>,
 }
 impl Registration {
@@ -56,6 +62,7 @@ impl Registration {
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             && self.id == format!("m_{}", &self.credential_hash[..32])
+            && self.owner_hash.as_deref().is_none_or(crypto::valid_secret)
             && !self.name.is_empty()
             && self.name.len() <= 128
             && (1..=4096).contains(&self.max_concurrent)
@@ -67,7 +74,8 @@ impl Registration {
     pub fn public(&self, unlocked: bool) -> Value {
         json!({"id":self.id,"name":self.name,"credential_hash":self.credential_hash,"enabled":self.enabled,
             "max_concurrent":self.max_concurrent,"rpm":self.rpm,"tpm":self.tpm,"allow_test":self.allow_test,
-            "users":self.users,"unlocked":unlocked,"has_backup":self.backup.is_some()})
+            "users":self.users,"unlocked":unlocked,"has_backup":false,
+            "owner_hash":self.owner_hash,"merchant_control_version":1})
     }
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -148,21 +156,12 @@ impl Default for Settings {
         }
     }
 }
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Recovery {
-    id: String,
-    state: Data,
-    settings: Settings,
-}
-
 pub(crate) struct Live {
     probe_gate: Arc<crate::resources::Gate>,
     pub runtime: Arc<Runtime>,
     pub settings: Mutex<Settings>,
     admin: zeroize::Zeroizing<String>,
-    recovery_key: zeroize::Zeroizing<[u8; 32]>,
-    checkpoint_revision: Mutex<Option<(u64, u64)>>,
+    configured: std::sync::atomic::AtomicBool,
     pub gate: Arc<crate::resources::Gate>,
     pub meter: Mutex<RateMeter>,
 }
@@ -201,7 +200,20 @@ pub(super) fn forbidden() -> ApiError {
     )
 }
 pub(crate) fn authenticate(runtime: &Runtime, token: &str) -> Result<Registration, ApiError> {
-    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let (enrollment, owner) = crypto::control_token(token)?;
+    let item = authenticate_enrollment(runtime, enrollment)?;
+    let digest = crypto::digest(owner);
+    if !item
+        .owner_hash
+        .as_ref()
+        .is_some_and(|expected| bool::from(expected.as_bytes().ct_eq(digest.as_bytes())))
+    {
+        return Err(forbidden());
+    }
+    Ok(item)
+}
+fn authenticate_enrollment(runtime: &Runtime, token: &str) -> Result<Registration, ApiError> {
+    if !crypto::valid_secret(token) {
         return Err(forbidden());
     }
     let digest = crypto::digest(token);
@@ -217,6 +229,44 @@ pub(crate) fn authenticate(runtime: &Runtime, token: &str) -> Result<Registratio
         .ok_or_else(forbidden)?;
     Ok(item.clone())
 }
+/// Bind a local control key before any account material is submitted. Enrollment
+/// alone can never access or replace an already-bound merchant's private state.
+pub(crate) async fn bind(runtime: &Runtime, token: &str) -> Result<Value, ApiError> {
+    let _write = runtime.merchants.write.lock().await;
+    let (_, owner) = crypto::control_token(token)?;
+    let item = authorize_binding(runtime, token)?;
+    let digest = crypto::digest(owner);
+    if item
+        .owner_hash
+        .as_ref()
+        .is_some_and(|old| !bool::from(old.as_bytes().ct_eq(digest.as_bytes())))
+    {
+        return Err(forbidden());
+    }
+    let engine = runtime.engine();
+    let mut data = engine.vault.lock().map_err(storage)?;
+    if item.owner_hash.is_none() {
+        data.merchants
+            .get_mut(&item.id)
+            .ok_or_else(forbidden)?
+            .owner_hash = Some(digest.clone());
+        data.changed();
+    }
+    Ok(json!({"merchant_id":item.id,"owner_hash":digest,"merchant_control_version":1}))
+}
+pub(crate) fn authorize_binding(runtime: &Runtime, token: &str) -> Result<Registration, ApiError> {
+    let (enrollment, owner) = crypto::control_token(token)?;
+    let item = authenticate_enrollment(runtime, enrollment)?;
+    let digest = crypto::digest(owner);
+    if item
+        .owner_hash
+        .as_ref()
+        .is_some_and(|old| !bool::from(old.as_bytes().ct_eq(digest.as_bytes())))
+    {
+        return Err(forbidden());
+    }
+    Ok(item)
+}
 pub(crate) fn live(runtime: &Runtime, id: &str) -> Result<Arc<Live>, ApiError> {
     runtime
         .merchants
@@ -229,7 +279,7 @@ pub(crate) fn live(runtime: &Runtime, id: &str) -> Result<Arc<Live>, ApiError> {
             ApiError::new(
                 423,
                 "merchant_locked",
-                "Merchant must verify TEE and unlock its recovery capsule",
+                "Merchant must verify TEE and synchronize its local account configuration",
             )
         })
 }
@@ -254,7 +304,7 @@ pub(crate) async fn register(
     if !engine.authenticate_admin(secret) {
         return Err(forbidden());
     }
-    if !item.validate() || item.backup.is_some() {
+    if !item.validate() || item.backup.is_some() || item.owner_hash.is_some() {
         return Err(invalid());
     }
     let mut data = engine.vault.lock().map_err(storage)?;
@@ -269,7 +319,7 @@ pub(crate) async fn register(
         if old.credential_hash != item.credential_hash {
             return Err(forbidden());
         }
-        item.backup = old.backup.clone();
+        item.owner_hash = old.owner_hash.clone();
     }
     data.merchants.insert(item.id.clone(), item.clone());
     data.changed();
@@ -300,47 +350,10 @@ pub(crate) async fn unlock(
         }
         return state(runtime, &item);
     }
-    let recovery_key = crypto::key(token);
     let vault = Vault::memory().map_err(storage)?;
-    let (settings, admin) = if let Some(capsule) = &item.backup {
-        let mut recovery = crypto::open(&item.id, &recovery_key, capsule)?;
-        if recovery.settings.revision < minimum_revision {
-            return Err(ApiError::new(
-                409,
-                "merchant_rollback",
-                "Merchant revision is older than locally accepted state",
-            ));
-        }
-        crate::refusal::restore(&mut recovery.state).map_err(|_| invalid())?;
-        customers::restore(&mut recovery.state);
-        let bundle = recovery.state.bundle.as_ref().ok_or_else(invalid)?;
-        crate::pricing::migrate(
-            &mut recovery.settings,
-            &bundle.config,
-            &crate::pricing::book(runtime)?,
-        )?;
-        validate_bundle(bundle, &item, &recovery.settings)?;
-        let admin = bundle
-            .secrets
-            .get("merchant_internal_admin")
-            .cloned()
-            .ok_or_else(invalid)?;
-        vault.provision(bundle).map_err(|_| invalid())?;
-        recovery.state.pending_event_bytes = recovery
-            .state
-            .events
-            .iter()
-            .map(|e| serde_json::to_vec(e).map_or(0, |v| v.len()))
-            .sum();
-        *vault.lock().map_err(storage)? = recovery.state;
-        (recovery.settings, admin)
-    } else {
-        if minimum_revision > 1 {
-            return Err(ApiError::new(
-                409,
-                "merchant_backup_missing",
-                "Merchant recovery capsule is missing",
-            ));
+    let (settings, admin) = {
+        if minimum_revision > u64::MAX / 2 {
+            return Err(invalid());
         }
         let admin = format!(
             "{}{}",
@@ -356,6 +369,7 @@ pub(crate) async fn unlock(
             })
             .map_err(|_| invalid())?;
         let settings = Settings {
+            revision: minimum_revision.max(1),
             max_concurrent: item.max_concurrent.min(16),
             ..Settings::default()
         };
@@ -381,8 +395,7 @@ pub(crate) async fn unlock(
             runtime: child,
             settings: Mutex::new(settings),
             admin: zeroize::Zeroizing::new(admin),
-            recovery_key: zeroize::Zeroizing::new(recovery_key),
-            checkpoint_revision: Mutex::new(None),
+            configured: std::sync::atomic::AtomicBool::new(false),
             gate: Arc::default(),
             meter: Mutex::new(RateMeter {
                 start: Instant::now(),
@@ -391,49 +404,7 @@ pub(crate) async fn unlock(
             }),
         }),
     );
-    checkpoint_one(runtime, &item.id)?;
     state(runtime, &item)
-}
-
-pub(crate) fn checkpoint_one(runtime: &Runtime, id: &str) -> Result<(), ApiError> {
-    let live = live(runtime, id)?;
-    let settings = live.settings.lock().unwrap().clone();
-    let data = live.runtime.engine().vault.lock().map_err(storage)?.clone();
-    let revision = (data.generation, settings.revision);
-    let mut saved_revision = live.checkpoint_revision.lock().unwrap();
-    if *saved_revision == Some(revision) {
-        return Ok(());
-    }
-    let capsule = crypto::seal(
-        id,
-        &live.recovery_key,
-        &Recovery {
-            id: id.into(),
-            state: data,
-            settings,
-        },
-    )?;
-    let engine = runtime.engine();
-    let mut data = engine.vault.lock().map_err(storage)?;
-    data.merchants.get_mut(id).ok_or_else(forbidden)?.backup = Some(capsule);
-    data.changed();
-    *saved_revision = Some(revision);
-    Ok(())
-}
-pub(crate) async fn checkpoint_all(runtime: &Runtime) -> Result<(), ApiError> {
-    let _write = runtime.merchants.write.lock().await;
-    let ids: Vec<_> = runtime
-        .merchants
-        .live
-        .lock()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
-    for id in ids {
-        checkpoint_one(runtime, &id)?;
-    }
-    Ok(())
 }
 
 fn validate_bundle(
@@ -596,7 +567,9 @@ pub(crate) async fn apply(
         ));
     }
     let known = customers::known(&live)?;
-    if input.customers.iter().any(|c| !known.contains(&c.user_id)) {
+    if live.configured.load(std::sync::atomic::Ordering::Acquire)
+        && input.customers.iter().any(|c| !known.contains(&c.user_id))
+    {
         return Err(forbidden());
     }
     if input
@@ -680,7 +653,8 @@ pub(crate) async fn apply(
     validate_bundle(&candidate, &item, &settings)?;
     live.runtime.apply(update, &live.admin).await?;
     *live.settings.lock().unwrap() = settings;
-    checkpoint_one(runtime, &item.id)?;
+    live.configured
+        .store(true, std::sync::atomic::Ordering::Release);
     state(runtime, &item)
 }
 
@@ -712,6 +686,15 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     settings.customers = customers::visible(&live, &settings)?;
     let mut merchant = item.public(true);
     merchant.as_object_mut().unwrap().remove("users");
+    merchant["configuration_required"] =
+        (!live.configured.load(std::sync::atomic::Ordering::Acquire)).into();
+    merchant["runtime_id"] = engine
+        .vault
+        .lock()
+        .map_err(storage)?
+        .instance
+        .clone()
+        .into();
     let mut book = crate::pricing::book(runtime)?;
     book.providers.retain(|p| {
         engine
@@ -722,6 +705,7 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     });
     Ok(
         json!({"merchant":merchant,"settings":settings,"pools":pools,
+        "compatibility":engine.config.compatibility,"restrictions":engine.config.restrictions,
         "official_pricing":book,"accounts":engine.account_status()?,"status":engine.status(),"catalog":engine.discovery_status()}),
     )
 }

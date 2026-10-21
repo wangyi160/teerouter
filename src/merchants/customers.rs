@@ -61,6 +61,7 @@ pub(super) fn visible(live: &Live, settings: &Settings) -> Result<Vec<Customer>,
 
 // Old capsules have already ACKed their usage rows. Successful aggregate usage
 // is still positive evidence; registration and zero-use customer overrides are not.
+#[cfg(test)]
 pub(super) fn restore(data: &mut Data) {
     data.upstream_users
         .extend(data.refusal_queue.events.iter().map(|e| e.user_id.clone()));

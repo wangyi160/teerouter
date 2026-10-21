@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[tokio::test]
 async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_capacity() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let counter = Arc::new(AtomicUsize::new(0));
     let calls = counter.clone();

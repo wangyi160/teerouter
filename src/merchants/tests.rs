@@ -167,30 +167,39 @@ async fn checkpoint_diff_is_admin_only_and_survives_explicit_quiesce() {
 }
 
 #[tokio::test]
-async fn unchanged_merchant_capsules_are_not_reencrypted_by_checkpoint_reads() {
+async fn private_merchant_changes_never_enter_platform_checkpoints() {
     let r = root();
-    let merchant = add(&r, &"a".repeat(64)).await;
-    checkpoint_all(&r).await.unwrap();
+    let merchant = add(&r, &control("a")).await;
     let before = r.engine().vault.checkpoint().unwrap();
-    checkpoint_all(&r).await.unwrap();
-    assert_eq!(r.engine().vault.checkpoint().unwrap(), before);
     {
         let engine = merchant.runtime.engine();
         let mut data = engine.vault.lock().unwrap();
+        data.bundle
+            .as_mut()
+            .unwrap()
+            .secrets
+            .insert("upstream".into(), "ROTATED_PRIVATE_TOKEN".into());
         data.upstream_users.insert("alice".into());
         data.changed();
     }
-    checkpoint_all(&r).await.unwrap();
-    assert_ne!(
-        r.engine().vault.checkpoint().unwrap()["state"]["merchants"],
-        before["state"]["merchants"]
-    );
+    let after = r.engine().vault.checkpoint().unwrap();
+    assert_eq!(before, after);
+    let encoded = after.to_string();
+    for forbidden in [
+        "MERCHANT_PRIVATE",
+        "ROTATED_PRIVATE_TOKEN",
+        "ciphertext",
+        "backup",
+        "owner:",
+    ] {
+        assert!(!encoded.contains(forbidden), "{forbidden}");
+    }
 }
 
 #[tokio::test]
 async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let merchant = add(&r, &token).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
     let body = json!({"boot_id":r.engine().vault.boot_id,"quiescing":true});
@@ -459,7 +468,7 @@ async fn public_price_book_is_read_only_and_independent_of_account_inventory() {
 #[tokio::test]
 async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let mut change = update(2);
     change["pool_pricing"][0]["multiplier_millionths"] = json!(200000);
@@ -574,7 +583,7 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
 #[tokio::test]
 async fn legacy_prices_migrate_only_when_the_whole_pool_has_one_exact_multiplier() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let config = live.runtime.engine().config.clone();
     let book = crate::pricing::book(&r).unwrap();
@@ -624,14 +633,22 @@ fn root() -> Arc<Runtime> {
     runtime.engine().vault.lock().unwrap().official_pricing = serde_json::from_value(json!({"revision":1,"providers":[{"provider":"openai","version":1,"source":"https://developers.openai.com/api/docs/pricing","checked_at":1,"models":[{"model":"model-test","rates":{"input":1000000,"output":2000000}}]}]})).unwrap();
     runtime
 }
+fn control(character: &str) -> String {
+    format!(
+        "{}.{}",
+        character.repeat(64),
+        crypto::digest(&format!("owner:{character}"))
+    )
+}
 fn registration(token: &str) -> Registration {
-    serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["alice"]})).unwrap()
+    serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token.split('.').next().unwrap()),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["alice"]})).unwrap()
 }
 fn update(revision: u64) -> Value {
     json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[],"pool_pricing":[{"pool":"official","multiplier_millionths":1000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
 }
 async fn add(root: &Runtime, token: &str) -> Arc<Live> {
     register(root, registration(token), ADMIN).await.unwrap();
+    bind(root, token).await.unwrap();
     unlock(root, token, 0).await.unwrap();
     apply(root, token, serde_json::from_value(update(1)).unwrap())
         .await
@@ -753,7 +770,7 @@ async fn platform_rejects_upstream_configuration_and_unowned_requests() {
             .unwrap()
             .is_empty()
     );
-    let token = "a".repeat(64);
+    let token = control("a");
     let merchant = add(&runtime, &token).await;
     let _upstream = fixture(&merchant, completion()).await;
     assert_eq!(call(&server,Method::POST,"/v1/chat/completions","alice-key",
@@ -763,8 +780,8 @@ async fn platform_rejects_upstream_configuration_and_unowned_requests() {
 #[tokio::test]
 async fn unified_platform_rpm_is_shared_across_merchants() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let la = add(&r, &a).await;
     let lb = add(&r, &b).await;
     let _ma = fixture(&la, completion()).await;
@@ -798,7 +815,7 @@ async fn unified_platform_rpm_is_shared_across_merchants() {
 #[tokio::test]
 async fn merchant_concurrency_cap_is_enforced_and_released() {
     let r = root();
-    let a = "a".repeat(64);
+    let a = control("a");
     let l = add(&r, &a).await;
     let _mock = fixture(&l, completion()).await;
     let mut registration = registration(&a);
@@ -837,8 +854,8 @@ async fn merchant_concurrency_cap_is_enforced_and_released() {
 #[tokio::test]
 async fn namespaced_model_acl_accepts_only_its_merchant() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let la = add(&r, &a).await;
     let lb = add(&r, &b).await;
     let _ma = fixture(&la, completion()).await;
@@ -872,7 +889,7 @@ async fn namespaced_model_acl_accepts_only_its_merchant() {
 #[tokio::test]
 async fn workbuddy_needs_merchant_permission_and_cannot_be_an_official_fallback() {
     let r = root();
-    let a = "a".repeat(64);
+    let a = control("a");
     add(&r, &a).await;
     let mut v = update(2);
     v["pools"][0]["provider"] = "workbuddy".into();
@@ -903,8 +920,8 @@ async fn workbuddy_needs_merchant_permission_and_cannot_be_an_official_fallback(
 #[tokio::test]
 async fn merchant_credentials_are_separate_and_root_backups_are_opaque() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     add(&r, &a).await;
     add(&r, &b).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
@@ -922,17 +939,17 @@ async fn merchant_credentials_are_separate_and_root_backups_are_opaque() {
     assert_eq!(value["merchant"]["id"], crypto::identity(&a));
     assert!(!value.to_string().contains("MERCHANT_PRIVATE"));
     assert!(!value.to_string().contains(&crypto::identity(&b)));
-    checkpoint_all(&r).await.unwrap();
     let serialized = serde_json::to_string(&*r.engine().vault.lock().unwrap()).unwrap();
     assert!(!serialized.contains("MERCHANT_PRIVATE"));
     assert!(!serialized.contains(&a));
-    assert!(serialized.contains("ciphertext"));
+    assert!(!serialized.contains("ciphertext"));
+    assert!(!serialized.contains("backup"));
 }
 
 #[tokio::test]
 async fn updates_cannot_select_foreign_users_internal_secrets_or_untrusted_endpoints() {
     let r = root();
-    let a = "a".repeat(64);
+    let a = control("a");
     add(&r, &a).await;
     let mut cases = vec![];
     let mut v = update(2);
@@ -974,24 +991,40 @@ async fn updates_cannot_select_foreign_users_internal_secrets_or_untrusted_endpo
 }
 
 #[tokio::test]
-async fn recovery_rejects_tampering_wrong_identity_and_revision_rollback() {
+async fn restart_requires_merchant_resync_and_platform_secret_cannot_control_accounts() {
     let r = root();
-    let a = "a".repeat(64);
-    add(&r, &a).await;
-    let id = crypto::identity(&a);
-    let backup = records(&r).unwrap()[0].backup.clone().unwrap();
-    assert!(crypto::open(&id, &crypto::key(&"b".repeat(64)), &backup).is_err());
-    assert!(crypto::open("another-merchant", &crypto::key(&a), &backup).is_err());
-    let mut bad = backup.clone();
-    bad.ciphertext.replace_range(0..4, "AAAA");
-    assert!(crypto::open(&id, &crypto::key(&a), &bad).is_err());
-    r.merchants.live.lock().unwrap().clear();
-    assert!(unlock(&r, &a, 3).await.is_err());
-    let restored = unlock(&r, &a, 2).await.unwrap();
-    assert_eq!(restored["settings"]["revision"], 2);
-    assert_eq!(restored["settings"]["customers"], json!([]));
+    let token = control("a");
+    add(&r, &token).await;
+    let id = crypto::identity(&token);
+    let enrollment = token.split('.').next().unwrap();
+    assert!(authenticate(&r, enrollment).is_err());
+    assert!(
+        bind(&r, &format!("{enrollment}.{}", "f".repeat(64)))
+            .await
+            .is_err()
+    );
+    let mut forged = registration(&token);
+    forged.owner_hash = Some("f".repeat(64));
+    assert!(register(&r, forged, ADMIN).await.is_err());
+    register(&r, registration(&token), ADMIN).await.unwrap();
+    assert!(authenticate(&r, &token).is_ok());
+    let checkpoint = r.engine().vault.checkpoint().unwrap();
     assert_eq!(
-        live(&r, &id)
+        checkpoint["state"]["merchants"][&id]["owner_hash"],
+        crypto::digest(token.split('.').nth(1).unwrap())
+    );
+    assert!(
+        checkpoint["state"]["merchants"][&id]
+            .get("backup")
+            .is_none()
+    );
+    r.merchants.live.lock().unwrap().clear();
+    let restored = unlock(&r, &token, 9).await.unwrap();
+    assert_eq!(restored["settings"]["revision"], 9);
+    assert_eq!(restored["merchant"]["configuration_required"], true);
+    assert_eq!(restored["pools"], json!([]));
+    assert!(
+        !live(&r, &id)
             .unwrap()
             .runtime
             .engine()
@@ -999,16 +1032,23 @@ async fn recovery_rejects_tampering_wrong_identity_and_revision_rollback() {
             .snapshot()
             .unwrap()
             .bundle
-            .secrets["upstream"],
-        "MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"
+            .secrets
+            .contains_key("upstream")
+    );
+    apply(&r, &token, serde_json::from_value(update(9)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        state(&r, &authenticate(&r, &token).unwrap()).unwrap()["merchant"]["configuration_required"],
+        false
     );
 }
 
 #[tokio::test]
 async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let la = add(&r, &a).await;
     let lb = add(&r, &b).await;
     let _ma = fixture(&la, completion()).await;
@@ -1104,7 +1144,7 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
 #[tokio::test]
 async fn explicit_selection_prices_and_revocation_fail_closed() {
     let r = root();
-    let a = "a".repeat(64);
+    let a = control("a");
     let l = add(&r, &a).await;
     let _mock = fixture(&l, completion()).await;
     let id = crypto::identity(&a);
@@ -1154,8 +1194,8 @@ async fn explicit_selection_prices_and_revocation_fail_closed() {
 #[tokio::test]
 async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let la = add(&r, &a).await;
     let lb = add(&r, &b).await;
     let _ma = fixture(&la, completion()).await;
@@ -1197,8 +1237,8 @@ async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
 #[tokio::test]
 async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_and_restore() {
     let r = root();
-    let a = "a".repeat(64);
-    let b = "b".repeat(64);
+    let a = control("a");
+    let b = control("b");
     let la = add(&r, &a).await;
     add(&r, &b).await;
     let mut reg = registration(&a);
@@ -1324,9 +1364,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         .0,
         200
     );
-    checkpoint_all(&r).await.unwrap();
-    r.merchants.live.lock().unwrap().clear();
-    let restored = unlock(&r, &a, 5).await.unwrap();
+    let restored = super::state(&r, &authenticate(&r, &a).unwrap()).unwrap();
     assert_eq!(
         restored["settings"]["customers"].as_array().unwrap().len(),
         1
@@ -1352,7 +1390,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
 #[tokio::test]
 async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
     let r = root();
-    let token = "a".repeat(64);
+    let token = control("a");
     let live = add(&r, &token).await;
     let engine = live.runtime.engine();
     customers::ensure(&live, "alice").await.unwrap();
