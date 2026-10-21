@@ -12,8 +12,11 @@ fn bundle(provider: Provider, proxies: &[String], base: &str) -> Provision {
     let mut deployments = Vec::new();
     for (i, proxy) in proxies.iter().enumerate() {
         let name = format!("account-{i}");
-        accounts.insert(name.clone(), json!({"provider":provider,"proxy":proxy,
-            "credential":{"access_token":format!("sk-ant-oat-token-{i}"),"expires_at":expiry,"expiry_date":expiry*1000}}));
+        accounts.insert(
+            name.clone(),
+            json!({"provider":provider,"proxy":proxy,
+            "credential":{"access_token":format!("sk-ant-oat-token-{i}"),"expires_at":expiry}}),
+        );
         deployments.push(json!({"id":name,"provider":provider,"model":"actual-model","oauth_account":name,"api_base":base}));
     }
     serde_json::from_value(json!({"config":{

@@ -87,11 +87,7 @@ pub(super) async fn test(
         .cloned()
         .unwrap_or_default();
     let http = crate::network::http_client(provider, &input.proxy, 45).map_err(|_| invalid())?;
-    let client = if let Some(mut credential) = input.credential {
-        // Testing must never rotate a refresh token before the user has saved it.
-        if let Some(object) = credential.as_object_mut() {
-            object.remove("refresh_token");
-        }
+    let client = if let Some(credential) = input.credential {
         let vault = Vault::memory().map_err(storage)?;
         if vault
             .import_account("probe", provider, &credential)

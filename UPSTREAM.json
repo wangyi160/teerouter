@@ -19,8 +19,8 @@
       "target": [
         "src/oauth/tokens.rs"
       ],
-      "retained": "Client ID, JSON refresh, token schema, JWT expiry/account metadata and refresh skew.",
-      "adaptations": "Credentials are imported externally. Device login, authorization-code exchange, cooldown and browser flows are removed. Async reqwest uses account proxy, bounded timeout, revision-conditional in-memory updates, checkpoint export for external persistence, and a shared per-account refresh lock. JWT decoding reads metadata only; vendor validates the token."
+      "retained": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
+      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
     },
     {
       "source": "litellm:litellm/llms/chatgpt/responses/transformation.py and litellm/llms/chatgpt/common_utils.py",
@@ -51,8 +51,8 @@
         "src/oauth/tokens.rs",
         "src/client.rs"
       ],
-      "retained": "Token endpoint discovery, official HTTPS endpoint validation, client ID, form token refresh, refresh-token retention, expiry skew and double-check locking.",
-      "adaptations": "External credential import only; no browser login, PKCE, callback server or authorization-code exchange. Discovery reads only token_endpoint. Proxy bindings, management checkpoint persistence and cross-generation refresh coordination are router integration."
+      "retained": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
+      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
     },
     {
       "source": "litellm:litellm-rust/crates/llms/src/anthropic/common_utils.rs",
@@ -66,7 +66,7 @@
         "src/client.rs"
       ],
       "retained": "Raw sk-ant-oat token or one exact Bearer prefix, Authorization instead of x-api-key, sorted deduplicated oauth-2025-04-20 beta and dangerous-direct-browser-access companion.",
-      "adaptations": "HeaderMap replaces upstream header types. Read-only Claude Code JSON import is integration code. Full Claude consumer login/refresh was not found in the audited modules and is not claimed as implemented."
+      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
     },
     {
       "source": "litellm:litellm/completion_extras/litellm_responses_transformation/transformation.py",
@@ -110,11 +110,11 @@
       "tests/router.rs",
       "tests/completion.rs"
     ],
-    "scope": "Local HTTP fixtures exercise refresh formats, token rotation, single-flight, retries, externally imported credentials, provider headers, native/Chat conversion, SSE, multi-account failover, dynamic configuration, limits, in-memory checkpoints. These tests do not authenticate to real vendor accounts."
+    "scope": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "proxy_adaptation": {
     "implementation": "New Rust network/storage integration; upstream OAuth algorithms retained.",
-    "behavior": "Mandatory explicit HTTP/HTTPS/SOCKS5H account proxy for official providers; credentials/configuration are kept in router memory and exported through authenticated checkpoints for encrypted persistence by an external management service. Model, discovery, and refresh calls use the same binding. No environment proxy or direct fallback. The optional Workbuddy lab provider may explicitly use direct:// for its compiled localhost endpoint."
+    "behavior": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "discovery_adaptation": {
     "implementation": "New Rust catalog refresh, cache and dynamic routing integration, using upstream/provider wire formats; no hardcoded model IDs.",
@@ -161,8 +161,8 @@
       "tests/router/operations.rs"
     ],
     "behavior": "Validated configuration generations, atomic in-memory updates, account health, bounded session affinity and shared limits. Checkpoints contain no request bodies or ordinary responses; explicit refusal text and public refusal metadata are retained for administrator audit; management persists then acknowledges them. The router has no money accounting, database or backup file.",
-    "compatibility": "Declarative per-operation outbound header/query/JSON/form metadata edits after provider conversion, hot-updatable in memory and checkpointed by management. Official HTTPS hosts are compiled-in. OAuth URLs cannot be configured; OpenAI refresh URL and the xAI discovery URL are constants. Content-Type/Accept and transport headers are router-managed. Caller messages, instructions, tools, attachments, generation controls, model/reasoning values, credentials, identity and HTTP framing remain protected, including nested values and ancestor edits. Responses and OpenAI Chat Completions force store=false. Version/stream/include metadata can be adjusted subject to existing response parsers. Fixed provider adapters still require image review. Major protocol changes may still require upgrades.",
-    "excluded": "No full independent platform/KMS audit, strict prepaid billing or zero-loss persistence. Unknown models/reasoning fail closed against authenticated upstream discovery. Claude consumer refresh remains externally managed."
+    "compatibility": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
+    "excluded": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "official_passthrough_adaptation": {
     "implementation": "New teellm Rust code; not copied from LiteLLM.",
@@ -181,7 +181,7 @@
       "tests/router/compatibility.rs",
       "protocol-update.example.json"
     ],
-    "validation": "Local fixtures verify the three retained OAuth providers' version/header/query/nested-body updates, live replacement, protected-field rejection, JSON-pointer behavior, form encoding, refresh, catalog queries and native operations beneath streaming Chat bridges. Example version numbers describe fixture behavior, not vendor-required live versions."
+    "validation": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "administrator_restrictions": {
     "implementation": "New Rust deny-only policy, independent of immutable authenticated official catalog evidence.",

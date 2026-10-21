@@ -151,7 +151,6 @@ impl Engine {
                         .map_err(|e| format!("deployment {}: {e}", deployment.id))?;
                         let store = Arc::get_mut(&mut account).unwrap();
                         store.profile = profile.clone();
-                        store.refresh_ahead = config.operations.refresh_ahead_secs;
                         oauth_accounts.insert(index, account.clone());
                         account
                     };

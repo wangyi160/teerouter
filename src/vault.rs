@@ -129,7 +129,6 @@ pub struct Vault {
     pub(crate) data: Mutex<Data>,
     pub(crate) boot_id: String,
     sync: Mutex<SyncState>,
-    locks: Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     user_gates: Mutex<BTreeMap<String, std::sync::Weak<crate::resources::Gate>>>,
 }
 pub(crate) fn random_id() -> Result<String> {
@@ -159,7 +158,6 @@ impl Vault {
                 confirmed: None,
                 diff_base: None,
             }),
-            locks: Mutex::new(BTreeMap::new()),
             user_gates: Mutex::new(BTreeMap::new()),
         }))
     }
@@ -211,6 +209,13 @@ impl Vault {
             .is_some_and(|t| t.elapsed().as_secs() < 630)
     }
     pub(crate) fn initialize(&self, mut data: Data) -> Result<()> {
+        if let Some(bundle) = &data.bundle {
+            for account in bundle.accounts.values() {
+                if !account.credential.as_object().is_some_and(|m| m.is_empty()) {
+                    validate_credential(account.provider, &account.credential)?;
+                }
+            }
+        }
         for merchant in data.merchants.values_mut() {
             merchant.backup = None;
         }
@@ -533,6 +538,7 @@ impl Vault {
     }
     pub fn put_account(&self, name: &str, provider: Provider, record: &Value) -> Result<()> {
         validate_account(name, record)?;
+        validate_credential(provider, record)?;
         let mut data = self.lock()?;
         let bundle = data.bundle.get_or_insert_with(|| Provision {
             config: serde_json::from_value(
@@ -560,26 +566,6 @@ impl Vault {
     pub fn import_account(&self, name: &str, provider: Provider, record: &Value) -> Result<()> {
         validate_credential(provider, record)?;
         self.put_account(name, provider, record)
-    }
-    pub(crate) fn refresh_account(
-        &self,
-        name: &str,
-        revision: i64,
-        record: &Value,
-    ) -> Result<bool> {
-        let mut data = self.lock()?;
-        if data.account_revisions.get(name) != Some(&revision) {
-            return Ok(false);
-        }
-        let account = data
-            .bundle
-            .as_mut()
-            .and_then(|b| b.accounts.get_mut(name))
-            .ok_or(VaultError("account missing"))?;
-        account.credential = record.clone();
-        data.account_revisions.insert(name.into(), revision + 1);
-        data.changed();
-        Ok(true)
     }
     pub fn provision(&self, bundle: &Provision) -> Result<()> {
         if serde_json::to_vec(bundle)
@@ -661,7 +647,7 @@ impl Vault {
         }
         for (name, account) in &bundle.accounts {
             validate_account(name, &account.credential)?;
-            if account.enabled && !account.credential.as_object().is_some_and(|m| m.is_empty()) {
+            if !account.credential.as_object().is_some_and(|m| m.is_empty()) {
                 validate_credential(account.provider, &account.credential)?;
             }
             self.provisioned_proxy(bundle, name, account.provider)?;
@@ -835,35 +821,86 @@ fn validate_credential(provider: Provider, record: &Value) -> Result<()> {
         }
         return Ok(());
     }
-    if provider == Provider::XAI
-        && let Some(endpoint) = record.get("token_endpoint")
-    {
-        let endpoint = endpoint
-            .as_str()
-            .ok_or(VaultError("invalid xAI token endpoint"))?;
-        crate::oauth::tokens::validate_xai_endpoint(endpoint)
-            .map_err(|_| VaultError("xAI token endpoint requires an official HTTPS host"))?;
+    let fields = record
+        .as_object()
+        .ok_or(VaultError("credential must be an object"))?;
+    if fields.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "access_token"
+                | "expires_at"
+                | "account_id"
+                | "id_token"
+                | "token_type"
+                | "scope"
+                | "claudeAiOauth"
+        )
+    }) {
+        return Err(VaultError(
+            "access-token-only protocol: refresh tokens and unknown credential fields are forbidden",
+        ));
     }
-    let value = if provider == Provider::Anthropic && record.get("claudeAiOauth").is_some() {
-        &record["claudeAiOauth"]["accessToken"]
+    let value = if let Some(legacy) = record.get("claudeAiOauth") {
+        if provider != Provider::Anthropic
+            || fields.len() != 1
+            || legacy.as_object().is_none_or(|o| {
+                o.keys().any(|k| {
+                    !matches!(
+                        k.as_str(),
+                        "accessToken"
+                            | "expiresAt"
+                            | "scopes"
+                            | "subscriptionType"
+                            | "rateLimitTier"
+                    )
+                })
+            })
+        {
+            return Err(VaultError(
+                "access-token-only protocol: invalid Claude credential fields",
+            ));
+        }
+        for key in ["subscriptionType", "rateLimitTier"] {
+            if legacy
+                .get(key)
+                .is_some_and(|v| !v.is_string() && !v.is_null())
+            {
+                return Err(VaultError("invalid Claude metadata"));
+            }
+        }
+        if legacy.get("scopes").is_some_and(|v| {
+            v.as_array()
+                .is_none_or(|a| a.iter().any(|v| !v.is_string()))
+        }) {
+            return Err(VaultError("invalid Claude scopes"));
+        }
+        if legacy
+            .get("expiresAt")
+            .is_some_and(|v| v.as_f64().is_none_or(|n| !n.is_finite() || n <= 0.0))
+        {
+            return Err(VaultError("invalid expiry"));
+        }
+        &legacy["accessToken"]
     } else {
         &record["access_token"]
     };
-    if value.as_str().is_none_or(str::is_empty)
-        && record["refresh_token"].as_str().is_none_or(str::is_empty)
-    {
-        return Err(VaultError("account has no access or refresh token"));
-    }
-    for token in [value, &record["refresh_token"]]
-        .into_iter()
-        .filter(|v| !v.is_null())
-    {
-        let token = token
-            .as_str()
-            .ok_or(VaultError("credential token must be text"))?;
-        if token.len() > 65536 || reqwest::header::HeaderValue::from_str(token).is_err() {
-            return Err(VaultError("invalid credential token"));
+    for key in ["account_id", "id_token", "scope", "token_type"] {
+        if record.get(key).is_some_and(|v| !v.is_string()) {
+            return Err(VaultError("credential metadata must be text"));
         }
+    }
+    if record
+        .get("expires_at")
+        .is_some_and(|v| v.as_f64().is_none_or(|n| !n.is_finite() || n <= 0.0))
+    {
+        return Err(VaultError("expiry must be a positive Unix timestamp"));
+    }
+    let token = value
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or(VaultError("account requires access_token"))?;
+    if token.len() > 65536 || reqwest::header::HeaderValue::from_str(token).is_err() {
+        return Err(VaultError("invalid access token"));
     }
     if record.to_string().len() > 1024 * 1024 {
         return Err(VaultError("credential record exceeds limit"));

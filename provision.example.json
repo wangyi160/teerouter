@@ -42,7 +42,6 @@
       "proxy": "http://REPLACE_USER:REPLACE_PASSWORD@127.0.0.1:18081",
       "credential": {
         "access_token": "REPLACE_WITH_ACCESS_TOKEN",
-        "refresh_token": "REPLACE_WITH_REFRESH_TOKEN",
         "expires_at": 1
       }
     }

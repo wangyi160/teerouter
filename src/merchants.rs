@@ -15,6 +15,7 @@ use std::{
     time::Instant,
 };
 use subtle::ConstantTimeEq;
+mod access;
 mod crypto;
 mod customers;
 pub(crate) mod http;
@@ -688,7 +689,7 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     merchant.as_object_mut().unwrap().remove("users");
     merchant["configuration_required"] =
         (!live.configured.load(std::sync::atomic::Ordering::Acquire)).into();
-    merchant["credential_sync_version"] = 1.into();
+    merchant["credential_protocol"] = "access-token-only-v1".into();
     merchant["runtime_id"] = engine
         .vault
         .lock()

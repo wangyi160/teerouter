@@ -27,7 +27,7 @@
 | `POST /merchant/bind` | 绑定本机独立控制密钥；仅同一密钥可以重复绑定 |
 | `POST /merchant/unlock` | `{"minimum_revision":0}`；创建商户内存状态，重启后 `configuration_required:true` 表示需要从本机同步账号配置 |
 | `GET /merchant/state` | 本商户设置、账号状态、账号池与目录；不返回账号凭证 |
-| `GET /merchant/accounts/credentials` | 仅独立控制密钥认证的本商户可读取自身 OAuth 凭据，供商户本机保存续期结果；平台管理密钥、接入凭证及其他商户均无权读取 |
+| `PUT /merchant/accounts/access` | 仅独立控制密钥认证的本商户可增量上传 access token，支持幂等重试；平台与其他商户无权操作 |
 | `PUT /merchant/config` | 完整配置更新，须带 `expected_revision`，冲突返回 409 |
 | `POST /merchant/models/refresh` | 刷新官方模型目录 |
 | `POST /merchant/accounts/test` | 测试尚未保存的凭证与代理；不修改账号或配置 |
@@ -95,10 +95,26 @@
 
 每个商户有独立内存 runtime。账号令牌、代理认证和私有配置只保存在商户本机及运行中的 TEE 内存；平台快照不包含商户秘密恢复胶囊，旧快照中的胶囊被忽略且不会再次导出。Router 重启后先由平台恢复公开登记及用户配置，再由商户验证 TEE、核对控制密钥绑定并从本机同步完整账号配置。商户必须保护本机身份和账号资料，平台不能代为恢复这些秘密。
 
-商户端可在连接时及定期状态同步时取回续期后的 OAuth 凭据并加密保存。若商户离线期间 Router 完成令牌轮换，随后在本机保存之前崩溃，最新令牌仍可能丢失，需要重新授权；本机保存不是与上游令牌轮换之间的原子事务。
+商户服务负责续期并先保存最新凭据，再通过 TEE 通道上传 access token；Router 不持有 refresh token。
 
 商户和平台分别接收用量及拒答事件。商户只能查询自己的记录；平台仍可审计平台用户跨商户的调用。拒答只保存明确拒答信号、原文及元数据，不保存请求正文。商户删除自身队列不会删除平台队列；平台也不能通过全局前缀删除影响商户队列。
 
 本地管理端应先提交持久化事务，再确认队列前缀。队列积压至限制时暂停新调用。TPM 根据已观察到的完成用量计算，正在进行的请求可能造成短时超出。周期快照仍有崩溃丢失窗口；配置版本可检测旧配置，不能证明平台没有扣留最新审计数据。
 
 商户控制密钥与财务流水签名是不同的权限。流水持久化及签名见对应协议；这些记录不得携带上游账号凭据。TEE 信任仍依赖客户端审核的镜像和本地策略；平台可停止服务，但不能令审核过的客户端接受任意替换镜像。
+
+## Access-token-only v1
+
+`merchant.credential_protocol` 为 `access-token-only-v1`。Router 不实现 OAuth 授权或续期，不接受或保存 refresh token。官方账号凭据仅支持 `access_token`、`expires_at`（Unix 秒）和可选 `account_id` 等明确的 access 元数据；`refresh_token`、`refreshToken`、空 refresh 字段、嵌套 refresh 字段与未识别字段均拒绝。规则覆盖初始化、账号导入、配置更新、停用账号和临时测试。兼容 Claude access-only 包装，但包装内不得含 refreshToken。Workbuddy 静态 API key 不变。
+
+商户自行保存、续期完整凭据，经独立所有者密钥认证的 TEE 通道仅同步 access token。平台管理员不接触该通道。旧的凭据取回接口与 `/admin/accounts/{name}/refresh` 已删除，`operations.refresh_ahead_secs`、`oauth_refresh`、`oauth_discovery` 请求配置不再支持。
+
+增量上传：`PUT /merchant/accounts/access`，请求：
+
+```json
+{"runtime_id":"from-merchant-state","accounts":{"alias":{"expected_access_sha256":"previous-access-token-sha256","credential":{"access_token":"NEW_ACCESS_TOKEN","expires_at":2000000000}}}}
+```
+
+完整处理在商户配置写锁内执行。旧实例返回 `merchant_runtime_changed`；旧摘要覆盖返回 `account_credential_changed`；带 refresh 等非法字段返回 `access_token_only`。完全相同的凭据重试直接返回成功，不增加账号版本。只更新已存在账号凭据，不改变池、客户或商户配置版本。返回商户状态及 `accounts.data[].access_sha256` 供重试核对。该摘要仅对账号所有者可见。
+
+商户服务停止后，现有 access token 在有效期内仍可使用；过期或官方拒绝后停止该账号，等待商户上传更新。Router 重启后从商户恢复 access-only 配置，最新 refresh token 始终由商户保存。

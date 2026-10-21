@@ -116,10 +116,6 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
             "/admin/accounts/{name}",
             axum::routing::put(admin_account_update).delete(admin_account_delete),
         )
-        .route(
-            "/admin/accounts/{name}/refresh",
-            post(admin_account_refresh),
-        )
         .route("/admin/checkpoint", get(admin_checkpoint))
         .route("/admin/checkpoint/diff", post(admin_checkpoint_diff))
         .route("/admin/receipts/evidence", post(admin_receipt_evidence))

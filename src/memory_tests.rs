@@ -1,26 +1,19 @@
 use super::*;
 fn bundle() -> Provision {
     serde_json::from_value(json!({"config":{"server":{"admin_key_ref":"admin","allow_empty_routes":true},"users":[{"id":"test-user"}],"keys":[{"name":"client","user_id":"test-user","key_ref":"client"}],"models":[]},
-        "secrets":{"admin":"admin-secret","client":"client-secret"},"accounts":{"one":{"provider":"openai","credential":{"access_token":"old","refresh_token":"refresh"},"proxy":"http://127.0.0.1:7897"}}})).unwrap()
+        "secrets":{"admin":"admin-secret","client":"client-secret"},"accounts":{"one":{"provider":"openai","credential":{"access_token":"old"},"proxy":"http://127.0.0.1:7897"}}})).unwrap()
 }
 #[tokio::test]
 async fn account_status_reports_jwt_expiry_and_external_renewal_without_maintenance() {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let v = Vault::memory().unwrap();
     v.provision(&bundle()).unwrap();
-    for (name, expiry, automatic) in [
-        ("expired", 1u64, false),
-        ("valid", 4102444800, false),
-        ("renewable", 1, true),
-    ] {
+    for (name, expiry, _automatic) in [("expired", 1u64, false), ("valid", 4102444800, false)] {
         let token = format!(
             "e30.{}.fixture",
             URL_SAFE_NO_PAD.encode(json!({"exp":expiry}).to_string())
         );
-        let mut record = json!({"access_token":token});
-        if automatic {
-            record["refresh_token"] = "fixture-refresh".into();
-        }
+        let record = json!({"access_token":token});
         v.put_account(name, Provider::XAI, &record).unwrap();
     }
     let engine = crate::router::Engine::from_vault(v).unwrap();
@@ -39,26 +32,17 @@ async fn account_status_reports_jwt_expiry_and_external_renewal_without_maintena
     assert_eq!(account("valid")["health"]["state"], "active");
     assert_eq!(account("valid")["expires_at"], 4102444800.0);
     assert_eq!(account("valid")["refresh_mode"], "external");
-    assert_eq!(account("renewable")["refresh_mode"], "automatic");
-    assert_eq!(account("renewable")["health"]["state"], "active");
     assert!(!status.to_string().contains("fixture"));
 }
 #[test]
-fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
+fn checkpoint_tracks_access_updates_and_keeps_concurrent_changes_after_ack() {
     let v = Vault::memory().unwrap();
     v.provision(&bundle()).unwrap();
     v.require_manager();
     let initial = v.lock().unwrap().clone();
     v.initialize(initial).unwrap();
-    let (_, revision) = v.account("one", Provider::OpenAI).unwrap();
-    assert!(
-        v.refresh_account(
-            "one",
-            revision,
-            &json!({"access_token":"new","refresh_token":"rotated"})
-        )
-        .unwrap()
-    );
+    v.put_account("one", Provider::OpenAI, &json!({"access_token":"new"}))
+        .unwrap();
     let ledger = crate::ledger::Ledger::new(v.clone());
     ledger.record(
         "client",
@@ -71,8 +55,8 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
     );
     let saved = v.checkpoint().unwrap();
     assert_eq!(
-        saved["state"]["bundle"]["accounts"]["one"]["credential"]["refresh_token"],
-        "rotated"
+        saved["state"]["bundle"]["accounts"]["one"]["credential"]["access_token"],
+        "new"
     );
     ledger.record(
         "client",
@@ -118,13 +102,13 @@ fn checkpoint_tracks_rotated_tokens_and_keeps_concurrent_changes_after_ack() {
     assert_ne!(next.boot_id, v.boot_id);
     assert!(next.serving());
     assert_eq!(
-        next.account("one", Provider::OpenAI).unwrap().0["refresh_token"],
-        "rotated"
+        next.account("one", Provider::OpenAI).unwrap().0["access_token"],
+        "new"
     );
     assert!(next.acknowledge(&v.boot_id, 0, 0, BTreeMap::new()).is_err());
 }
 #[test]
-fn refresh_cas_atomic_updates_and_identity_affinity_are_preserved() {
+fn access_cas_atomic_updates_and_identity_affinity_are_preserved() {
     let v = Vault::memory().unwrap();
     v.provision(&bundle()).unwrap();
     v.bind_session(
@@ -136,21 +120,17 @@ fn refresh_cas_atomic_updates_and_identity_affinity_are_preserved() {
         100,
     )
     .unwrap();
-    let (_, rev) = v.account("one", Provider::OpenAI).unwrap();
     let snapshot = v.snapshot().unwrap();
     let update = operations::Update {
         accounts: BTreeMap::from([(
             "one".into(),
-            json!({"credential":{"access_token":"replacement","refresh_token":"new-refresh"}}),
+            json!({"credential":{"access_token":"replacement"}}),
         )]),
         ..Default::default()
     };
     let candidate = snapshot.updated(&update).unwrap();
     assert!(v.commit_update(&snapshot, &candidate, &update).unwrap());
-    assert!(
-        !v.refresh_account("one", rev, &json!({"access_token":"stale"}))
-            .unwrap()
-    );
+    assert!(!v.commit_update(&snapshot, &candidate, &update).unwrap());
     assert_eq!(
         v.binding("client", "response", "response-1")
             .unwrap()

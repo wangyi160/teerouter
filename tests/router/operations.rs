@@ -60,12 +60,10 @@ async fn credential_read_is_admin_only_uncached_and_returns_current_account_reco
     assert_eq!(record["credential"], before.0);
     assert_eq!(record["revision"], before.1);
     assert!(record.get("proxy").is_none());
-    let refreshed = json!({"access_token":"sk-ant-oat-DISPLAY_NEW", "refresh_token":"REFRESH_JSON_SENTINEL", "expires_at":4102444800u64, "extra":{"keep":true}});
-    assert!(
-        vault
-            .refresh_account("account-0", before.1, &refreshed)
-            .unwrap()
-    );
+    let refreshed = json!({"access_token":"sk-ant-oat-DISPLAY_NEW", "expires_at":4102444800u64});
+    vault
+        .put_account("account-0", Provider::Anthropic, &refreshed)
+        .unwrap();
     let record: Value = admin(&gateway, reqwest::Method::GET, path, json!(null))
         .await
         .json()

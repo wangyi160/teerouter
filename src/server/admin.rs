@@ -212,13 +212,6 @@ pub(super) async fn admin_account_delete(
         .await
         .map(Json)
 }
-pub(super) async fn admin_account_refresh(
-    State(runtime): State<Arc<Runtime>>,
-    Path(name): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    runtime.engine().refresh_account(&name).await?;
-    runtime.engine().account_status().map(Json)
-}
 #[derive(serde::Deserialize, Default)]
 pub(super) struct LogQuery {
     #[serde(default)]

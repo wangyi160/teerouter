@@ -263,16 +263,6 @@ impl Vault {
             .and_then(|b| b.accounts.get(name))
             .is_some_and(|a| a.enabled))
     }
-    pub(crate) fn account_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self.locks.lock().unwrap();
-        locks.retain(|_, v| v.strong_count() > 0);
-        if let Some(lock) = locks.get(name).and_then(std::sync::Weak::upgrade) {
-            return lock;
-        }
-        let lock = Arc::new(tokio::sync::Mutex::new(()));
-        locks.insert(name.into(), Arc::downgrade(&lock));
-        lock
-    }
     pub(crate) fn storage_status(&self) -> Result<Value> {
         let data = self.lock()?;
         Ok(

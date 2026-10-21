@@ -135,7 +135,6 @@ pub struct Operations {
     pub max_log_rows: u64,
     pub session_ttl_secs: u64,
     pub max_sessions: u64,
-    pub refresh_ahead_secs: u64,
 }
 impl Default for Operations {
     fn default() -> Self {
@@ -145,7 +144,6 @@ impl Default for Operations {
             max_log_rows: 100_000,
             session_ttl_secs: 86400,
             max_sessions: 100_000,
-            refresh_ahead_secs: 300,
         }
     }
 }
@@ -333,7 +331,6 @@ impl Config {
             || !(100..=10_000_000).contains(&ops.max_log_rows)
             || !(60..=604800).contains(&ops.session_ttl_secs)
             || !(100..=1_000_000).contains(&ops.max_sessions)
-            || !(30..=3600).contains(&ops.refresh_ahead_secs)
             || !(1..=100_000).contains(&self.server.max_ingress)
             || !(1024..=256 * 1024 * 1024).contains(&self.server.max_response_bytes)
             || !(128..=self.server.max_response_bytes).contains(&self.server.max_event_bytes)

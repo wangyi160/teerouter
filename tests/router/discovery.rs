@@ -17,7 +17,7 @@ fn bundle_urls(provider: Provider, proxies: &[&str]) -> Provision {
     for (i, proxy) in proxies.iter().enumerate() {
         let name = format!("account-{i}");
         accounts.insert(name.clone(), json!({"provider":provider,"proxy":proxy,
-            "credential":{"access_token":format!("sk-ant-oat-fixture-{i}"),"expires_at":4102444800u64,"expiry_date":4102444800000u64}}));
+            "credential":{"access_token":format!("sk-ant-oat-fixture-{i}"),"expires_at":4102444800u64}}));
         deployments.push(json!({"id":name,"provider":provider,"oauth_account":name,"api_base":"http://provider.fixture.invalid/v1"}));
     }
     serde_json::from_value(json!({"config":{

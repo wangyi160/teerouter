@@ -22,8 +22,7 @@ async fn pools_exist_before_discovery_include_disabled_and_empty_and_never_leak_
     disabled.oauth_account = Some("disabled-account".into());
     let mut stored = bundle.accounts["account-0"].clone();
     stored.enabled = false;
-    stored.credential =
-        json!({"access_token":"NEVER_EXPOSE_ACCESS", "refresh_token":"NEVER_EXPOSE_REFRESH"});
+    stored.credential = json!({"access_token":"NEVER_EXPOSE_ACCESS"});
     stored.proxy = Some("http://PRIVATE_USER:PRIVATE_PASSWORD@127.0.0.1:1".into());
     bundle.accounts.insert("disabled-account".into(), stored);
     bundle.config.models[0].deployments.push(disabled);

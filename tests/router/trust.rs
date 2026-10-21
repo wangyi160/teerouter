@@ -48,7 +48,7 @@ async fn legacy_empty_provider_fields_restore_without_reenabling_removed_feature
     let upstream = mock(vec![]).await;
     let mut legacy = serde_json::to_value(configuration(&upstream)).unwrap();
     legacy["models"][0]["deployments"][0]["gemini_project"] = Value::Null;
-    legacy["compatibility"] = json!({"openai":{"client_secret_ref":null,"requests":{"oauth_refresh":{"client_secret_ref":null}}}});
+    legacy["compatibility"] = json!({"openai":{"client_secret_ref":null,"requests":{"responses":{"client_secret_ref":null}}}});
     let config: Config = serde_json::from_value(legacy.clone()).unwrap();
     config.validate().unwrap();
     let encoded = serde_json::to_value(config).unwrap();
@@ -63,14 +63,14 @@ async fn legacy_empty_provider_fields_restore_without_reenabling_removed_feature
             .is_none()
     );
     assert!(
-        encoded["compatibility"]["openai"]["requests"]["oauth_refresh"]
+        encoded["compatibility"]["openai"]["requests"]["responses"]
             .get("client_secret_ref")
             .is_none()
     );
     for path in [
         "/models/0/deployments/0/gemini_project",
         "/compatibility/openai/client_secret_ref",
-        "/compatibility/openai/requests/oauth_refresh/client_secret_ref",
+        "/compatibility/openai/requests/responses/client_secret_ref",
     ] {
         let mut invalid = legacy.clone();
         *invalid.pointer_mut(path).unwrap() = json!("legacy-value");

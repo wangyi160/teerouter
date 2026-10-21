@@ -32,14 +32,14 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 计划重启：管理平台暂停自己的同步任务，向 `/admin/quiesce` 提交当前 `boot_id` 和 `quiescing: true`，然后轮询 `/admin/metrics`，直到 `lifecycle.drained: true`。此时新业务、商户操作和配置写入返回 503 / `router_draining`，已经开始的请求以及所有商户的后台刷新完成后才视为排空。管理读取、checkpoint 与 ACK 仍可使用。保存最终 checkpoint 后停止 Router。停机前保存失败应提交 `quiescing: false` 恢复服务；云端停机结果不明时先确认状态，显式启动可以恢复仍在运行的暂停实例。暂停状态不写入快照；新进程必须重新初始化。不要用首次空初始化覆盖已有状态。
 
-启用本地流水日志时，已提交的消费记录与待上传批次可以跨进程重启恢复；没有启用时仍有周期快照的崩溃丢失窗口。日志不包含账号凭证，因此刚轮换但未同步的 refresh token 仍受原快照边界约束；未生成或未提交的在途用量也不在恢复保证内。
+启用本地流水日志时，已提交的消费记录与待上传批次可以跨进程重启恢复；没有启用时仍有周期快照的崩溃丢失窗口。日志不包含账号凭证，refresh token 只保存在商户服务中；未生成或未提交的在途用量也不在恢复保证内。
 
 
 ## 供应商范围与升级
 
-OAuth 凭证允许只提供 `access_token`，省略或清空 `refresh_token` 表示外部手动续期（Claude 始终由外部续期）。Router 不会对这些账号发起刷新请求，也不会因为进入提前刷新窗口而停用尚未过期的令牌。到期时间取 `expires_at`（Unix 秒）、Claude `expiresAt`（毫秒）或 JWT 的 `exp`；未提供且令牌不可解析时无法预告过期，只能在官方拒绝凭证后要求更新。
+OAuth 采用 access-token-only-v1 协议，商户服务负责续期。Router 拒绝任何 refresh token 字段，不发起续期请求；尚未过期的 access token 保持可用。到期时间取 `expires_at`（Unix 秒）、Claude `expiresAt`（毫秒）或 JWT 的 `exp`；未提供且令牌不可解析时无法预告过期，只能在官方拒绝凭证后要求更新。
 
-已过期账号在状态 API 中返回 `health.state: "expired"`、`health.last_error: "access_token_expired"` 和 `refresh_mode: "external"`，停止转发新请求；到期前被官方拒绝的凭证显示 `reauthorization_required`。重新导入完整的新凭证后恢复。提供有效刷新令牌的 OpenAI / xAI 账号仍自动续期，Workbuddy API key 行为不变。
+已过期账号在状态 API 中返回 `health.state: "expired"`、`health.last_error: "access_token_expired"` 和 `refresh_mode: "external"`，停止转发新请求；到期前被官方拒绝的凭证显示 `reauthorization_required`。重新导入完整的新凭证后恢复。refresh token 不得上传到 Router；Workbuddy API key 行为不变。
 
 当前只接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`），以及启用 `workbuddy-lab` 构建时的 `workbuddy`。Gemini / Gemini CLI 已移除，旧的 `/v1beta/models/*` 接口返回 404。
 

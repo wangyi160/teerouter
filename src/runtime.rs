@@ -64,9 +64,6 @@ impl Runtime {
                 if let Some(_job) = runtime.background_job() {
                     if runtime.merchant {
                         engine.refresh_models(false).await;
-                        if engine.vault.serving() {
-                            engine.maintain_accounts().await;
-                        }
                     }
                     let vault = engine.vault.clone();
                     let ops = engine.config.operations.clone();
@@ -293,7 +290,7 @@ impl Runtime {
         Err(ApiError::new(
             409,
             "account_changed",
-            "Account refresh raced with update; retry with current revision",
+            "Account update raced with configuration; retry with current revision",
         ))
     }
 

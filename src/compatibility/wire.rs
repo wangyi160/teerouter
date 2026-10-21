@@ -140,18 +140,7 @@ fn protected(key: &str) -> bool {
     )
 }
 
-// Static refresh application metadata is configurable; account credentials and
-// model/reasoning fields remain protected.
-fn oauth_metadata(operation: &str, key: &str) -> bool {
-    operation == "oauth_refresh" && matches!(key, "client_id" | "scope")
-}
-fn body_pointer(operation: &str, path: &str) -> Result<Vec<String>, String> {
-    if path
-        .strip_prefix('/')
-        .is_some_and(|key| oauth_metadata(operation, key))
-    {
-        return Ok(vec![path[1..].to_owned()]);
-    }
+fn body_pointer(_operation: &str, path: &str) -> Result<Vec<String>, String> {
     pointer(path)
 }
 
@@ -214,8 +203,6 @@ impl RequestProfile {
             "chat_completions" => provider != "anthropic",
             "messages" => provider == "anthropic",
             "responses" => matches!(provider, "openai" | "xai"),
-            "oauth_discovery" => provider == "xai",
-            "oauth_refresh" => matches!(provider, "openai" | "xai"),
             _ => false,
         };
         if !supported {
@@ -253,14 +240,10 @@ impl RequestProfile {
             + self.body_defaults.len()
             + self.body_remove.len()
             + self.body_null.len();
-        if count > 64 || (count > 0 && matches!(operation, "models" | "oauth_discovery")) {
+        if count > 64 || (count > 0 && operation == "models") {
             return Err("body rules exceed limit or target a bodyless operation".into());
         }
         let mut paths: Vec<Vec<String>> = Vec::new();
-        let form = operation == "oauth_refresh" && provider != "openai";
-        if form && !self.body_null.is_empty() {
-            return Err("form parameters cannot be null".into());
-        }
         for path in self
             .body_set
             .keys()
@@ -273,22 +256,6 @@ impl RequestProfile {
             } else {
                 pointer(path)?
             };
-            if path
-                .strip_prefix('/')
-                .is_some_and(|key| oauth_metadata(operation, key))
-                && !self
-                    .body_set
-                    .get(path)
-                    .and_then(Value::as_str)
-                    .is_some_and(|v| {
-                        !v.is_empty() && v.len() <= 4096 && !v.chars().any(char::is_control)
-                    })
-            {
-                return Err("OAuth metadata must be a nonempty string".into());
-            }
-            if form && parts.len() != 1 {
-                return Err("form parameters must be top-level".into());
-            }
             if paths
                 .iter()
                 .any(|p| p.starts_with(&parts) || parts.starts_with(p))
@@ -298,9 +265,7 @@ impl RequestProfile {
             paths.push(parts);
         }
         for value in self.body_set.values().chain(self.body_defaults.values()) {
-            if !safe_value(value)
-                || (form && !(value.is_string() || value.is_number() || value.is_boolean()))
-            {
+            if !safe_value(value) {
                 return Err("protected or invalid compatibility body value".into());
             }
         }
@@ -455,52 +420,10 @@ impl Profile {
         self.prepare(operation, &mut url, &mut headers, Some(&mut body))?;
         Ok(http.post(url).headers(headers).json(&body))
     }
-    pub(crate) fn form(
-        &self,
-        operation: &str,
-        http: &reqwest::Client,
-        url: impl AsRef<str>,
-        params: &[(&str, &str)],
-    ) -> Result<RequestBuilder, Error> {
-        let mut body = Value::Object(
-            params
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), Value::String((*v).to_owned())))
-                .collect(),
-        );
-        let mut url =
-            Url::parse(url.as_ref()).map_err(|_| Error::InvalidRequest("invalid request URL"))?;
-        let mut headers = HeaderMap::new();
-        self.prepare(operation, &mut url, &mut headers, Some(&mut body))?;
-        let params: Result<BTreeMap<_, _>, Error> = body
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| {
-                let value = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Bool(_) | Value::Number(_) => v.to_string(),
-                    _ => {
-                        return Err(Error::InvalidRequest(
-                            "invalid compatibility form parameter",
-                        ));
-                    }
-                };
-                Ok((k, value))
-            })
-            .collect();
-        Ok(http.post(url).headers(headers).form(&params?))
-    }
 }
 
-fn operation_invariants(operation: &str, body: &Value) -> BTreeMap<String, Value> {
-    let mut values = invariants(body);
-    values.retain(|path, _| {
-        !path
-            .strip_prefix('/')
-            .is_some_and(|key| oauth_metadata(operation, key))
-    });
-    values
+fn operation_invariants(_operation: &str, body: &Value) -> BTreeMap<String, Value> {
+    invariants(body)
 }
 
 // Removing/replacing an ancestor must not erase a protected descendant (including

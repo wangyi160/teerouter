@@ -52,40 +52,6 @@ impl Engine {
             .map_err(crate::runtime::storage)?;
         self.ledger.recover().map_err(crate::runtime::storage)
     }
-    pub(crate) fn token_stores(&self) -> Vec<Arc<crate::oauth::TokenStore>> {
-        let mut seen = HashSet::new();
-        self.groups
-            .values()
-            .flat_map(|g| &g.backends)
-            .filter_map(|b| b.client.oauth.clone())
-            .filter(|s| seen.insert(s.name.clone()))
-            .collect()
-    }
-    pub(crate) async fn maintain_accounts(&self) {
-        futures_util::stream::iter(self.token_stores())
-            .for_each_concurrent(4, |store| async move {
-                let _ = tokio::time::timeout(Duration::from_secs(35), store.maintain()).await;
-            })
-            .await;
-    }
-    pub(crate) async fn refresh_account(&self, name: &str) -> Result<(), ApiError> {
-        let account = self
-            .token_stores()
-            .into_iter()
-            .find(|s| s.name == name)
-            .ok_or_else(|| {
-                ApiError::new(
-                    404,
-                    "account_not_active",
-                    "Account is disabled or not used by an active deployment",
-                )
-            })?;
-        tokio::time::timeout(Duration::from_secs(35), account.force_refresh())
-            .await
-            .map_err(|_| ApiError::new(504, "refresh_timeout", "Account refresh timed out"))?
-            .map_err(|e| ApiError::upstream(&e))?;
-        Ok(())
-    }
     pub(crate) fn account_status(&self) -> Result<Value, ApiError> {
         let snapshot = self.vault.snapshot().map_err(crate::runtime::storage)?;
         let mut data = Vec::new();
@@ -96,10 +62,7 @@ impl Engine {
                 .health(&name, revision)
                 .map_err(crate::runtime::storage)?;
             let expiry = crate::oauth::tokens::access_expiry(&account.credential);
-            let renewable =
-                crate::oauth::tokens::can_refresh(account.provider, &account.credential);
             if !account.provider.is_local_test()
-                && !renewable
                 && expiry.is_some_and(|t| t <= crate::oauth::tokens::now())
             {
                 health["state"] = "expired".into();
@@ -108,7 +71,8 @@ impl Engine {
             }
             data.push(json!({"name":name,"provider":account.provider,"enabled":account.enabled,"revision":revision,
                 "proxy_configured":account.proxy.is_some(),"expires_at":expiry,"health":health,
-                "refresh_mode":if account.provider.is_local_test() {"none"} else if renewable {"automatic"} else {"external"}}));
+                "access_sha256":crate::oauth::tokens::access_fingerprint(&account.credential),
+                "refresh_mode":if account.provider.is_local_test() {"none"} else {"external"}}));
         }
         Ok(json!({"revision":snapshot.revision,"data":data}))
     }

@@ -10,11 +10,7 @@ pub(crate) mod tokens;
 pub(crate) use claude::apply_claude_oauth;
 pub(crate) use tokens::TokenStore;
 
-pub(crate) const CHATGPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-pub(crate) const CHATGPT_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub(crate) const CHATGPT_API_BASE: &str = "https://chatgpt.com/backend-api/codex";
-pub(crate) const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
-pub(crate) const XAI_DISCOVERY_URL: &str = "https://auth.x.ai/.well-known/openid-configuration";
 
 // Request/session IDs still need secure randomness; no authorization flow is involved.
 pub(crate) fn random_string() -> Result<String, crate::Error> {

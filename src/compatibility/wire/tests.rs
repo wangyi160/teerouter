@@ -6,68 +6,6 @@ fn profile(operation: &str, rule: Value) -> Profile {
 }
 
 #[test]
-fn refresh_metadata_is_isolated_from_model_interfaces() {
-    let rules: Profile = serde_json::from_value(json!({"requests":{
-        "responses":{"headers":{"x-version":"responses-v2"}},
-        "models":{"headers":{"x-version":"models-v1"}},
-        "oauth_refresh":{"body_set":{"/client_id":"refresh-app","/scope":"openid"}}
-    }}))
-    .unwrap();
-    rules.validate("openai").unwrap();
-    for (operation, expected) in [
-        ("responses", "responses-v2"),
-        ("models", "models-v1"),
-        ("chat_completions", "original"),
-    ] {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-version", HeaderValue::from_static("original"));
-        let request = rules
-            .get(
-                operation,
-                &reqwest::Client::new(),
-                "https://chatgpt.com/backend-api/codex/models",
-                headers,
-            )
-            .unwrap()
-            .build()
-            .unwrap();
-        assert_eq!(request.headers()["x-version"], expected);
-    }
-    let request = rules.json("oauth_refresh", &reqwest::Client::new(), "https://auth.openai.com/oauth/token?keep=1", HeaderMap::new(),
-        json!({"client_id":"original","scope":"old","grant_type":"refresh_token","refresh_token":"private"})).unwrap().build().unwrap();
-    assert_eq!(request.url().path(), "/oauth/token");
-    assert_eq!(request.headers()["content-type"], "application/json");
-    assert_eq!(request.url().query(), Some("keep=1"));
-    let body: Value = serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-    assert_eq!(
-        body,
-        json!({"client_id":"refresh-app","scope":"openid","grant_type":"refresh_token","refresh_token":"private"})
-    );
-    let xai = profile(
-        "oauth_refresh",
-        json!({"body_set":{"/client_id":"xai-app"}}),
-    );
-    xai.validate("xai").unwrap();
-    let request = xai
-        .form(
-            "oauth_refresh",
-            &reqwest::Client::new(),
-            "https://auth.x.ai/oauth/token",
-            &[("client_id", "old"), ("refresh_token", "private")],
-        )
-        .unwrap()
-        .build()
-        .unwrap();
-    let form = std::str::from_utf8(request.body().unwrap().as_bytes().unwrap()).unwrap();
-    assert_eq!(
-        request.headers()["content-type"],
-        "application/x-www-form-urlencoded"
-    );
-    assert!(form.contains("client_id=xai-app"));
-    assert!(form.contains("refresh_token=private"));
-}
-
-#[test]
 fn removed_login_operations_and_protected_refresh_fields_are_rejected() {
     for provider in ["openai", "anthropic", "xai"] {
         for operation in [
@@ -75,6 +13,8 @@ fn removed_login_operations_and_protected_refresh_fields_are_rejected() {
             "oauth_device_poll",
             "oauth_authorize",
             "oauth_token",
+            "oauth_refresh",
+            "oauth_discovery",
         ] {
             assert!(profile(operation, json!({})).validate(provider).is_err());
         }
@@ -250,35 +190,6 @@ fn conflicting_runtime_shape_stops_before_building_a_network_request() {
             )
             .is_err()
     );
-}
-
-#[test]
-fn oauth_form_metadata_is_encoded_and_generated_security_fields_are_retained() {
-    let profile = profile(
-        "oauth_refresh",
-        json!({"body_set":{"/version":"1.1.1","/new_flag":true},"query":{"revision":"next"},"headers":{"x-client-version":"1.1.1"}}),
-    );
-    profile.validate("xai").unwrap();
-    let request = profile
-        .form(
-            "oauth_refresh",
-            &reqwest::Client::new(),
-            "https://auth.x.ai/oauth/token",
-            &[
-                ("refresh_token", "private & token"),
-                ("grant_type", "refresh_token"),
-            ],
-        )
-        .unwrap()
-        .build()
-        .unwrap();
-    assert_eq!(request.headers()["x-client-version"], "1.1.1");
-    let body = std::str::from_utf8(request.body().unwrap().as_bytes().unwrap()).unwrap();
-    let parsed = Url::parse(&format!("http://fixture/?{body}")).unwrap();
-    let pairs: BTreeMap<_, _> = parsed.query_pairs().into_owned().collect();
-    assert_eq!(pairs["refresh_token"], "private & token");
-    assert_eq!(pairs["version"], "1.1.1");
-    assert_eq!(pairs["new_flag"], "true");
 }
 
 #[test]
