@@ -688,6 +688,7 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     merchant.as_object_mut().unwrap().remove("users");
     merchant["configuration_required"] =
         (!live.configured.load(std::sync::atomic::Ordering::Acquire)).into();
+    merchant["credential_sync_version"] = 1.into();
     merchant["runtime_id"] = engine
         .vault
         .lock()

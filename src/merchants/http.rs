@@ -69,6 +69,15 @@ pub(crate) async fn dispatch(
             let _read = runtime.merchants.write.lock().await;
             state(&runtime, &item)?
         }
+        ("GET", "/merchant/accounts/credentials") => {
+            let _read = runtime.merchants.write.lock().await;
+            let live = live(&runtime, &item.id)?;
+            let revision = live.settings.lock().unwrap().revision;
+            let engine = live.runtime.engine();
+            let data = engine.vault.lock().map_err(storage)?;
+            let bundle = data.bundle.as_ref().ok_or_else(unavailable)?;
+            json!({"merchant_id":item.id,"revision":revision,"accounts":bundle.accounts})
+        }
         ("PUT", "/merchant/config") => {
             let (_, body) = crate::server::admin::input(&runtime, request).await?;
             apply(

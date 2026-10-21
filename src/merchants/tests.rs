@@ -4,6 +4,54 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+#[tokio::test]
+async fn rotated_credentials_return_only_to_the_bound_merchant_owner() {
+    let r = root();
+    let token = control("a");
+    let own = add(&r, &token).await;
+    let other = control("b");
+    add(&r, &other).await;
+    own.runtime
+        .engine()
+        .vault
+        .lock()
+        .unwrap()
+        .bundle
+        .as_mut()
+        .unwrap()
+        .accounts
+        .insert(
+            "rotated".into(),
+            serde_json::from_value(json!({"provider":"openai",
+            "credential":{"access_token":"OWNER_ONLY_ACCESS","refresh_token":"OWNER_ONLY_REFRESH"},
+            "enabled":false}))
+            .unwrap(),
+        );
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let path = "/merchant/accounts/credentials";
+    for denied in [ADMIN, "alice-key", &"a".repeat(64)] {
+        let (code, value) = call(&server, Method::GET, path, denied, json!({})).await;
+        assert_eq!(code, 403);
+        assert!(!value.to_string().contains("OWNER_ONLY"));
+    }
+    let (code, value) = call(&server, Method::GET, path, &other, json!({})).await;
+    assert_eq!(code, 200);
+    assert!(!value.to_string().contains("OWNER_ONLY"));
+    let (code, value) = call(&server, Method::GET, path, &token, json!({})).await;
+    assert_eq!(code, 200);
+    assert_eq!(
+        value["accounts"]["rotated"]["credential"]["refresh_token"],
+        "OWNER_ONLY_REFRESH"
+    );
+    assert!(
+        !r.engine()
+            .vault
+            .checkpoint()
+            .unwrap()
+            .to_string()
+            .contains("OWNER_ONLY")
+    );
+}
 #[path = "billing_tests.rs"]
 mod billing_tests;
 #[tokio::test]
