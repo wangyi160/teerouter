@@ -5,11 +5,12 @@ use teellm::{
     vault::{Provision, Vault},
 };
 use zeroize::Zeroizing;
-const HELP: &str = "teellm - in-memory Rust LLM router
+const HELP: &str = "teellm - Rust LLM router
 teellm [run] --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8443]
        or --admin-key-env (reads TEELLM_ADMIN_KEY, for encrypted container secrets)
 
-No database, data directory, or database key. Supply one admin token line over a
+Optional: --journal-dir /data (sealed accounting spool, dstack TEE key required).
+Supply one admin token line over a
 protected stdin pipe. Management initializes state through /admin/initialize,
 saves /admin/checkpoint and acknowledges it before business requests are served.
 Plain HTTP is restricted to loopback. Use the attested TLS endpoint for TEE access.";
@@ -35,6 +36,7 @@ pub async fn run() -> Result<(), String> {
     let mut bind: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
     let mut stdin = false;
     let mut admin_env = false;
+    let mut journal_dir = None;
     let mut tls_bind: std::net::SocketAddr = "0.0.0.0:8443".parse().unwrap();
     #[allow(unused_mut)]
     let mut sample = false;
@@ -42,6 +44,11 @@ pub async fn run() -> Result<(), String> {
         match arg.as_str() {
             "--admin-key-stdin" => stdin = true,
             "--admin-key-env" => admin_env = true,
+            "--journal-dir" => {
+                journal_dir = Some(std::path::PathBuf::from(
+                    args.next().ok_or("--journal-dir requires a directory")?,
+                ))
+            }
             "--tls-bind" => {
                 tls_bind = args
                     .next()
@@ -101,7 +108,12 @@ pub async fn run() -> Result<(), String> {
         return Err("admin key must contain 32-4096 valid header characters".into());
     }
     let bundle:Provision=serde_json::from_value(serde_json::json!({"config":{"server":{"bind":bind,"admin_key_ref":"admin","allow_empty_routes":true},"keys":[],"models":[]},"secrets":{"admin":admin}})).map_err(|_|"invalid bootstrap")?;
-    let vault = Vault::memory().map_err(|e| e.to_string())?;
+    let vault = if let Some(dir) = journal_dir {
+        Vault::persistent(&dir).await
+    } else {
+        Vault::memory()
+    }
+    .map_err(|e| e.to_string())?;
     vault.provision(&bundle).map_err(|e| e.to_string())?;
     vault.require_manager();
     let engine = Engine::from_vault(vault).map_err(|_| "invalid bootstrap engine")?;

@@ -16,7 +16,7 @@
 
 ## 运行与恢复流程
 
-router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8443]`。标准输入是一行管理凭证；无需数据库文件或数据库密钥。持久化由外部管理服务负责。
+router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8443] [--journal-dir PATH]`。标准输入是一行管理凭证。可选的本地流水日志使用 dstack TEE 派生密钥；不接受管理员提供的日志密钥。配置、账号与最终账务仍由独立管理服务持久化，流水恢复规则见 [本地流水日志](docs/ACCOUNTING-JOURNAL.md)。
 
 1. 冷启动 `GET /admin/checkpoint` 返回新的 boot_id、initialized=false。
 2. 管理端发送 `POST /admin/initialize`：`{"boot_id":"当前值","state":已保存的state或null}`。null 只用于首次空初始化；已有服务必须恢复管理数据库保存的快照。
@@ -32,7 +32,7 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 计划重启：管理平台暂停自己的同步任务，向 `/admin/quiesce` 提交当前 `boot_id` 和 `quiescing: true`，然后轮询 `/admin/metrics`，直到 `lifecycle.drained: true`。此时新业务、商户操作和配置写入返回 503 / `router_draining`，已经开始的请求以及所有商户的后台刷新完成后才视为排空。管理读取、checkpoint 与 ACK 仍可使用。保存最终 checkpoint 后停止 Router。停机前保存失败应提交 `quiescing: false` 恢复服务；云端停机结果不明时先确认状态，显式启动可以恢复仍在运行的暂停实例。暂停状态不写入快照；新进程必须重新初始化。不要用首次空初始化覆盖已有状态。
 
-注意：周期快照有崩溃丢失窗口，包括用量和轮换 refresh token。需要更强保证时必须引入同步持久化协议，当前精简版本没有承诺零丢失。
+启用本地流水日志时，已提交的消费记录与待上传批次可以跨进程重启恢复；没有启用时仍有周期快照的崩溃丢失窗口。日志不包含账号凭证，因此刚轮换但未同步的 refresh token 仍受原快照边界约束；未生成或未提交的在途用量也不在恢复保证内。
 
 
 ## 供应商范围与升级

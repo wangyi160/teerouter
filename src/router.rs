@@ -406,7 +406,7 @@ impl Engine {
     pub(crate) fn status(&self) -> Value {
         let mut groups: Vec<_> = self.groups.values().collect();
         groups.sort_by_key(|g| &g.config.name);
-        json!({"ready":self.ready(),"moderation_mode":"upstream_refusal","lockllm_enabled":false,"refusal_audit_enabled":true,"usage_healthy":self.ledger.healthy(),"storage":"memory","initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
+        json!({"ready":self.ready(),"moderation_mode":"upstream_refusal","lockllm_enabled":false,"refusal_audit_enabled":true,"usage_healthy":self.ledger.healthy(),"storage":if self.vault.journal_enabled() {"persistent_accounting"} else {"memory"},"accounting_journal":self.vault.journal_status(),"initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
             "in_flight":self.global.used(),
             "models":groups.iter().map(|g| json!({"model":g.config.name,"deployments":g.backends.iter().map(|b| b.status()).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }

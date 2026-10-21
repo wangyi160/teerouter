@@ -1,4 +1,5 @@
-//! Process-local state. No database, filesystem persistence, or encryption key.
+//! Business configuration stays in memory; an optional sealed accounting journal
+//! preserves receipts independently of management checkpoints.
 use crate::{Provider, config::Config};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -10,6 +11,7 @@ use std::{
 use zeroize::Zeroizing;
 
 mod checkpoint_diff;
+mod journal;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -119,6 +121,8 @@ struct SyncState {
     diff_base: Option<(String, Value)>,
 }
 pub struct Vault {
+    journal: Option<Mutex<journal::Journal>>,
+    journal_failed: std::sync::atomic::AtomicBool,
     pub(crate) relay_publishing: Mutex<crate::receipt_relay::Publishing>,
     pub(crate) relay_upload: tokio::sync::Mutex<()>,
     pub(crate) receipt_signer: crate::receipts::Signer,
@@ -136,6 +140,8 @@ pub(crate) fn random_id() -> Result<String> {
 impl Vault {
     pub fn memory() -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
+            journal: None,
+            journal_failed: std::sync::atomic::AtomicBool::new(false),
             relay_publishing: Mutex::default(),
             relay_upload: tokio::sync::Mutex::new(()),
             receipt_signer: crate::receipts::Signer::new()?,
@@ -191,7 +197,10 @@ impl Vault {
     }
     pub(crate) fn serving(&self) -> bool {
         let sync = self.sync.lock().unwrap();
-        !sync.managed || sync.initialized
+        (!sync.managed || sync.initialized)
+            && !self
+                .journal_failed
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
     // Synchronization freshness is diagnostic; it is never a serving lease.
     pub(crate) fn manager_connected(&self) -> bool {
@@ -220,12 +229,23 @@ impl Vault {
         if let Some(relay) = &data.receipt_relay {
             relay.validate_recovery(data.sequence)?;
         }
+        // Only locally authenticated accounting may restore unexported events.
+        // Management input above must still contain no unsigned historical rows.
+        self.restore_accounting(&mut data)?;
         data.pending_event_bytes = data
             .events
             .iter()
             .map(|v| serde_json::to_vec(v).map_or(0, |b| b.len()))
             .sum();
         data.consumption = crate::balances::consumption(&data.events);
+        if let Some(relay) = &data.receipt_relay {
+            for batch in &relay.retained {
+                for (user, amount) in &batch.consumption {
+                    *data.consumption.entry(user.clone()).or_default() += amount;
+                }
+            }
+        }
+        self.persist_accounting(&data)?;
         *current = data;
         sync.initialized = true;
         Ok(())
@@ -342,6 +362,7 @@ impl Vault {
         data.changed();
         sync.confirmed = Some((generation, sequence));
         sync.acknowledged = Some(Instant::now());
+        self.persist_accounting(&data)?;
         Ok(())
     }
     pub(crate) fn configure_relay(&self, config: crate::receipt_relay::Config) -> Result<()> {
@@ -396,6 +417,17 @@ impl Vault {
         }
         sync.diff_base = None;
         data.changed();
+        let mut publishing = self.relay_publishing.lock().unwrap();
+        if publishing.last_attempt.is_none() {
+            publishing.last_attempt = Some(Instant::now());
+            publishing.last_attempt_ms = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| VaultError("clock unavailable"))?
+                    .as_millis() as u64,
+            );
+        }
+        self.persist_accounting_with(&data, &publishing)?;
         Ok(())
     }
     pub fn verify(&self) -> Result<()> {

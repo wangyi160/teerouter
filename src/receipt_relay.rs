@@ -113,16 +113,19 @@ impl State {
 
 #[derive(Default)]
 pub(crate) struct Publishing {
-    pending: Option<Export>,
-    last_attempt: Option<Instant>,
+    pub(crate) pending: Option<Export>,
+    pub(crate) last_attempt: Option<Instant>,
+    pub(crate) last_attempt_ms: Option<u64>,
     pub last_success_ms: Option<u64>,
     pub last_error: Option<&'static str>,
 }
-struct Export {
-    body: Value,
-    head: Head,
-    consumption: BTreeMap<String, u128>,
-    refusal_through: u64,
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Export {
+    pub(crate) body: Value,
+    pub(crate) head: Head,
+    pub(crate) consumption: BTreeMap<String, u128>,
+    pub(crate) refusal_through: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -231,6 +234,7 @@ impl Vault {
         data.balances = balances;
         data.consumption = consumption;
         data.changed();
+        self.persist_accounting(&data)?;
         Ok(())
     }
     fn prepare_public(&self, force: bool) -> Result<Option<(Config, Value)>> {
@@ -243,24 +247,23 @@ impl Vault {
         };
         let mut p = self.relay_publishing.lock().unwrap();
         if !force
-            && p.last_attempt.is_some_and(|t| {
-                t.elapsed().as_secs()
-                    < if p.last_error.is_some() {
-                        30
-                    } else {
-                        state.config.interval_seconds
-                    }
-            })
+            && p.last_attempt
+                .is_some_and(|t| t.elapsed().as_secs() < state.config.interval_seconds)
         {
             return Ok(None);
         }
         if p.pending.is_none() {
             if data.events.is_empty() || !state.healthy() {
+                p.last_attempt = Some(Instant::now());
+                p.last_attempt_ms = Some(protocol::now_ms());
+                self.persist_accounting_with(&data, &p)?;
                 return Ok(None);
             }
             p.pending = Some(protocol::seal(&self.receipt_signer, &data, &self.boot_id)?);
         }
         p.last_attempt = Some(Instant::now());
+        p.last_attempt_ms = Some(protocol::now_ms());
+        self.persist_accounting_with(&data, &p)?;
         Ok(Some((
             state.config.clone(),
             p.pending.as_ref().unwrap().body.clone(),
@@ -300,11 +303,9 @@ impl Vault {
         // Intentionally DO NOT change balances or consumption here.
         data.changed();
         p.pending = None;
-        if !data.events.is_empty() {
-            p.last_attempt = None;
-        }
         p.last_error = None;
         p.last_success_ms = Some(protocol::now_ms());
+        self.persist_accounting_with(&data, &p)?;
         Ok(())
     }
 }

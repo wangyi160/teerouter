@@ -276,7 +276,7 @@ impl Vault {
     pub(crate) fn storage_status(&self) -> Result<Value> {
         let data = self.lock()?;
         Ok(
-            json!({"mode":"memory","low_disk":false,"pending_usage":data.events.len(),
+            json!({"mode":if self.journal_enabled() {"persistent_accounting"} else {"memory"},"journal":self.journal_status(),"low_disk":false,"pending_usage":data.events.len(),
                 "pending_refusals":data.refusal_queue.events.len(),"pending_refusal_bytes":data.refusal_queue.bytes,
                 "last_refusal_id":data.refusal_queue.last_id,"refusals_deleted_through":data.refusal_queue.deleted_through,
                 "manager_connected":self.manager_connected(),"initialized":self.initialized(),"boot_id":self.boot_id}),

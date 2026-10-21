@@ -63,3 +63,8 @@ assets originate from OpenAI tiktoken, https://github.com/openai/tiktoken
 (MIT). Their license texts are in LICENSES/tiktoken-rs-LICENSE.txt and
 LICENSES/tiktoken-LICENSE.txt. The bounded evidence collection and estimate
 billing policy are new teerouter code; estimated counts are not provider usage.
+
+The optional accounting journal uses unmodified rusqlite 0.37.0 and
+libsqlite3-sys 0.35.0 under the MIT License (LICENSES/rusqlite-LICENSE.txt and
+LICENSES/libsqlite3-sys-LICENSE.txt), including the bundled public-domain SQLite
+engine. Sealed-row storage, recovery and receipt scheduling are new teerouter code.

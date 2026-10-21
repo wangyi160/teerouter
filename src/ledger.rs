@@ -117,5 +117,8 @@ impl Ledger {
         data.pending_event_bytes += serde_json::to_vec(&event).unwrap().len();
         data.events.push_back(event);
         data.changed();
+        // A failed durable write latches admission closed, including cancellation.
+        // Never silently fall back to RAM after enabling the accounting journal.
+        let _ = self.vault.persist_accounting(&data);
     }
 }

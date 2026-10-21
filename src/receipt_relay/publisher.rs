@@ -24,16 +24,36 @@ pub(crate) fn start(runtime: &Arc<Runtime>) {
 impl Vault {
     pub(crate) async fn publish_public(&self, force: bool) -> Result<Value> {
         let _single = self.relay_upload.lock().await;
-        let result = self.publish_one(force).await;
+        let target = self.lock()?.sequence;
+        let result = async {
+            let Some(mut status) = self.publish_one(force).await? else {
+                return self.relay_status();
+            };
+            // Split one scheduled export into bounded batches. New requests do
+            // not extend this cycle indefinitely; an error ends the cycle.
+            for _ in 0..8192 {
+                if status["pending_records"] == 0
+                    || status["uploaded"]["through_seq"].as_u64().unwrap_or(0) >= target
+                {
+                    break;
+                }
+                let Some(next) = self.publish_one(true).await? else {
+                    break;
+                };
+                status = next;
+            }
+            Ok(status)
+        }
+        .await;
         if let Err(ref error) = result {
             // Only local fixed error codes, never URLs, bearer headers or bodies.
             self.relay_publishing.lock().unwrap().last_error = Some(error.0);
         }
         result
     }
-    async fn publish_one(&self, force: bool) -> Result<Value> {
+    async fn publish_one(&self, force: bool) -> Result<Option<Value>> {
         let Some((config, body)) = self.prepare_public(force)? else {
-            return self.relay_status();
+            return Ok(None);
         };
         let manifest: Value = serde_json::from_str(body["manifest"].as_str().unwrap()).unwrap();
         let endpoint = format!(
@@ -85,6 +105,6 @@ impl Vault {
             return Err(VaultError("invalid_relay_ack"));
         }
         self.uploaded_public(body["batch_hash"].as_str().unwrap())?;
-        self.relay_status()
+        self.relay_status().map(Some)
     }
 }

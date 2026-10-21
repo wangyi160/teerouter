@@ -293,9 +293,10 @@ async fn network_retry_keeps_exact_batch_and_validates_ack_before_release() {
     append(&v, 20);
     m.reject.store(false, Ordering::SeqCst);
     v.publish_public(true).await.unwrap();
-    assert_eq!(v.lock().unwrap().events.len(), 1);
+    assert_eq!(v.lock().unwrap().events.len(), 0); // same cycle drains the later batch too
     assert_eq!(v.lock().unwrap().consumption["u"], 30);
     let seen = m.seen.lock().unwrap();
     assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen.len(), 3);
     server.abort();
 }
