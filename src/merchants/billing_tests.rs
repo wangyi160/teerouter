@@ -94,6 +94,7 @@ async fn normal_json_and_sse_without_usage_remain_unpriced() {
     for (streaming, reply) in [(false, json_reply.to_string()), (true, sse)] {
         let (r, _, _upstream, router) = setup(vec![(200, streaming, reply)], 1).await;
         let response = reqwest::Client::builder()
+            .user_agent("codex_cli_rs/1.0 (merchant fixture)")
             .no_proxy()
             .build()
             .unwrap()
@@ -202,6 +203,7 @@ async fn interrupted_sse_without_final_usage_is_estimated_and_charged_once() {
     );
     let (r, _, _upstream, router) = setup(vec![(200, true, text)], 1).await;
     let response = reqwest::Client::builder()
+        .user_agent("codex_cli_rs/1.0 (merchant fixture)")
         .no_proxy()
         .build()
         .unwrap()
@@ -284,6 +286,7 @@ async fn dropping_downstream_after_official_usage_still_charges() {
     let mut request = body(true);
     request["stream_options"] = json!({"include_usage":true});
     let response = reqwest::Client::builder()
+        .user_agent("codex_cli_rs/1.0 (merchant fixture)")
         .no_proxy()
         .build()
         .unwrap()

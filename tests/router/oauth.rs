@@ -218,6 +218,7 @@ async fn claude_oauth_merges_beta_headers_without_api_key() {
     let gateway = gateway(oauth_config(&mock, Provider::Anthropic, &path)).await;
     let response = client()
         .post(format!("{}/v1/messages", gateway.url))
+        .header("user-agent", gateway.agent)
         .bearer_auth("client-secret")
         .header("anthropic-beta", "custom-beta,oauth-2025-04-20")
         .json(

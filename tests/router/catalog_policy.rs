@@ -17,7 +17,7 @@ async fn start(provider: Provider, proxies: &[&Mock]) -> (Arc<Engine>, Running) 
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let engine = Engine::from_vault(vault).unwrap();
-    let gateway = run(server::app_upstream_fixture(engine.clone())).await;
+    let gateway = run_fixture(engine.clone()).await;
     (engine, gateway)
 }
 
@@ -127,6 +127,7 @@ async fn shared_pool_capabilities_apply_to_every_account_and_respect_pinning() {
     let request = body("official", "high");
     let response = client()
         .post(format!("{}/v1/responses", gateway.url))
+        .header("user-agent", gateway.agent)
         .bearer_auth("client-secret")
         .header("x-router-account", "account-1")
         .json(&request)
@@ -143,6 +144,7 @@ async fn shared_pool_capabilities_apply_to_every_account_and_respect_pinning() {
     for account in ["account-0", "account-1"] {
         let response = client()
             .post(format!("{}/v1/responses", gateway.url))
+            .header("user-agent", gateway.agent)
             .bearer_auth("client-secret")
             .header("x-router-account", account)
             .json(&body("official", "low"))

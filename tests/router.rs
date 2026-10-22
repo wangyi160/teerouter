@@ -23,6 +23,8 @@ use teellm::{
 };
 use tokio::{net::TcpListener, sync::Notify, task::JoinHandle};
 
+#[path = "router/agents.rs"]
+mod agents;
 #[path = "router/cache.rs"]
 mod cache;
 #[path = "router/catalog_policy.rs"]
@@ -54,6 +56,7 @@ mod workbuddy;
 struct Running {
     url: String,
     task: JoinHandle<()>,
+    agent: &'static str,
 }
 impl Drop for Running {
     fn drop(&mut self) {
@@ -67,7 +70,25 @@ async fn run(app: Router) -> Running {
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    Running { url, task }
+    Running {
+        url,
+        task,
+        agent: agent_ua(Provider::OpenAI),
+    }
+}
+
+async fn run_fixture(engine: Arc<Engine>) -> Running {
+    let provider = engine
+        .config
+        .models
+        .iter()
+        .flat_map(|p| &p.deployments)
+        .next()
+        .map(|d| d.provider)
+        .unwrap_or(Provider::OpenAI);
+    let mut running = run(server::app_upstream_fixture(engine)).await;
+    running.agent = agent_ua(provider);
+    running
 }
 
 struct Capture {
@@ -288,16 +309,26 @@ fn engine(config: Config) -> Arc<Engine> {
 }
 
 async fn gateway(config: Config) -> Running {
-    run(server::app_upstream_fixture(engine(config))).await
+    run_fixture(engine(config)).await
 }
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
+        .user_agent(agent_ua(Provider::OpenAI))
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap()
 }
 fn request() -> Value {
     json!({"model":"chat","messages":[{"role":"user","content":"hello"}]})
+}
+fn agent_ua(provider: Provider) -> &'static str {
+    match provider {
+        Provider::OpenAI => "codex_cli_rs/1.0 (router fixture)",
+        Provider::Anthropic => "claude-cli/2.1.0 (external, cli)",
+        Provider::XAI => "grok-shell/1.0 (router fixture)",
+        #[cfg(feature = "workbuddy-lab")]
+        Provider::Workbuddy => "router-test/1.0",
+    }
 }
 fn completion() -> Value {
     json!({"id":"reply","model":"actual-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}], "usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}})
@@ -315,6 +346,22 @@ fn native(provider: Provider) -> Value {
 async fn post(gateway: &Running, path: &str, body: Value) -> reqwest::Response {
     client()
         .post(format!("{}{path}", gateway.url))
+        .header("user-agent", gateway.agent)
+        .bearer_auth("client-secret")
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+async fn post_as(
+    gateway: &Running,
+    path: &str,
+    body: Value,
+    provider: Provider,
+) -> reqwest::Response {
+    client()
+        .post(format!("{}{path}", gateway.url))
+        .header("user-agent", agent_ua(provider))
         .bearer_auth("client-secret")
         .json(&body)
         .send()
@@ -401,6 +448,7 @@ async fn native_protocols_preserve_payload_and_use_provider_auth(
     let body = json!({"model":"chat","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"input":"hi","contents":[{"parts":[{"text":"hi"}]}],"provider_extension":{"nested":42}});
     let response = client()
         .post(format!("{}{endpoint}", gateway.url))
+        .header("user-agent", agent_ua(provider))
         .header(
             auth,
             if auth == "authorization" {

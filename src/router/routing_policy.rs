@@ -54,6 +54,7 @@ impl Engine {
         body: &Value,
         headers: &HeaderMap,
         pool: Option<&str>,
+        agent: crate::agent::Agent,
     ) -> Result<Vec<(String, Vec<String>)>, ApiError> {
         if !self.accounts[account].has_capacity()
             || !self.storage_ready()
@@ -69,6 +70,7 @@ impl Engine {
             .filter_map(|p| self.groups.get(&p.name))
             .filter(|g| pool.is_none_or(|p| g.config.name == p))
             .filter(|g| self.model_allowed(account, &g.config.name, model))
+            .filter(|g| g.backends.iter().any(|b| agent.allows(b.config.provider)))
             .collect();
         let catalogs = groups
             .iter()

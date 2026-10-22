@@ -26,13 +26,7 @@ async fn oauth_gateway(proxy: &Mock) -> (Running, Arc<Vault>) {
     bundle.config.models[0].deployments[0].model = "actual-model".into();
     let v = Vault::memory().unwrap();
     v.provision(&bundle).unwrap();
-    (
-        run(server::app_upstream_fixture(
-            Engine::from_vault(v.clone()).unwrap(),
-        ))
-        .await,
-        v,
-    )
+    (run_fixture(Engine::from_vault(v.clone()).unwrap()).await, v)
 }
 fn message() -> Value {
     json!({"model":"chat","max_tokens":10,"messages":[{"role":"user","content":"hello"}]})
@@ -115,10 +109,7 @@ async fn proxy_secret_bindings_persist_rotate_and_survive_engine_restart() {
         200
     );
     drop(gateway);
-    let reopened = run(server::app_upstream_fixture(
-        Engine::from_vault(vault).unwrap(),
-    ))
-    .await;
+    let reopened = run_fixture(Engine::from_vault(vault).unwrap()).await;
     assert_eq!(
         post(&reopened, "/v1/messages", message()).await.status(),
         200
@@ -174,6 +165,7 @@ async fn atomic_live_updates_validate_before_commit_and_rotate_admin_and_client_
     assert_eq!(apply(&gateway, json!({})).await.status(), 401);
     let response = client()
         .post(format!("{}/v1/chat/completions", gateway.url))
+        .header("user-agent", gateway.agent)
         .bearer_auth("new-client")
         .json(&request())
         .send()
@@ -319,7 +311,7 @@ async fn same_oauth_account_shares_rate_limits_across_aliases_and_generations() 
     bundle.config.models.push(other);
     let v = Vault::memory().unwrap();
     v.provision(&bundle).unwrap();
-    let gateway = run(server::app_upstream_fixture(Engine::from_vault(v).unwrap())).await;
+    let gateway = run_fixture(Engine::from_vault(v).unwrap()).await;
     assert_eq!(
         post(&gateway, "/v1/messages", message()).await.status(),
         200
@@ -357,6 +349,7 @@ async fn explicit_sessions_and_known_continuations_pin_the_original_account() {
     for _ in 0..2 {
         let response = client()
             .post(format!("{}/v1/responses", gateway.url))
+            .header("user-agent", gateway.agent)
             .bearer_auth("client-secret")
             .header("x-router-session", "session-A")
             .json(&json!({"model":"chat","input":"hello"}))
@@ -384,6 +377,7 @@ async fn explicit_sessions_and_known_continuations_pin_the_original_account() {
     );
     let foreign = client()
         .post(format!("{}/v1/responses", gateway.url))
+        .header("user-agent", gateway.agent)
         .bearer_auth("provider-secret")
         .json(&json!({"model":"chat","input":"next","previous_response_id":"reply"}))
         .send()
@@ -392,6 +386,7 @@ async fn explicit_sessions_and_known_continuations_pin_the_original_account() {
     assert_eq!(foreign.status(), 409);
     let conflict = client()
         .post(format!("{}/v1/responses", gateway.url))
+        .header("user-agent", gateway.agent)
         .bearer_auth("client-secret")
         .header("x-router-account", "b")
         .json(&json!({"model":"chat","input":"next","previous_response_id":"reply"}))

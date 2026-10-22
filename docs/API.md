@@ -24,6 +24,18 @@
 | POST | `/v1/responses` | input 请求格式，可使用 stream；思考强度字段为 reasoning.effort。不支持 background=true。 |
 | POST | `/v1/messages` | messages 请求格式，需 max_tokens；thinking 选项以模型目录为准。 |
 
+## Agent 与模型提供商匹配 v1
+
+三个模型生成接口都执行同一固定规则：Codex 只能使用 OpenAI（模型目录前缀 `chatgpt/`），Claude Code 只能使用 Claude（`claude/`），Grok Build 只能使用 xAI（`grok/`）。其他客户端不得调用正式模型服务。显式启用的 Workbuddy 实验池保留测试例外，可接受其他客户端；它不能作为正式服务的备用路由。
+
+Router 识别原始 `User-Agent` 的产品标记，并校验随附的 `originator`、`x-app`、`x-grok-client-identifier` 是否一致。重复、合并或矛盾的身份头返回 `400 invalid_agent_identity`；不支持的客户端返回 `403 unsupported_agent`；已识别客户端与模型提供商不符返回 `403 agent_provider_mismatch`。这些拒绝发生在模型转发和计费准入之前。
+
+约束同时用于提供商限定模型、未限定模型、固定池、自动选池、旧版池选择头以及失败备用路由。以实际上游提供商为准，不能通过相同模型名、模型别名或低费率绕过。原始客户端标记由 teeproxy 透传，Router 不会根据模型名补造客户端身份。`GET /v1/models`、价格和账号池等查询接口不执行客户端类别限制，返回目录仍取决于 API key 权限。`/admin/status` 返回 `agent_provider_policy.version: 1`。
+
+这是兼容性策略，并非客户端软件的远程证明。HTTP 请求头可以伪造，因此不能据此证明请求确实来自某个未修改的官方程序，也不能保证上游模型质量。
+
+实现依据：Codex 官方实现的 [默认 HTTP 客户端](https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/default_client.rs)，Claude Code 官方 npm 包中的 `claude-cli/<version>`、`x-app: cli`（`@anthropic-ai/claude-code` 2.1.0），Grok Build 官方实现的 [sampling client](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-sampler/src/client.rs)。CLI、Codex IDE、Grok pager 等已知标记均有回归用例；客户端更改这些标记后需要更新识别规则，不自动放行未知身份。
+
 ## 请求路由规则 v1
 
 选路规则是 router 协议的一部分，适用于三个生成接口。客户端通过单个 `X-Router-Routing` 请求头发送 JSON（最多 2048 字节），不改写模型请求正文。Router 在 TEE 内完成选池、倍率检查及准入，规则头不会发给供应商。

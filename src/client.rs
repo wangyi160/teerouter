@@ -21,6 +21,22 @@ pub struct Client {
 }
 
 impl Client {
+    /// Keep the validated caller's identity through chat/OAuth adapters too.
+    /// This runs on a per-request clone, never on catalog/probe clients.
+    pub(crate) fn preserve_agent_headers(&mut self, headers: &HeaderMap) {
+        for &name in crate::agent::HEADERS {
+            self.headers.remove(name);
+            self.profile.headers.remove(name);
+            for profile in self.profile.requests.values_mut() {
+                profile.headers.remove(name);
+                profile.remove_headers.retain(|h| h != name);
+            }
+            if let Some(value) = headers.get(name) {
+                self.headers.insert(name, value.clone());
+            }
+        }
+    }
+
     pub(crate) fn cache_session(&mut self, name: &'static str, id: &str) {
         self.headers.insert(
             name,

@@ -94,7 +94,9 @@ pub(super) async fn choose(
     body: &Value,
     headers: &HeaderMap,
     rule: &Rule,
+    agent: crate::agent::Agent,
 ) -> Result<Choice, ApiError> {
+    agent.check_model(alias)?;
     let (merchant, model) = alias
         .split_once('/')
         .filter(|(m, _)| m.starts_with("m_"))
@@ -112,6 +114,15 @@ pub(super) async fn choose(
                 .as_ref()
                 .is_none_or(|p| p.starts_with(&format!("{}.", s.item.id)))
     });
+    if let Some(fixed) = &rule.pool {
+        for s in &selections {
+            for p in &s.engine.config.models {
+                if *fixed == format!("{}.{}", s.item.id, p.name) {
+                    agent.check(p.provider.ok_or_else(invalid)?)?;
+                }
+            }
+        }
+    }
     // Stateful continuations must stay with their existing merchant/account. An
     // unknown response ID cannot be guessed by comparing prices across merchants.
     if rule.mode == Mode::Auto {
@@ -143,6 +154,8 @@ pub(super) async fn choose(
     }
     let mut rows = Vec::new();
     let mut over_limit = false;
+    let mut incompatible_model = false;
+    let mut compatible_model = false;
     let cache_request = crate::router::cache::Request::new(
         &root.config.keys[account].user_id,
         protocol,
@@ -163,6 +176,7 @@ pub(super) async fn choose(
                     .as_deref()
                     .and_then(|p| p.split_once('.'))
                     .map(|(_, p)| p),
+                agent,
             )
             .await?;
         for quote in crate::pricing::quotes(
@@ -179,7 +193,19 @@ pub(super) async fn choose(
                 .iter()
                 .find(|p| p.name == *pool)
                 .and_then(|p| p.provider);
+            if quote.price.model == model
+                && super::routing::platform_allows(root, account, &qualified, model, pool_provider)
+                && rule.pool.as_ref().is_none_or(|p| *p == qualified)
+                && provider.is_none_or(|wanted| pool_provider == Some(wanted))
+            {
+                if pool_provider.is_some_and(|p| agent.allows(p)) {
+                    compatible_model = true;
+                } else {
+                    incompatible_model = true;
+                }
+            }
             if provider.is_some_and(|wanted| pool_provider != Some(wanted))
+                || !pool_provider.is_some_and(|p| agent.allows(p))
                 || quote.price.model != model
                 || !super::routing::platform_allows(root, account, &qualified, model, pool_provider)
                 || rule.pool.as_ref().is_some_and(|p| *p != qualified)
@@ -239,7 +265,9 @@ pub(super) async fn choose(
     let mut candidates: Vec<_> = rows.iter().map(|r| r.2.clone()).collect();
     metrics.prefer_session(&mut candidates, &session);
     let Some(selected) = metrics.select(&candidates, rule.priority, rule.mode == Mode::Auto) else {
-        return Err(if rule.mode == Mode::Fixed && over_limit {
+        return Err(if incompatible_model && !compatible_model {
+            agent.rejection()
+        } else if rule.mode == Mode::Fixed && over_limit {
             ApiError::new(
                 403,
                 "routing_multiplier_exceeded",

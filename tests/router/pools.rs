@@ -78,7 +78,7 @@ async fn pools_exist_before_discovery_include_disabled_and_empty_and_never_leak_
     ] {
         assert!(!text.contains(secret), "leaked {secret}");
     }
-    let gateway = run(server::app_upstream_fixture(engine.clone())).await;
+    let gateway = run_fixture(engine.clone()).await;
     assert_eq!(
         inventory(&gateway, "client-secret").await["data"]
             .as_array()
@@ -106,7 +106,7 @@ async fn inventory_respects_pool_acl_before_discovery_and_model_acl_after_discov
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let engine = Engine::from_vault(vault).unwrap();
-    let gateway = run(server::app_upstream_fixture(engine.clone())).await;
+    let gateway = run_fixture(engine.clone()).await;
     let before = inventory(&gateway, "client-secret").await;
     assert_eq!(before["data"].as_array().unwrap().len(), 1);
     assert!(!before.to_string().contains("hidden"));

@@ -381,6 +381,14 @@ async fn usage(request: Request) -> Result<Json<Value>, ApiError> {
 async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
     let engine = runtime.engine();
     let mut status = engine.status();
+    status["agent_provider_policy"] = json!({
+        "version": 1,
+        "codex": "openai",
+        "claude_code": "anthropic",
+        "grok_build": "xai",
+        "workbuddy_test_exception": cfg!(feature = "workbuddy-lab"),
+        "identification": "client_headers_not_attestation"
+    });
     status["lifecycle"] = runtime.lifecycle_status();
     if runtime.quiescing() {
         status["ready"] = false.into();
@@ -406,6 +414,7 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         .clone();
     let (parts, body) = request.into_parts();
     let identity = parts.extensions.get::<Identity>().unwrap();
+    let agent = crate::agent::Agent::detect(&parts.headers)?;
     let protocol = match parts.uri.path() {
         "/v1/chat/completions" => Protocol::Chat,
         "/v1/messages" => Protocol::Messages,
@@ -465,9 +474,15 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         ));
     }
     let mut headers = HeaderMap::new();
+    agent.check_model(&alias)?;
     // Parse before reducing headers, so duplicate rules cannot be silently ignored.
     let rule = crate::merchants::route_rule::Rule::parse(&parts.headers)?;
     for name in [
+        "user-agent",
+        "originator",
+        "x-app",
+        "x-grok-client-identifier",
+        "x-grok-client-version",
         "x-router-session",
         "x-router-account",
         "x-router-pool",
@@ -509,6 +524,7 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             body,
             headers,
             identity.request_id.clone(),
+            agent,
         )
         .await?;
         (
@@ -532,6 +548,7 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
                     body,
                     headers,
                     identity.request_id.clone(),
+                    agent,
                 )
                 .await?,
             None,

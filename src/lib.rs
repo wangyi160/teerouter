@@ -1,4 +1,5 @@
 mod accounting;
+mod agent;
 mod anthropic;
 pub mod attestation;
 mod balances;

@@ -468,6 +468,7 @@ impl Engine {
         body: &Value,
         headers: &mut HeaderMap,
         deadline: Instant,
+        agent: crate::agent::Agent,
     ) -> Result<&str, ApiError> {
         if let Some(pool) = headers.remove("x-router-pool") {
             let pool = pool
@@ -475,11 +476,18 @@ impl Engine {
                 .ok()
                 .filter(|s| config::valid_name(s))
                 .ok_or_else(|| ApiError::new(400, "invalid_pool", "Invalid x-router-pool"))?;
-            return self
+            let group = self
                 .groups
                 .get(pool)
-                .map(|g| g.config.name.as_str())
-                .ok_or_else(|| ApiError::new(404, "pool_not_found", "Unknown router pool"));
+                .ok_or_else(|| ApiError::new(404, "pool_not_found", "Unknown router pool"))?;
+            if !group
+                .backends
+                .iter()
+                .any(|b| agent.allows(b.config.provider))
+            {
+                return Err(agent.rejection());
+            }
+            return Ok(group.config.name.as_str());
         }
         // Automatic routing follows configured pool order, using authenticated
         // evidence rather than model-name guesses or requiring a router header.
@@ -488,6 +496,7 @@ impl Engine {
             .models
             .iter()
             .filter_map(|g| self.groups.get(&g.name))
+            .filter(|g| g.backends.iter().any(|b| agent.allows(b.config.provider)))
             .filter(|g| {
                 self.model_allowed(account, &g.config.name, model)
                     && g.backends
@@ -499,6 +508,17 @@ impl Engine {
             return Ok(&eligible[0].config.name);
         }
         if eligible.is_empty() {
+            if self
+                .groups
+                .values()
+                .any(|g| self.model_allowed(account, &g.config.name, model))
+                && !self.groups.values().any(|g| {
+                    self.model_allowed(account, &g.config.name, model)
+                        && g.backends.iter().any(|b| agent.allows(b.config.provider))
+                })
+            {
+                return Err(agent.rejection());
+            }
             if self
                 .groups
                 .values()
@@ -521,6 +541,7 @@ impl Engine {
             .flat_map(|g| self.route_groups(&g.config.name))
             .filter(|g| self.model_allowed(account, &g.config.name, model))
             .flat_map(|g| &g.backends)
+            .filter(|b| agent.allows(b.config.provider))
             .filter(|b| protocol.supports(b.config.provider))
             .filter_map(|b| b.catalog.clone())
             .collect();
@@ -552,6 +573,7 @@ impl Engine {
                 .iter()
                 .filter(|g| self.model_allowed(account, &g.config.name, model))
                 .flat_map(|g| &g.backends)
+                .filter(|b| agent.allows(b.config.provider))
                 .filter(|b| protocol.supports(b.config.provider))
             {
                 match backend.validate_model(protocol, model, body, &self.config.restrictions) {
@@ -585,6 +607,7 @@ impl Engine {
                 .flat_map(|g| &g.backends)
                 .any(|b| {
                     protocol.supports(b.config.provider)
+                        && agent.allows(b.config.provider)
                         && affinity
                             .pinned
                             .as_ref()
@@ -611,9 +634,10 @@ impl Engine {
         body: Value,
         headers: HeaderMap,
         request_id: String,
+        agent: crate::agent::Agent,
     ) -> Result<Routed, ApiError> {
         self.execute_admitted(
-            account, protocol, alias, body, headers, request_id, None, None,
+            account, protocol, alias, body, headers, request_id, None, None, agent,
         )
         .await
     }
@@ -644,6 +668,7 @@ impl Engine {
         request_id: String,
         mut parent: Option<Ticket>,
         mut route_observation: Option<crate::merchants::route_metrics::Observation>,
+        agent: crate::agent::Agent,
     ) -> Result<Routed, ApiError> {
         let reject = |parent: &mut Option<Ticket>, error: ApiError| {
             if let Some(parent) = parent.as_mut() {
@@ -660,7 +685,15 @@ impl Engine {
         let deadline =
             Instant::now() + Duration::from_secs(self.config.server.request_timeout_secs);
         let pool = self
-            .select_pool(account, protocol, alias, &body, &mut headers, deadline)
+            .select_pool(
+                account,
+                protocol,
+                alias,
+                &body,
+                &mut headers,
+                deadline,
+                agent,
+            )
             .await
             .map_err(|e| reject(&mut parent, e))?;
         if !self.model_allowed(account, pool, alias) {
@@ -687,6 +720,7 @@ impl Engine {
             self.route_groups(pool)
                 .into_iter()
                 .filter(|g| self.model_allowed(account, &g.config.name, alias))
+                .filter(|g| g.backends.iter().any(|b| agent.allows(b.config.provider)))
                 .collect()
         };
         let Some(primary) = groups.first() else {
@@ -747,6 +781,7 @@ impl Engine {
             .flat_map(|g| &g.backends)
             .filter(|b| {
                 protocol.supports(b.config.provider)
+                    && agent.allows(b.config.provider)
                     && affinity
                         .pinned
                         .as_ref()
@@ -778,6 +813,7 @@ impl Engine {
             let mut catalog_error: Option<ApiError> = None;
             for backend in groups.iter().flat_map(|g| &g.backends).filter(|b| {
                 protocol.supports(b.config.provider)
+                    && agent.allows(b.config.provider)
                     && affinity
                         .pinned
                         .as_ref()
@@ -875,6 +911,7 @@ impl Engine {
             let observer = crate::refusal::Observer::new(backend.config.provider);
             ticket.refusal = Some(observer.clone());
             let mut request_client = backend.client.clone();
+            request_client.preserve_agent_headers(&headers);
             request_client.refusal = Some(observer.clone());
             request_client.billing = ticket.billing.clone();
             request_client.activity = ticket.activity();

@@ -29,7 +29,7 @@ async fn managed_balance_blocks_upstream_but_keeps_catalog_access_and_accepts_to
     engine.vault.require_manager();
     let initial = engine.vault.lock().unwrap().clone();
     engine.vault.initialize(initial).unwrap();
-    let g = run(server::app_upstream_fixture(engine.clone())).await;
+    let g = run_fixture(engine.clone()).await;
     for (balances, status, code) in [
         (json!({}), 503, "balance_unavailable"),
         (json!({"test-user":0}), 402, "insufficient_balance"),
@@ -101,7 +101,7 @@ async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
             std::collections::BTreeMap::from([("test-user".into(), 2_000_000)]),
         )
         .unwrap();
-    let g = run(server::app_upstream_fixture(engine.clone())).await;
+    let g = run_fixture(engine.clone()).await;
     let current: Value = admin(&g, "GET", "/admin/config", Value::Null)
         .await
         .json()

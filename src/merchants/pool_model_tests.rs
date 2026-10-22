@@ -129,7 +129,11 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
     {
         assert_eq!(account["official_models"].as_object().unwrap().len(), 20);
     }
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let client = reqwest::Client::builder()
+        .user_agent("codex_cli_rs/1.0 (merchant fixture)")
+        .no_proxy()
+        .build()
+        .unwrap();
     for (id, accepted) in [("model-00", true), ("model-03", false)] {
         for model in [id.to_owned(), format!("chatgpt/{id}")] {
             for mode in ["fixed", "auto", "legacy"] {

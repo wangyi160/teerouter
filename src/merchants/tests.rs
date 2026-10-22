@@ -551,6 +551,7 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
         body.clone(),
         headers,
         "stale-book".into(),
+        crate::agent::Agent::Codex,
     )
     .await;
     assert!(matches!(result,Err(e) if e.status==409));
@@ -674,6 +675,7 @@ async fn serve(app: Router) -> Server {
 }
 async fn call(s: &Server, method: Method, path: &str, token: &str, body: Value) -> (u16, Value) {
     let r = reqwest::Client::builder()
+        .user_agent("codex_cli_rs/1.0 (merchant fixture)")
         .no_proxy()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -1167,7 +1169,8 @@ async fn explicit_selection_prices_and_revocation_fail_closed() {
             &format!("{id}/model-test"),
             request(),
             headers,
-            "one".into()
+            "one".into(),
+            crate::agent::Agent::Codex,
         )
         .await
         .is_err()
@@ -1183,6 +1186,7 @@ async fn explicit_selection_prices_and_revocation_fail_closed() {
         request(),
         headers,
         "two".into(),
+        crate::agent::Agent::Codex,
     )
     .await;
     assert!(matches!(result,Err(e) if e.status==409));

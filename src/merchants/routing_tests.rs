@@ -207,18 +207,66 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
         3
     );
     let body = json!({"model":"grok/model-test","messages":[{"role":"user","content":"hello"}]});
+    // A provider-qualified name, fixed pool, raw name, or legacy merchant
+    // selector must never override the agent's provider constraint.
+    for (ua, model, policy) in [
+        ("codex_cli_rs/1.0", "grok/model-test", rule(None, 1000000)),
+        (
+            "claude-cli/2.1.0",
+            "grok/model-test",
+            rule(Some(&pb), 1000000),
+        ),
+        ("grok-shell/1.0", "model-test", rule(Some(&pa), 1000000)),
+        ("GitHubCopilotChat/1.0", "model-test", rule(None, 1000000)),
+    ] {
+        let response = request_with_agent(
+            &server,
+            "alice-key",
+            policy,
+            json!({"model":model,"messages":[]}),
+            ua,
+        )
+        .await;
+        assert_eq!(response.status(), 403);
+        let expected = if ua.starts_with("GitHub") {
+            "unsupported_agent"
+        } else {
+            "agent_provider_mismatch"
+        };
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"]["code"],
+            expected
+        );
+    }
+    let legacy = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", server.url))
+        .bearer_auth("alice-key")
+        .header("user-agent", "grok-shell/1.0")
+        .header("x-router-pool", &pa)
+        .json(&json!({"model":"model-test","messages":[]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), 403);
+    assert_eq!(
+        legacy.json::<Value>().await.unwrap()["error"]["code"],
+        "agent_provider_mismatch"
+    );
+    assert_eq!(ca.load(Ordering::SeqCst), 0);
+    assert_eq!(cb.load(Ordering::SeqCst), 0);
+    assert!(r.engine().vault.lock().unwrap().events.is_empty());
     for policy in [rule(None, 1000000), rule(Some(&pb), 1000000)] {
-        let response = request(&server, "alice-key", policy, body.clone()).await;
+        let response = grok_request(&server, "alice-key", policy, body.clone()).await;
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()["x-router-pool"], pb);
         response.bytes().await.unwrap();
     }
     // A cheaper identically named model from another provider is not eligible.
-    let response = request(&server, "alice-key", rule(Some(&pa), 1000000), body.clone()).await;
-    assert_eq!(response.status(), 503);
+    let response = grok_request(&server, "alice-key", rule(Some(&pa), 1000000), body.clone()).await;
+    assert_eq!(response.status(), 403);
     assert_eq!(
         response.json::<Value>().await.unwrap()["error"]["code"],
-        "routing_no_matching_pool"
+        "agent_provider_mismatch"
     );
     // Provider-scoped platform grants also apply to catalogs and legacy raw IDs.
     let mut config = r.engine().config.clone();
@@ -238,7 +286,7 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
     let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
     assert_eq!(pools["data"].as_array().unwrap().len(), 1);
     assert_eq!(pools["data"][0]["id"], pb);
-    let response = request(
+    let response = grok_request(
         &server,
         "alice-key",
         rule(None, 1000000),
@@ -349,7 +397,25 @@ async fn soft_session_remembers_the_latest_pool_across_merchants_in_speed_mode()
     }
 }
 async fn request(server: &Server, token: &str, policy: Value, body: Value) -> reqwest::Response {
+    request_with_agent(server, token, policy, body, "codex_cli_rs/1.0").await
+}
+async fn grok_request(
+    server: &Server,
+    token: &str,
+    policy: Value,
+    body: Value,
+) -> reqwest::Response {
+    request_with_agent(server, token, policy, body, "grok-shell/1.0").await
+}
+async fn request_with_agent(
+    server: &Server,
+    token: &str,
+    policy: Value,
+    body: Value,
+    ua: &str,
+) -> reqwest::Response {
     reqwest::Client::builder()
+        .user_agent(ua)
         .no_proxy()
         .build()
         .unwrap()
@@ -591,6 +657,7 @@ async fn session_bound_to_a_merchant_never_moves_to_a_cheaper_merchant() {
     for policy in [rule(Some(&pb), 1000000), rule(None, 1000000)] {
         let response = reqwest::Client::new()
             .post(format!("{}/v1/chat/completions", server.url))
+            .header("user-agent", "codex_cli_rs/1.0")
             .bearer_auth("alice-key")
             .header("x-router-routing", policy.to_string())
             .header("x-router-session", "my-session")

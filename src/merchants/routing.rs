@@ -178,7 +178,9 @@ pub(crate) async fn execute(
     mut body: Value,
     mut headers: HeaderMap,
     request_id: String,
+    agent: crate::agent::Agent,
 ) -> Result<Dispatch, ApiError> {
+    agent.check_model(alias)?;
     let legacy_model = alias
         .split_once('/')
         .filter(|(m, _)| m.starts_with("m_"))
@@ -188,7 +190,7 @@ pub(crate) async fn execute(
     let chosen = if let Some(rule) = &rule {
         Some(
             super::route_rule::choose(
-                runtime, &root, account, protocol, alias, &body, &headers, rule,
+                runtime, &root, account, protocol, alias, &body, &headers, rule, agent,
             )
             .await?,
         )
@@ -256,6 +258,7 @@ pub(crate) async fn execute(
             .models
             .iter()
             .filter(|p| provider.is_none_or(|wanted| p.provider == Some(wanted)))
+            .filter(|p| p.provider.is_some_and(|p| agent.allows(p)))
             .filter(|p| {
                 selection
                     .engine
@@ -288,6 +291,7 @@ pub(crate) async fn execute(
         .iter()
         .find(|p| p.name == pool)
         .ok_or_else(forbidden)?;
+    agent.check(group.provider.ok_or_else(invalid)?)?;
     if provider.is_some_and(|wanted| group.provider != Some(wanted))
         || !platform_allows(
             &root,
@@ -404,6 +408,7 @@ pub(crate) async fn execute(
             request_id,
             Some(parent),
             observation,
+            agent,
         )
         .await?;
     Ok(Dispatch {
