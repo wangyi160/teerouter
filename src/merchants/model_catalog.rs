@@ -9,6 +9,14 @@ pub(crate) async fn models(
 ) -> Result<Vec<Value>, ApiError> {
     let mut result = BTreeMap::<String, Value>::new();
     for selection in routing::selections(runtime, &root.config.keys[account].user_id).await? {
+        if refusals::blocked(
+            runtime,
+            &selection.item.id,
+            &root.config.keys[account].user_id,
+            &selection.settings,
+        )? {
+            continue;
+        }
         let list = selection.engine.models(selection.account).await;
         let quotes = crate::pricing::quotes(
             &selection.settings,

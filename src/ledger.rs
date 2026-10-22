@@ -94,6 +94,17 @@ impl Ledger {
             object.remove("refusal");
         }
         if let Some(result) = refusal {
+            if let (Some(merchant), Some(user)) =
+                (audit["merchant_id"].as_str(), audit["user_id"].as_str())
+            {
+                let count = data
+                    .merchant_refusal_counts
+                    .entry(merchant.into())
+                    .or_default()
+                    .entry(user.into())
+                    .or_default();
+                *count = count.saturating_add(1);
+            }
             audit["refusal_type"] = if result.reasons.contains("content_filter") {
                 "content_filter"
             } else if result.error.is_some() {

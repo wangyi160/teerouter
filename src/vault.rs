@@ -70,6 +70,8 @@ pub(crate) struct Data {
     pub account_revisions: BTreeMap<String, i64>,
     pub usage: BTreeMap<String, crate::ledger::Usage>,
     #[serde(default)]
+    pub merchant_refusal_counts: crate::merchants::refusals::Counts,
+    #[serde(default)]
     pub moderation: BTreeMap<String, crate::moderation::UserRecord>,
     #[serde(default, skip_serializing)]
     pub refusals: BTreeMap<String, crate::refusal::UserRecord>,

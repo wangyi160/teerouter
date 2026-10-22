@@ -81,6 +81,14 @@ pub(crate) async fn pools(
 ) -> Result<Vec<Value>, ApiError> {
     let mut rows = vec![];
     for s in selections(runtime, &root.config.keys[account].user_id).await? {
+        if refusals::blocked(
+            runtime,
+            &s.item.id,
+            &root.config.keys[account].user_id,
+            &s.settings,
+        )? {
+            continue;
+        }
         let mut pools = s.engine.pools(s.account, &runtime.merchants.latency);
         for pool in pools["data"].as_array_mut().into_iter().flatten() {
             let name = pool["id"]
@@ -242,6 +250,12 @@ pub(crate) async fn execute(
     };
     let merchant = selection.item.id.clone();
     let settings = selection.settings;
+    refusals::check(
+        runtime,
+        &merchant,
+        &root.config.keys[account].user_id,
+        &settings,
+    )?;
     let quotes = crate::pricing::quotes(&settings, &selection.engine.config, &selection.price_book);
     let pool = if rule.is_some() {
         selected_pool.expect("rule selected pool")
@@ -388,6 +402,14 @@ pub(crate) async fn execute(
         }
         meter.requests += 1;
     }
+    // Recheck at admission after async discovery and pricing work.
+    let latest = selection.live.settings.lock().unwrap().clone();
+    refusals::check(
+        runtime,
+        &merchant,
+        &root.config.keys[account].user_id,
+        &latest,
+    )?;
     let mut parent: Ticket = root.admit_external(account, request_id.clone(), alias.into())?;
     parent.billing = Some(crate::billing::Observer::new(
         group.provider.ok_or_else(invalid)?,

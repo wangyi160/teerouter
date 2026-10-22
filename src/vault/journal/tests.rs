@@ -81,6 +81,49 @@ fn completed_receipts_survive_restart_without_management_snapshot() {
     assert_eq!(crate::balances::available(&data, "u").unwrap(), 970);
 }
 
+#[tokio::test]
+async fn refusal_totals_survive_upload_cleanup_and_restart_without_a_new_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cloud, url, task) = cloud().await;
+    let v = create(dir.path(), &url);
+    let saved = recovery(&v);
+    record(&v, 0);
+    let audit = v.lock().unwrap().events.back().unwrap()["event"].clone();
+    let observer = crate::refusal::Observer::new(crate::Provider::OpenAI);
+    for _ in 0..3 {
+        observer.observe(
+            crate::upstream::Protocol::Chat,
+            &json!({"choices":[{"index":0,"delta":{"refusal":"declined"}}]}),
+            true,
+        );
+    }
+    let report = observer.report().unwrap();
+    let ledger = crate::ledger::Ledger::new(v.clone());
+    ledger.record(
+        "key",
+        &crate::ledger::Usage::default(),
+        &audit,
+        Some(&report),
+    );
+    ledger.record("key", &crate::ledger::Usage::default(), &audit, None); // ordinary failure is not a refusal
+    assert_eq!(
+        v.lock().unwrap().merchant_refusal_counts["merchant"]["u"],
+        1
+    );
+    due(&v);
+    v.publish_public(false).await.unwrap();
+    assert!(v.lock().unwrap().events.is_empty());
+    drop(ledger);
+    drop(v);
+    let next = reopen(dir.path(), saved);
+    assert_eq!(
+        next.lock().unwrap().merchant_refusal_counts["merchant"]["u"],
+        1
+    );
+    assert!(next.lock().unwrap().events.is_empty());
+    task.abort();
+}
+
 #[test]
 fn wrong_key_row_deletion_and_concurrent_writer_are_rejected() {
     let dir = tempfile::tempdir().unwrap();

@@ -9,6 +9,7 @@ pub(crate) struct Defaults {
     pub max_concurrent: usize,
     pub rpm: u64,
     pub tpm: u64,
+    pub refusal_limit: u64,
 }
 impl Default for Defaults {
     fn default() -> Self {
@@ -18,11 +19,12 @@ impl Default for Defaults {
             max_concurrent: 16,
             rpm: 0,
             tpm: 0,
+            refusal_limit: 0,
         }
     }
 }
 impl Settings {
-    fn customer(&self, user: &str) -> Customer {
+    pub(super) fn customer(&self, user: &str) -> Customer {
         self.customers
             .iter()
             .find(|c| c.user_id == user)
@@ -36,6 +38,8 @@ impl Settings {
                     max_concurrent: d.max_concurrent,
                     rpm: d.rpm,
                     tpm: d.tpm,
+                    refusal_limit: None,
+                    refusal_baseline: 0,
                 }
             })
     }

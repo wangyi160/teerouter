@@ -8,6 +8,8 @@ const ADMIN: &str = "platform-admin";
 mod access_tests;
 #[path = "billing_tests.rs"]
 mod billing_tests;
+#[path = "refusal_tests.rs"]
+mod refusal_tests;
 #[tokio::test]
 async fn signed_checkpoint_requires_its_proof_hash_and_rejects_arbitrary_digest_attestation() {
     let r = root();

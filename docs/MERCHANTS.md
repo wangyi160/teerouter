@@ -103,6 +103,16 @@
 
 商户控制密钥与财务流水签名是不同的权限。流水持久化及签名见对应协议；这些记录不得携带上游账号凭据。TEE 信任仍依赖客户端审核的镜像和本地策略；平台可停止服务，但不能令审核过的客户端接受任意替换镜像。
 
+## 拒答阈值
+
+`customer_defaults.refusal_limit` 设置商户默认阈值，默认 `0` 不限制；单个客户的 `refusal_limit` 为 `null` 或省略时继承默认值，填 `0` 可单独关闭。阈值范围为 0–1,000,000,000。累计次数严格**超过**阈值后，Router 返回 HTTP 403 / `merchant_refusal_limit_exceeded`。例如阈值 3，第四次拒答后拒绝后续新请求；已转发的并发请求仍会完成。
+
+累计按商户 ID 和平台用户 ID 归属，覆盖该用户全部 API key、账号池及模型，更换或重新生成 key 不会解除限制。自动路由会排除被限制商户，仍可选择用户有权限的其他商户；固定池不会绕过限制。只有上游明确的拒答信号计数，一次请求最多一次；普通网络错误、429 和普通 5xx 不计数。
+
+`GET /merchant/state` 的 `customer_refusals` 只显示已使用客户的 `total`（历史总数）、`count`（清零后的次数）、`limit` 和 `blocked`。这些是准入控制统计，不是第二套流水接口。清零时提交该用户的 `refusal_baseline: total`，同时将 `enabled` 设为 `true`；基线单调递增，陈旧表单不能恢复已清零的次数，读取基线之后新增的拒答仍保留。
+
+累计总数随平台账务统计保存，启用本地流水日志时在同一持久化事务写入；删除或上传逐笔记录不会清零。管理平台可在首次升级恢复时从已归档流水回填历史总数。商户的阈值及清零基线仍由商户程序本地保存，Router 重启后随商户配置恢复，不需要平台持有商户凭据。没有本地日志时，尚未同步的尾部统计仍有崩溃丢失窗口。
+
 ## Access-token-only v1
 
 `merchant.credential_protocol` 为 `access-token-only-v1`。Router 不实现 OAuth 授权或续期，不接受或保存 refresh token。官方账号凭据仅支持 `access_token`、`expires_at`（Unix 秒）和可选 `account_id` 等明确的 access 元数据；`refresh_token`、`refreshToken`、空 refresh 字段、嵌套 refresh 字段与未识别字段均拒绝。规则覆盖初始化、账号导入、配置更新、停用账号和临时测试。兼容 Claude access-only 包装，但包装内不得含 refreshToken。Workbuddy 静态 API key 不变。

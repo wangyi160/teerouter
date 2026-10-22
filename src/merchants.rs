@@ -22,6 +22,7 @@ pub(crate) mod http;
 mod model_catalog;
 mod probe;
 pub(crate) mod public_catalog;
+pub(crate) mod refusals;
 pub(crate) mod route_metrics;
 pub(crate) mod route_rule;
 pub(crate) mod routing;
@@ -127,6 +128,10 @@ pub(crate) struct Customer {
     pub rpm: u64,
     #[serde(default)]
     pub tpm: u64,
+    #[serde(default)]
+    pub refusal_limit: Option<u64>,
+    #[serde(default)]
+    pub refusal_baseline: u64,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -376,6 +381,22 @@ pub(crate) async fn unlock(
         };
         (settings, admin)
     };
+    // Historical refusal totals prove prior upstream use. Keep blocked customers
+    // visible after restart so their merchant can review and reset them.
+    let prior_users = runtime
+        .engine()
+        .vault
+        .lock()
+        .map_err(storage)?
+        .merchant_refusal_counts
+        .get(&item.id)
+        .cloned()
+        .unwrap_or_default();
+    vault
+        .lock()
+        .map_err(storage)?
+        .upstream_users
+        .extend(prior_users.into_keys());
     let engine = crate::router::Engine::from_vault(vault).map_err(|_| invalid())?;
     let initial_tokens =
         engine
@@ -441,6 +462,8 @@ fn validate_bundle(
         max_concurrent: defaults.max_concurrent,
         rpm: defaults.rpm,
         tpm: defaults.tpm,
+        refusal_limit: Some(defaults.refusal_limit),
+        refusal_baseline: 0,
     };
     for c in settings
         .customers
@@ -450,6 +473,7 @@ fn validate_bundle(
         if !(1..=4096).contains(&c.max_concurrent)
             || c.rpm > 10_000_000
             || c.tpm > 10_000_000_000
+            || c.refusal_limit.is_some_and(|limit| limit > 1_000_000_000)
             || c.models.len() > 8192
             || c.models.iter().any(|rule| {
                 !crate::config::valid_model_id(rule)
@@ -593,7 +617,13 @@ pub(crate) async fn apply(
     // hidden legacy override or a newly discovered customer's restrictions.
     let mut overrides = old.customers.clone();
     overrides.retain(|c| !ids.contains(&c.user_id));
-    overrides.extend(input.customers);
+    overrides.extend(input.customers.into_iter().map(|mut customer| {
+        // A stale editor must not undo a completed manual reset.
+        customer.refusal_baseline = customer
+            .refusal_baseline
+            .max(old.customer(&customer.user_id).refusal_baseline);
+        customer
+    }));
     let settings = Settings {
         revision: old.revision.checked_add(1).ok_or_else(invalid)?,
         max_concurrent: input.max_concurrent,
@@ -685,6 +715,14 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     redact(&mut pools);
     let mut settings = live.settings.lock().unwrap().clone();
     settings.customers = customers::visible(&live, &settings)?;
+    let customer_refusals: BTreeMap<_, _> = settings
+        .customers
+        .iter()
+        .map(|customer| {
+            refusals::status(runtime, &item.id, customer, &settings)
+                .map(|status| (customer.user_id.clone(), status))
+        })
+        .collect::<Result<_, _>>()?;
     let mut merchant = item.public(true);
     merchant.as_object_mut().unwrap().remove("users");
     merchant["configuration_required"] =
@@ -706,7 +744,7 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
             .any(|m| m.provider == Some(p.provider))
     });
     Ok(
-        json!({"merchant":merchant,"settings":settings,"pools":pools,
+        json!({"merchant":merchant,"settings":settings,"pools":pools,"customer_refusals":customer_refusals,
         "compatibility":engine.config.compatibility,"restrictions":engine.config.restrictions,
         "official_pricing":book,"accounts":engine.account_status()?,"status":engine.status(),"catalog":engine.discovery_status()}),
     )

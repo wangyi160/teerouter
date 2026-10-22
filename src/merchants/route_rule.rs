@@ -118,6 +118,12 @@ pub(super) async fn choose(
         for s in &selections {
             for p in &s.engine.config.models {
                 if *fixed == format!("{}.{}", s.item.id, p.name) {
+                    super::refusals::check(
+                        runtime,
+                        &s.item.id,
+                        &root.config.keys[account].user_id,
+                        &s.settings,
+                    )?;
                     agent.check(p.provider.ok_or_else(invalid)?)?;
                 }
             }
@@ -154,6 +160,7 @@ pub(super) async fn choose(
     }
     let mut rows = Vec::new();
     let mut over_limit = false;
+    let mut refusal_blocked = false;
     let mut incompatible_model = false;
     let mut compatible_model = false;
     let cache_request = crate::router::cache::Request::new(
@@ -164,6 +171,12 @@ pub(super) async fn choose(
         headers,
     );
     for (index, selection) in selections.iter().enumerate() {
+        let blocked = super::refusals::blocked(
+            runtime,
+            &selection.item.id,
+            &root.config.keys[account].user_id,
+            &selection.settings,
+        )?;
         let candidates = selection
             .engine
             .routing_candidates(
@@ -226,6 +239,10 @@ pub(super) async fn choose(
             {
                 continue;
             }
+            if blocked {
+                refusal_blocked = true;
+                continue;
+            }
             if quote.multiplier_millionths > rule.max_multiplier_millionths {
                 over_limit = true;
                 continue;
@@ -267,6 +284,8 @@ pub(super) async fn choose(
     let Some(selected) = metrics.select(&candidates, rule.priority, rule.mode == Mode::Auto) else {
         return Err(if incompatible_model && !compatible_model {
             agent.rejection()
+        } else if refusal_blocked {
+            super::refusals::rejection()
         } else if rule.mode == Mode::Fixed && over_limit {
             ApiError::new(
                 403,

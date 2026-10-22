@@ -53,7 +53,7 @@ impl Vault {
             None => serde_json::to_value(&*data).map_err(|_| VaultError("invalid snapshot"))?,
         };
         let id = random_id()?;
-        let mut result = json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,
+        let mut result = json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"merchant_refusal_limit_version":1,
             "receipt_relay_version":1,"receipt_public_key":self.receipt_signer.public_key(),
             "boot_id":self.boot_id,"initialized":sync.initialized,"checkpoint_id":id});
         if let Some((previous_id, previous)) = &sync.diff_base

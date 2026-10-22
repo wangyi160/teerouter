@@ -22,6 +22,8 @@ struct Snapshot {
     receipt_relay: Option<crate::receipt_relay::State>,
     receipt_head: Option<crate::receipts::Head>,
     usage: BTreeMap<String, crate::ledger::Usage>,
+    #[serde(default)]
+    merchant_refusal_counts: Option<crate::merchants::refusals::Counts>,
     events: VecDeque<Value>,
     pending: Option<Export>,
     last_attempt_ms: Option<u64>,
@@ -35,6 +37,7 @@ impl Snapshot {
             receipt_relay: data.receipt_relay.clone(),
             receipt_head: data.receipt_head.clone(),
             usage: data.usage.clone(),
+            merchant_refusal_counts: Some(data.merchant_refusal_counts.clone()),
             events: data.events.clone(),
             pending: publishing.pending.clone(),
             last_attempt_ms: publishing.last_attempt_ms,
@@ -45,6 +48,11 @@ impl Snapshot {
         let object = value.as_object_mut().ok_or_else(bad)?;
         object.remove("events");
         object.remove("usage");
+        // Keep the format marker even when empty, but encrypt each changed
+        // customer counter separately instead of rewriting one growing map.
+        if self.merchant_refusal_counts.is_some() {
+            object.insert("merchant_refusal_counts".into(), json!({}));
+        }
         let mut rows = BTreeMap::new();
         for (key, value) in object {
             rows.insert(
@@ -57,6 +65,16 @@ impl Snapshot {
                 format!("u/{key}"),
                 serde_json::to_vec(value).map_err(|_| bad())?,
             );
+        }
+        if let Some(counts) = &self.merchant_refusal_counts {
+            for (merchant, users) in counts {
+                for (user, count) in users {
+                    rows.insert(
+                        format!("r/{merchant}/{user}"),
+                        serde_json::to_vec(count).map_err(|_| bad())?,
+                    );
+                }
+            }
         }
         for row in &self.events {
             let seq = row["seq"].as_u64().ok_or_else(bad)?;
@@ -82,12 +100,24 @@ impl Snapshot {
         let mut meta = serde_json::Map::new();
         let mut usage = serde_json::Map::new();
         let mut events = vec![];
+        let mut counts = serde_json::Map::new();
         for (key, bytes) in rows {
             let value: Value = serde_json::from_slice(bytes).map_err(|_| bad())?;
             if let Some(name) = key.strip_prefix("m/") {
                 meta.insert(name.into(), value);
             } else if let Some(name) = key.strip_prefix("u/") {
                 usage.insert(name.into(), value);
+            } else if let Some(pair) = key.strip_prefix("r/") {
+                let (merchant, user) = pair.split_once('/').ok_or_else(bad)?;
+                if !crate::config::valid_name(merchant)
+                    || !crate::config::valid_name(user)
+                    || !value.is_u64()
+                {
+                    return Err(bad());
+                }
+                counts
+                    .entry(merchant.to_owned())
+                    .or_insert_with(|| json!({}))[user] = value;
             } else if let Some(seq) = key.strip_prefix("e/") {
                 if value["seq"].as_u64() != seq.parse().ok() {
                     return Err(bad());
@@ -99,6 +129,12 @@ impl Snapshot {
         }
         meta.insert("usage".into(), Value::Object(usage));
         meta.insert("events".into(), events.into());
+        if !counts.is_empty() {
+            if meta.get("merchant_refusal_counts") != Some(&json!({})) {
+                return Err(bad());
+            }
+            meta.insert("merchant_refusal_counts".into(), Value::Object(counts));
+        }
         let saved: Self = serde_json::from_value(Value::Object(meta)).map_err(|_| bad())?;
         saved.validate()?;
         Ok(Some(saved))
@@ -334,7 +370,13 @@ impl Vault {
         let Some(saved) = Snapshot::decode(&journal.lock().map_err(io)?.rows)? else {
             return Ok(());
         };
-        if saved.receipt_relay.is_none() && saved.events.is_empty() && saved.receipt_head.is_none()
+        if saved.receipt_relay.is_none()
+            && saved.events.is_empty()
+            && saved.receipt_head.is_none()
+            && saved
+                .merchant_refusal_counts
+                .as_ref()
+                .is_none_or(|counts| counts.is_empty())
         {
             return Ok(());
         }
@@ -386,6 +428,11 @@ impl Vault {
         data.receipt_relay = saved.receipt_relay;
         data.receipt_head = saved.receipt_head;
         data.usage = saved.usage;
+        // Pre-upgrade journals have no counter field; retain management's
+        // historical backfill in that case. New journals own the exact totals.
+        if let Some(counts) = saved.merchant_refusal_counts {
+            data.merchant_refusal_counts = counts;
+        }
         data.events = saved.events;
         let mut publishing = self.relay_publishing.lock().unwrap();
         publishing.pending = saved.pending;
