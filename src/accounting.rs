@@ -307,9 +307,13 @@ impl Ticket {
         }
         // Platform keeps all admission outcomes. A merchant must not learn an
         // unused user's identity from an error before any upstream contact.
-        if self.parent.is_none() || self.ledger.has_upstream_user(&self.account.config.user_id) {
+        if self.parent.is_none() {
             self.ledger
                 .record(&self.account.config.name, &usage, &audit, refusal.as_ref());
+        } else if self.ledger.has_upstream_user(&self.account.config.user_id) {
+            // The parent records the bill once. Never enqueue a second merchant
+            // copy that would require the merchant to stay online and ACK it.
+            self.ledger.record_usage(&self.account.config.name, &usage);
         }
         if let Some(parent) = self.parent.as_mut() {
             parent.settled = true;

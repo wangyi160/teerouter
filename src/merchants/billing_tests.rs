@@ -137,7 +137,7 @@ async fn model_listing_never_creates_model_charges() {
 }
 
 #[tokio::test]
-async fn full_usage_in_long_http_error_is_charged_and_recorded_for_both_parties() {
+async fn full_usage_in_long_http_error_is_charged_once_with_merchant_totals() {
     let error = json!({"error":{"message":"x".repeat(10000)},"usage":{"prompt_tokens":10,"completion_tokens":5}});
     let (r, live, _upstream, router) = setup(vec![(400, false, error.to_string())], 1).await;
     assert_eq!(
@@ -157,7 +157,13 @@ async fn full_usage_in_long_http_error_is_charged_and_recorded_for_both_parties(
     assert_eq!(b["charge_microusd"], 20, "{b}");
     assert_eq!(b["usage_source"], "official");
     assert_eq!(b["attempt_records"][0]["billing"]["upstream_status"], 400);
-    assert_eq!(bill(&live.runtime), b);
+    let merchant = live.runtime.engine();
+    let ledger = merchant.vault.lock().unwrap();
+    assert!(ledger.events.is_empty(), "platform owns the receipt");
+    assert_eq!(ledger.usage["alice"].requests, 1);
+    assert_eq!(ledger.usage["alice"].errors, 1);
+    assert_eq!(ledger.usage["alice"].input_tokens, 10);
+    assert_eq!(ledger.usage["alice"].output_tokens, 5);
     let data = r.engine().vault.lock().unwrap().clone();
     assert_eq!(crate::balances::consumption(&data.events)["alice"], 20);
 }

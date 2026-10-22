@@ -109,8 +109,8 @@ impl Ledger {
             }
         }
         let event = serde_json::json!({"seq":seq,"event":audit});
-        // Only the platform ledger enforces user balances. Merchant ledgers
-        // have their own receipt acknowledgements and no platform balance map.
+        // Only the platform ledger enforces user balances. Merchant runtimes
+        // retain usage totals through record_usage and have no receipt outbox.
         if self.vault.managed() {
             crate::balances::add(&mut data.consumption, &event["event"]);
         }
@@ -120,5 +120,50 @@ impl Ledger {
         // A failed durable write latches admission closed, including cancellation.
         // Never silently fall back to RAM after enabling the accounting journal.
         let _ = self.vault.persist_accounting(&data);
+    }
+
+    /// Merchant runtimes retain rate-limit totals, while the parent platform
+    /// ledger owns the single durable receipt and refusal category.
+    pub fn record_usage(&self, key: &str, usage: &Usage) {
+        let Ok(mut data) = self.vault.lock() else {
+            return;
+        };
+        let total = data.usage.entry(key.into()).or_default();
+        total.requests = total.requests.saturating_add(usage.requests);
+        total.errors = total.errors.saturating_add(usage.errors);
+        total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+        total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+        total.unknown_usage_requests = total
+            .unknown_usage_requests
+            .saturating_add(usage.unknown_usage_requests);
+        data.changed();
+    }
+}
+
+#[cfg(test)]
+mod merchant_statistics_tests {
+    use super::*;
+
+    #[test]
+    fn merchant_totals_never_need_receipt_acknowledgements() {
+        let vault = Vault::memory().unwrap();
+        let ledger = Ledger::new(vault.clone());
+        for _ in 0..5000 {
+            ledger.record_usage(
+                "customer",
+                &Usage {
+                    requests: 1,
+                    input_tokens: 2,
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(ledger.healthy());
+        let data = vault.lock().unwrap();
+        assert_eq!(data.usage["customer"].requests, 5000);
+        assert_eq!(data.usage["customer"].input_tokens, 10000);
+        assert!(data.events.is_empty());
+        assert!(data.refusal_queue.events.is_empty());
+        assert_eq!(data.pending_event_bytes, 0);
     }
 }

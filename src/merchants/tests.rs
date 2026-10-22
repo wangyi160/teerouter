@@ -579,8 +579,7 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
     assert_eq!(bill["official_cost_microusd"], 40);
     assert_eq!(bill["charge_microusd"], 8);
     let merchant_events = live.runtime.engine().vault.lock().unwrap().events.clone();
-    let merchant_event = serde_json::to_value(merchant_events.back().unwrap()).unwrap();
-    assert_eq!(merchant_event["event"]["billing"], *bill);
+    assert!(merchant_events.is_empty(), "platform owns the receipt");
 }
 
 #[tokio::test]
@@ -1097,12 +1096,8 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
     );
     for token in [&a, &b] {
         let (_, usage) = call(&server, Method::GET, "/merchant/usage", token, Value::Null).await;
-        assert_eq!(usage["data"].as_array().unwrap().len(), 1);
-        assert_eq!(usage["data"][0]["event"]["merchant_price_version"], 2);
-        assert_eq!(
-            usage["data"][0]["event"]["merchant_pricing"]["input"],
-            1000000
-        );
+        assert!(usage["data"].as_array().unwrap().is_empty());
+        assert_eq!(usage["usage"]["alice"]["requests"], 1);
     }
     assert_eq!(
         r.engine().vault.lock().unwrap().usage["alice-key"].requests,
@@ -1111,7 +1106,7 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
     let (status, _) = call(
         &server,
         Method::DELETE,
-        "/merchant/refusals?through_id=1",
+        "/merchant/refusals?through_id=0",
         &a,
         Value::Null,
     )
@@ -1137,7 +1132,7 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
             .refusal_queue
             .events
             .len(),
-        1
+        0
     );
     assert_eq!(
         r.engine().vault.lock().unwrap().refusal_queue.events.len(),
@@ -1362,7 +1357,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         call(
             &server,
             Method::DELETE,
-            "/merchant/refusals?through_id=1",
+            "/merchant/refusals?through_id=0",
             &a,
             Value::Null
         )
