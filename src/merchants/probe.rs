@@ -10,10 +10,18 @@ use std::time::Duration;
 #[serde(deny_unknown_fields)]
 struct Input {
     pool: String,
+    draft_pool: Option<DraftPool>,
     proxy: String,
     credential: Option<Value>,
     api_key: Option<String>,
     model: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftPool {
+    provider: crate::Provider,
+    allowed_models: Option<Vec<String>>,
 }
 
 fn failure(stage: &str, error: Error) -> Value {
@@ -51,18 +59,39 @@ pub(super) async fn test(
         .acquire(1)
         .ok_or_else(|| ApiError::limited("An account test is already running"))?;
     let config = live.runtime.engine().vault.config().map_err(storage)?;
-    let pool = config
-        .models
-        .iter()
-        .find(|p| p.name == input.pool)
-        .ok_or_else(|| {
-            ApiError::new(
+    if !crate::config::valid_name(&input.pool) {
+        return Err(invalid());
+    }
+    let (provider, allowed_models) =
+        if let Some(pool) = config.models.iter().find(|p| p.name == input.pool) {
+            // A draft never overrides a published pool's provider or model policy.
+            if input.draft_pool.is_some() {
+                return Err(invalid());
+            }
+            (
+                pool.provider.ok_or_else(invalid)?,
+                pool.allowed_models.clone(),
+            )
+        } else if let Some(draft) = input.draft_pool {
+            if let Some(models) = &draft.allowed_models {
+                let unique: BTreeSet<_> = models.iter().collect();
+                if models.len() > 4096
+                    || unique.len() != models.len()
+                    || models
+                        .iter()
+                        .any(|model| !crate::config::valid_model_id(model))
+                {
+                    return Err(invalid());
+                }
+            }
+            (draft.provider, draft.allowed_models)
+        } else {
+            return Err(ApiError::new(
                 404,
                 "probe_pool_missing",
-                "Synchronize the account pool before testing",
-            )
-        })?;
-    let provider = pool.provider.ok_or_else(invalid)?;
+                "Provide the local draft pool when testing its first account",
+            ));
+        };
     if provider.is_local_test() && !item.allow_test {
         return Err(forbidden());
     }
@@ -136,7 +165,7 @@ pub(super) async fn test(
             &client,
             &config.discovery.codex_client_version,
             &prices,
-            pool.allowed_models.as_deref(),
+            allowed_models.as_deref(),
             input.model.as_deref(),
         ),
     )

@@ -2,6 +2,53 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
+async fn removing_last_account_withdraws_pool_and_price_but_disabled_accounts_keep_pool() {
+    let r = root();
+    let token = control("a");
+    add(&r, &token).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let mut body = update(2);
+    body["customer_defaults"] = json!({"models":["official/*"]});
+    body["pools"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"draft","provider":"xai","deployments":[]}));
+    body["pool_pricing"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"pool":"draft","multiplier_millionths":500000}));
+    let (status, saved) = call(&server, Method::PUT, "/merchant/config", &token, body).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["pools"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["pools"][0]["name"], "official");
+    assert_eq!(saved["pools"][0]["deployments"][0]["enabled"], false);
+    assert_eq!(
+        saved["settings"]["pool_pricing"].as_array().unwrap().len(),
+        1
+    );
+    let mut empty = update(3);
+    empty["pools"][0]["deployments"] = json!([]);
+    empty["secrets"] = json!({});
+    empty["delete_secrets"] = json!(["upstream"]);
+    let (status, removed) = call(&server, Method::PUT, "/merchant/config", &token, empty).await;
+    assert_eq!(status, 200, "{removed}");
+    assert_eq!(removed["pools"], json!([]));
+    assert_eq!(removed["settings"]["pool_pricing"], json!([]));
+    assert_eq!(
+        removed["settings"]["customer_defaults"]["models"],
+        json!(["official/*"])
+    );
+    assert_eq!(
+        state(&r, &registration(&token)).unwrap()["pools"],
+        json!([])
+    );
+    let (status, restored) =
+        call(&server, Method::PUT, "/merchant/config", &token, update(4)).await;
+    assert_eq!(status, 200, "{restored}");
+    assert_eq!(restored["pools"][0]["name"], "official");
+}
+
+#[tokio::test]
 async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_invalid_lists() {
     let r = root();
     let token = control("a");

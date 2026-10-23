@@ -519,7 +519,10 @@ impl Config {
                 !valid_model_id(name)
                     && !names.contains(name.as_str())
                     && !name.split_once('/').is_some_and(|(pool, id)| {
-                        (self.models.iter().any(|g| g.name == pool)
+                        // A withdrawn pool leaves its restrictive allowlist in
+                        // place. Its wildcard matches nothing until republished.
+                        (id == "*" && valid_name(pool)
+                            || self.models.iter().any(|g| g.name == pool)
                             || (pool.starts_with("m_") && pool.contains('.') && valid_name(pool)))
                             && (id == "*" || valid_model_id(id))
                     })

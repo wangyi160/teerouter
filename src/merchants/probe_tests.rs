@@ -1,6 +1,58 @@
 use super::*;
 
 #[tokio::test]
+async fn unpublished_pool_probe_is_disposable_and_cannot_override_published_policy() {
+    let r = root();
+    let token = control("a");
+    add(&r, &token).await;
+    let before = state(&r, &registration(&token)).unwrap();
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let body = json!({"pool":"local-draft","draft_pool":{"provider":"openai","allowed_models":["model-test"]},
+        "proxy":"http://127.0.0.1:1","credential":{"access_token":"PRIVATE_EXPIRED","expires_at":1}});
+    let path = "/merchant/accounts/test";
+    let (status, result) = call(&server, Method::POST, path, &token, body.clone()).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["code"], "credential_invalid_or_expired");
+    assert_eq!(state(&r, &registration(&token)).unwrap(), before);
+    let mut existing = body.clone();
+    existing["pool"] = "official".into();
+    assert_eq!(
+        call(&server, Method::POST, path, &token, existing).await.0,
+        400
+    );
+    for invalid in [
+        json!(["*"]),
+        json!(["x", "x"]),
+        json!(["a/../b"]),
+        json!(vec!["x"; 4097]),
+    ] {
+        let mut draft = body.clone();
+        draft["draft_pool"]["allowed_models"] = invalid;
+        assert_eq!(
+            call(&server, Method::POST, path, &token, draft).await.0,
+            400
+        );
+    }
+    let mut third_party = body.clone();
+    third_party["draft_pool"]["base_url"] = "https://third-party.example".into();
+    assert_eq!(
+        call(&server, Method::POST, path, &token, third_party)
+            .await
+            .0,
+        400
+    );
+    let mut test_provider = body;
+    test_provider["draft_pool"]["provider"] = "workbuddy".into();
+    assert_eq!(
+        call(&server, Method::POST, path, &token, test_provider)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(state(&r, &registration(&token)).unwrap(), before);
+}
+
+#[tokio::test]
 async fn account_probe_is_authenticated_scoped_bounded_and_does_not_save_or_refresh() {
     let r = root();
     let token = control("a");

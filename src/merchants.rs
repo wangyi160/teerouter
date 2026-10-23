@@ -477,11 +477,9 @@ fn validate_bundle(
             || c.models.len() > 8192
             || c.models.iter().any(|rule| {
                 !crate::config::valid_model_id(rule)
-                    && !bundle
-                        .config
-                        .models
-                        .iter()
-                        .any(|p| p.name == *rule || rule == &format!("{}/*", p.name))
+                    && !rule
+                        .strip_suffix("/*")
+                        .is_some_and(crate::config::valid_name)
             })
         {
             return Err(invalid());
@@ -591,6 +589,18 @@ pub(crate) async fn apply(
             "Reload merchant settings before editing",
         ));
     }
+    // Pools are published only while they contain accounts. Full replacement
+    // also withdraws the pool and its multiplier after the last account leaves.
+    let empty_names: BTreeSet<_> = input
+        .pools
+        .iter()
+        .filter(|pool| pool.deployments.is_empty())
+        .map(|pool| pool.name.clone())
+        .collect();
+    input.pools.retain(|pool| !pool.deployments.is_empty());
+    input
+        .pool_pricing
+        .retain(|price| !empty_names.contains(&price.pool));
     let known = customers::known(&live)?;
     if live.configured.load(std::sync::atomic::Ordering::Acquire)
         && input.customers.iter().any(|c| !known.contains(&c.user_id))
