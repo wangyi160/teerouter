@@ -226,12 +226,8 @@ async fn automatic_pool_selection_preserves_explicit_selection_and_acl() {
 
 #[tokio::test]
 async fn pool_is_discovered_from_model_and_continuations_stay_on_the_original_account() {
-    let a = catalog_mock(vec![Reply::json(
-        json!({"models":[{"id":"first-only"},{"id":"shared"}]}),
-    )])
-    .await;
-    let b = catalog_mock(vec![
-        Reply::json(json!({"models":[{"id":"second-only"},{"id":"shared"}]})),
+    let a = mock(vec![]).await;
+    let b = mock(vec![
         Reply::json(native(Provider::XAI)),
         Reply::json(native(Provider::XAI)),
     ])
@@ -241,14 +237,16 @@ async fn pool_is_discovered_from_model_and_continuations_stay_on_the_original_ac
     let mut second = bundle.config.models[0].clone();
     second.name = "second".into();
     second.deployments.retain(|d| d.id == "account-1");
+    second.allowed_models = Some(vec!["other".into(), "actual-model".into()]);
     bundle.config.models[0]
         .deployments
         .retain(|d| d.id == "account-0");
+    bundle.config.models[0].allowed_models = Some(vec!["chat".into(), "actual-model".into()]);
     bundle.config.models.push(second);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let gateway = run_fixture(Engine::from_vault(vault).unwrap()).await;
-    let body = json!({"model":"second-only","input":"hello"});
+    let body = json!({"model":"other","input":"hello"});
     let response = post(&gateway, "/v1/responses", body.clone()).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let mut expected = body;
@@ -257,24 +255,24 @@ async fn pool_is_discovered_from_model_and_continuations_stay_on_the_original_ac
     let continuation = post(
         &gateway,
         "/v1/responses",
-        json!({"model":"shared","previous_response_id":"reply","input":"continue"}),
+        json!({"model":"actual-model","previous_response_id":"reply","input":"continue"}),
     )
     .await;
     assert_eq!(continuation.status(), 200);
-    assert_eq!(a.calls.lock().unwrap().len(), 1); // Discovery only, never the user's prompt.
-    assert_eq!(b.calls.lock().unwrap().len(), 3);
+    assert_eq!(a.calls.lock().unwrap().len(), 0); // Never receives the user's prompt.
+    assert_eq!(b.calls.lock().unwrap().len(), 2);
     // Automatic routing must not guess the account of a foreign response ID.
     assert_eq!(
         post(
             &gateway,
             "/v1/responses",
-            json!({"model":"shared","previous_response_id":"unknown","input":"hello"})
+            json!({"model":"actual-model","previous_response_id":"unknown","input":"hello"})
         )
         .await
         .status(),
         409
     );
-    assert_eq!(b.calls.lock().unwrap().len(), 3);
+    assert_eq!(b.calls.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

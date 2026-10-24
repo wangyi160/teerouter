@@ -74,6 +74,7 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
         read(&gateway, "/admin/models", true).await["data"][0]["official_models"],
         original
     );
+    proxy.replies.lock().unwrap().push_back(catalog());
     let restarted = run_fixture(Engine::from_vault(vault).unwrap()).await;
     assert_eq!(
         post(&restarted, "/v1/responses", request("official", "low"))
@@ -87,7 +88,7 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
         read(&restarted, "/admin/models", true).await["data"][0]["official_models"],
         original
     );
-    assert_eq!(proxy.calls.lock().unwrap().len(), 1); // Policy edits did not refetch or replace evidence.
+    assert_eq!(proxy.calls.lock().unwrap().len(), 2); // A new runtime fetches; policy edits do not.
     proxy
         .replies
         .lock()
@@ -261,8 +262,10 @@ async fn global_restrictions_cannot_be_bypassed_by_another_account_or_fallback_p
             .unwrap();
         assert_eq!(response.status(), 403);
     }
-    assert_eq!(a.calls.lock().unwrap().len(), 1);
-    assert_eq!(b.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        a.calls.lock().unwrap().len() + b.calls.lock().unwrap().len(),
+        1
+    );
 }
 
 #[tokio::test]

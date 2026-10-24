@@ -181,8 +181,8 @@ async fn pool_fetches_one_catalog_shares_it_and_fails_over_to_another_source() {
         .push_back(catalog(Provider::XAI, &["replacement"]));
     e.refresh_models(true).await;
     for row in e.discovery_status()["data"].as_array().unwrap() {
-        assert_eq!(row["catalog"]["scope"], "pool");
-        assert_eq!(row["catalog"]["source_deployment"], "account-1");
+        assert_eq!(row["catalog"]["scope"], "provider");
+        assert!(row["catalog"].get("source_deployment").is_none());
         assert_eq!(
             row["official_models"]
                 .as_object()
@@ -236,7 +236,7 @@ async fn pool_catalog_falls_back_after_timeout_or_auth_failure() {
 }
 
 #[tokio::test]
-async fn anthropic_pagination_is_complete_and_failed_refresh_never_replaces_good_cache() {
+async fn anthropic_pagination_is_complete_and_failed_refresh_clears_catalog() {
     let proxy = catalog_mock(vec![
         Reply::json(json!({"data":[{"id":"first"}],"has_more":true,"last_id":"cursor"})),
         Reply::json(json!({"data":[{"id":"second"}],"has_more":false})),
@@ -258,19 +258,19 @@ async fn anthropic_pagination_is_complete_and_failed_refresh_never_replaces_good
         Reply::error(500),
     ]);
     e.refresh_models(true).await;
-    assert_eq!(listed(&gateway).await, ["first", "second"]);
+    assert!(listed(&gateway).await.is_empty());
     proxy.replies.lock().unwrap().push_back(Reply::json(
         json!({"data":[{"id":"invalid model\nsecret"}]}),
     ));
     e.refresh_models(true).await;
-    assert_eq!(listed(&gateway).await, ["first", "second"]);
+    assert!(listed(&gateway).await.is_empty());
     proxy.replies.lock().unwrap().push_back(Reply::error(403));
     e.refresh_models(true).await;
     assert!(listed(&gateway).await.is_empty());
 }
 
 #[tokio::test]
-async fn memory_cache_is_reused_but_new_credentials_invalidate_it() {
+async fn memory_cache_is_reused_and_token_rotation_keeps_provider_evidence_until_refresh() {
     let proxy = catalog_mock(vec![catalog(Provider::XAI, &["PRIVATE_MODEL_SENTINEL"])]).await;
     let v = Vault::memory().unwrap();
     v.provision(&bundle(Provider::XAI, &[&proxy])).unwrap();
@@ -279,7 +279,7 @@ async fn memory_cache_is_reused_but_new_credentials_invalidate_it() {
     drop(e);
     let reopened = v.clone();
     let e = Engine::from_vault(reopened.clone()).unwrap();
-    let gateway = run_fixture(e).await;
+    let gateway = run_fixture(e.clone()).await;
     assert_eq!(listed(&gateway).await, ["PRIVATE_MODEL_SENTINEL"]);
     assert_eq!(proxy.calls.lock().unwrap().len(), 1); // Loaded encrypted cache; no new request.
     proxy
@@ -294,6 +294,9 @@ async fn memory_cache_is_reused_but_new_credentials_invalidate_it() {
             &json!({"access_token":"replacement-token","expires_at":4102444800u64}),
         )
         .unwrap();
+    assert_eq!(listed(&gateway).await, ["PRIVATE_MODEL_SENTINEL"]);
+    assert_eq!(proxy.calls.lock().unwrap().len(), 1);
+    e.refresh_models(true).await;
     assert_eq!(listed(&gateway).await, ["replacement"]);
     assert_eq!(
         proxy.calls.lock().unwrap().last().unwrap().headers["authorization"],

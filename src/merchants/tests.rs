@@ -8,6 +8,8 @@ const ADMIN: &str = "platform-admin";
 mod access_tests;
 #[path = "billing_tests.rs"]
 mod billing_tests;
+#[path = "provider_catalog_tests.rs"]
+mod provider_catalogs;
 #[path = "refusal_tests.rs"]
 mod refusal_tests;
 #[tokio::test]

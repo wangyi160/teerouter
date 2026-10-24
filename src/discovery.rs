@@ -1,6 +1,7 @@
-//! One official model/capability catalog per pool, fetched through one usable account.
+//! Shared official provider catalogs; test providers retain pool-local discovery.
 pub(crate) mod capabilities;
 pub(crate) mod fetch;
+pub(crate) mod providers;
 
 use crate::{
     Client, Error,
@@ -40,6 +41,7 @@ struct Refresh {
 }
 
 pub(crate) struct Catalog {
+    shared: RwLock<Option<Arc<providers::Shared>>>,
     clients: Vec<(String, Client)>,
     options: Discovery,
     vault: Arc<Vault>,
@@ -96,6 +98,7 @@ impl Catalog {
         }
         let next_account = snapshot.as_ref().map(|s| s.account).unwrap_or(0);
         Ok(Arc::new(Self {
+            shared: RwLock::new(None),
             clients: accounts
                 .iter()
                 .map(|(d, c, _)| (d.id.clone(), c.clone()))
@@ -137,6 +140,9 @@ impl Catalog {
     }
 
     pub fn models(&self) -> BTreeSet<String> {
+        if let Some(shared) = self.shared.read().unwrap().as_ref() {
+            return shared.models();
+        }
         self.snapshot
             .read()
             .unwrap()
@@ -147,6 +153,9 @@ impl Catalog {
     }
 
     pub fn evidence(&self, model: &str) -> Result<ModelInfo, crate::error::ApiError> {
+        if let Some(shared) = self.shared.read().unwrap().as_ref() {
+            return shared.evidence(model);
+        }
         let unavailable = || {
             crate::error::ApiError::new(
                 503,
@@ -169,6 +178,10 @@ impl Catalog {
     }
 
     pub async fn refresh(&self, force: bool) {
+        let shared = self.shared.read().unwrap().clone();
+        if let Some(shared) = shared {
+            return shared.refresh(force).await;
+        }
         // Concurrent startup, listing and background refresh requests share one fetch.
         let requested = Instant::now();
         if !force && self.refresh.try_lock().is_err() && !self.models().is_empty() {
@@ -286,9 +299,16 @@ impl Catalog {
         }
         state.attempted = Some(Instant::now());
         state.revisions = self.revisions();
+        if state.error.is_some() {
+            *self.snapshot.write().unwrap() = None;
+            let _ = self.vault.store_catalog(&self.source, None);
+        }
     }
 
     pub fn status(&self) -> Value {
+        if let Some(shared) = self.shared.read().unwrap().as_ref() {
+            return shared.status();
+        }
         let (fetched_at, source_account) = self
             .snapshot
             .read()
@@ -299,7 +319,7 @@ impl Catalog {
         let state = self.refresh.try_lock();
         json!({"source": "provider_catalog",
             "scope": "pool", "source_deployment":source_account, "refresh_secs":self.options.refresh_secs,
-            "complete_catalog": true,
+            "complete_catalog": fetched_at.is_some(),
             "fetched_at":fetched_at,
             "models":self.models().len(),
             "refreshing":state.is_err(),
@@ -322,7 +342,14 @@ pub(crate) async fn refresh_all(catalogs: Vec<Arc<Catalog>>, force: bool) {
     stream::iter(
         catalogs
             .into_iter()
-            .filter(|c| seen.insert(Arc::as_ptr(c) as usize))
+            .filter(|c| {
+                let shared = c.shared.read().unwrap();
+                let identity = shared
+                    .as_ref()
+                    .map(|s| Arc::as_ptr(s) as usize)
+                    .unwrap_or(Arc::as_ptr(c) as usize);
+                seen.insert(identity)
+            })
             .collect::<Vec<_>>(),
     )
     .for_each_concurrent(4, |c| async move { c.refresh(force).await })

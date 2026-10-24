@@ -7,10 +7,24 @@ use std::sync::{
 
 // Shared by the platform and every merchant, including newly unlocked ones.
 // This is an explicit, process-local shutdown barrier, never a manager lease.
-#[derive(Default)]
 struct Lifecycle {
     quiescing: AtomicBool,
     background: Arc<Gate>,
+    catalogs: crate::discovery::providers::Registry,
+    catalog_authority: String,
+}
+impl Lifecycle {
+    fn new(engine: &Engine) -> Arc<Self> {
+        Arc::new(Self {
+            quiescing: AtomicBool::new(false),
+            background: Arc::default(),
+            catalogs: crate::discovery::providers::Registry::new(
+                &engine.config.discovery,
+                &engine.config.compatibility,
+            ),
+            catalog_authority: engine.vault.boot_id.clone(),
+        })
+    }
 }
 
 pub(crate) struct Runtime {
@@ -22,14 +36,23 @@ pub(crate) struct Runtime {
     write: tokio::sync::Mutex<()>,
     maintenance: RwLock<serde_json::Value>,
     lifecycle: Arc<Lifecycle>,
+    catalogs_enabled: Arc<AtomicBool>,
+    catalog_owner: String,
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.lifecycle.catalogs.remove(&self.catalog_owner);
+    }
 }
 impl Runtime {
     pub fn new(engine: Arc<Engine>) -> Arc<Self> {
-        Self::scoped(engine, false, Arc::default())
+        let lifecycle = Lifecycle::new(&engine);
+        Self::scoped(engine, false, lifecycle)
     }
     #[cfg(test)]
     pub(super) fn merchant(engine: Arc<Engine>) -> Arc<Self> {
-        Self::scoped(engine, true, Arc::default())
+        let lifecycle = Lifecycle::new(&engine);
+        Self::scoped(engine, true, lifecycle)
     }
     pub(super) fn merchant_child(&self, engine: Arc<Engine>) -> Arc<Self> {
         Self::scoped(engine, true, self.lifecycle.clone())
@@ -38,6 +61,11 @@ impl Runtime {
         !self.merchant
     }
     fn scoped(engine: Arc<Engine>, merchant: bool, lifecycle: Arc<Lifecycle>) -> Arc<Self> {
+        let catalogs_enabled = Arc::new(AtomicBool::new(true));
+        let catalog_owner = engine.vault.boot_id.clone();
+        lifecycle
+            .catalogs
+            .replace(&catalog_owner, &catalogs_enabled, engine.catalogs());
         let runtime = Arc::new(Self {
             merchant,
             merchants: Default::default(),
@@ -47,6 +75,8 @@ impl Runtime {
             write: tokio::sync::Mutex::new(()),
             maintenance: RwLock::new(serde_json::json!({"last_run":null,"last_error":null})),
             lifecycle,
+            catalogs_enabled,
+            catalog_owner,
         });
         let weak = Arc::downgrade(&runtime);
         tokio::spawn(async move {
@@ -83,6 +113,26 @@ impl Runtime {
     }
     pub fn engine(&self) -> Arc<Engine> {
         self.current.read().unwrap().clone()
+    }
+    pub fn set_catalogs_enabled(&self, enabled: bool) {
+        self.catalogs_enabled.store(enabled, Ordering::SeqCst);
+        if enabled {
+            self.publish_catalogs(&self.engine());
+        } else {
+            self.lifecycle.catalogs.remove(&self.catalog_owner);
+        }
+    }
+    fn publish_catalogs(&self, engine: &Engine) {
+        if self.catalog_owner == self.lifecycle.catalog_authority {
+            self.lifecycle
+                .catalogs
+                .configure(&engine.config.discovery, &engine.config.compatibility);
+        }
+        self.lifecycle.catalogs.replace(
+            &self.catalog_owner,
+            &self.catalogs_enabled,
+            engine.catalogs(),
+        );
     }
     pub fn quiescing(&self) -> bool {
         self.lifecycle.quiescing.load(Ordering::SeqCst)
@@ -176,6 +226,7 @@ impl Runtime {
         let next = Engine::from_snapshot(old.vault.clone(), bundle, None, data.revision)
             .map_err(|_| invalid())?;
         old.vault.initialize(data).map_err(storage)?;
+        self.publish_catalogs(&next);
         *self.current.write().unwrap() = next;
         Ok(serde_json::json!({"initialized":true,"boot_id":old.vault.boot_id}))
     }
@@ -283,6 +334,7 @@ impl Runtime {
                 .map_err(storage)?
             {
                 next.recover_changed_accounts(&old, &update);
+                self.publish_catalogs(&next);
                 *self.current.write().unwrap() = next;
                 return Ok(serde_json::json!({"revision":snapshot.revision+1,"applied":true}));
             }

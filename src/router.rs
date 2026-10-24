@@ -366,15 +366,15 @@ impl Engine {
     }
 
     pub async fn refresh_models(&self, force: bool) {
-        crate::discovery::refresh_all(
-            self.groups
-                .values()
-                .flat_map(|g| &g.backends)
-                .filter_map(|b| b.catalog.clone())
-                .collect(),
-            force,
-        )
-        .await;
+        crate::discovery::refresh_all(self.catalogs(), force).await;
+    }
+
+    pub(crate) fn catalogs(&self) -> Vec<Arc<crate::discovery::Catalog>> {
+        self.groups
+            .values()
+            .flat_map(|g| &g.backends)
+            .filter_map(|b| b.catalog.clone())
+            .collect()
     }
 
     pub(crate) fn discovery_status(&self) -> Value {

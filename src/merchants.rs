@@ -329,6 +329,10 @@ pub(crate) async fn register(
     }
     data.merchants.insert(item.id.clone(), item.clone());
     data.changed();
+    drop(data);
+    if let Some(live) = runtime.merchants.live.lock().unwrap().get(&item.id) {
+        live.runtime.set_catalogs_enabled(item.enabled);
+    }
     Ok(item.public(
         runtime
             .merchants
