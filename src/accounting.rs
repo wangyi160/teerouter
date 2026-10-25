@@ -265,14 +265,15 @@ impl Ticket {
         }
         self.settled = true;
         self.finish_billing_attempt(status);
-        let billing = self
-            .billing
-            .as_ref()
-            .map(|_| crate::billing::aggregate(&self.billing_records, self.attempts));
-        if let Some(record) = &billing {
-            if self.attempts > 0 {
-                self.tokens = crate::billing::tokens(record);
-            }
+        let billing = (self.billing.is_some() || self.attempts == 0)
+            .then(|| crate::billing::aggregate(&self.billing_records, self.attempts));
+        if self.attempts == 0 {
+            self.tokens.known = true;
+        }
+        if let Some(record) = &billing
+            && self.attempts > 0
+        {
+            self.tokens = crate::billing::tokens(record);
         }
         let usage = Usage {
             requests: 1,

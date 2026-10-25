@@ -2,6 +2,7 @@
 use crate::{Error, Provider};
 use std::time::Duration;
 pub(crate) mod latency;
+pub(crate) mod metered;
 mod vless;
 
 pub(crate) fn proxy(value: &str) -> Result<reqwest::Proxy, Error> {

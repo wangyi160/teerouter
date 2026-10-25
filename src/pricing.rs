@@ -329,8 +329,11 @@ pub(crate) async fn public_get(
     Ok(axum::Json(
         json!({"object":"price_book", "revision":book.revision,
         "currency":"USD", "unit":"micro_usd_per_million_tokens", "providers":book.providers,
-        "billing_policy":{"version":2,"error_usage_chargeable":true,"attempts_billed_separately":true,
-            "missing_usage":"estimate_failed_model_attempt_with_processing_evidence",
+        "billing_policy":{"version":3,"error_usage_chargeable":true,"attempts_billed_separately":true,
+            "missing_usage":"estimate_failed_model_attempt_after_request_flush_or_processing_evidence",
+            "incomplete_transmission_without_usage":"zero_charge",
+            "upstream_rejection_without_usage":"zero_charge",
+            "client_disconnect":"cancel_upstream_and_settle_observed_progress",
             "successful_missing_usage":"pending_no_estimate","estimator":"o200k_json_text_v1",
             "unknown_cache":"ordinary_input","hidden_output_estimated":false,
             "rounding":"ceil_once_per_request_to_micro_usd"}}),

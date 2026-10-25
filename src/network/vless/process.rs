@@ -177,6 +177,15 @@ pub(in crate::network) struct Lease {
 }
 
 impl Lease {
+    pub(in crate::network) fn proxy_url(&self) -> reqwest::Url {
+        reqwest::Url::parse(&format!(
+            "socks5h://{}:{}@127.0.0.1:{}",
+            self.id,
+            self.core.password.as_str(),
+            self.core.port
+        ))
+        .expect("local proxy URL")
+    }
     pub(in crate::network) fn proxy(&self) -> Result<reqwest::Proxy, Error> {
         let url = zeroize::Zeroizing::new(format!(
             "socks5h://{}:{}@127.0.0.1:{}",

@@ -15,8 +15,17 @@ fn record(number: usize, status: u16, o: &Observer) -> Value {
 }
 
 #[test]
+fn no_upstream_attempt_is_explicitly_zero() {
+    let b = aggregate(&[], 0);
+    assert_eq!(b["state"], "calculated");
+    assert_eq!(b["charge_microusd"], 0);
+    assert_eq!(b["reason"], "not_forwarded");
+    assert_eq!(aggregate(&[], 1)["state"], "pending");
+}
+
+#[test]
 fn final_official_usage_is_charged_despite_error_or_disconnect() {
-    for status in [200, 403, 499, 500, 502, 504] {
+    for status in [200, 500, 502, 504] {
         let o = observer();
         o.headers(status);
         o.observe(
@@ -42,7 +51,8 @@ fn interrupted_text_estimate_is_independent_of_stream_chunk_boundaries() {
         b.observe(Protocol::Chat, &delta(chunk), true);
     }
     let one = a.finish(499, 1);
-    assert_eq!(one, b.finish(502, 1));
+    assert_eq!(one["usage"], b.finish(502, 1)["usage"]);
+    assert_eq!(one["estimate"], b.finish(502, 1)["estimate"]);
     assert_eq!(one["state"], "calculated");
     assert_eq!(one["usage_source"], "estimated");
     assert_eq!(one["estimate"]["cache_policy"], "ordinary_input");
@@ -68,7 +78,7 @@ fn failed_request_with_final_usage_uses_only_official_counts_and_cache_discount(
 }
 
 #[test]
-fn pre_generation_rejections_are_zero_but_ambiguous_timeouts_are_unknown() {
+fn rejections_and_failures_before_transmission_are_zero() {
     for status in [400, 401, 402, 403, 404, 413, 422, 429] {
         let o = observer();
         o.headers(status);
@@ -77,7 +87,7 @@ fn pre_generation_rejections_are_zero_but_ambiguous_timeouts_are_unknown() {
         assert_eq!(b["usage_source"], "none");
     }
     let o = observer();
-    assert_eq!(o.finish(504, 1)["state"], "pending");
+    assert_eq!(o.finish(504, 1)["charge_microusd"], 0);
     o.no_generation();
     assert_eq!(o.finish(502, 1)["charge_microusd"], 0);
 }
@@ -98,6 +108,47 @@ fn partial_official_input_and_caches_survive_output_estimation() {
     assert_eq!(b["usage"]["cache_read"], 50);
     assert_eq!(b["estimate"]["input_source"], "upstream");
     assert!(b["usage"]["output"].as_u64().unwrap() > 1);
+}
+
+#[test]
+fn flushed_input_without_reply_is_estimated_only_for_failed_attempts() {
+    for provider in [Provider::OpenAI, Provider::Anthropic, Provider::XAI] {
+        let o = Observer::new(provider, &request(), tests::quote()).unwrap();
+        o.request_connecting();
+        o.request_writing();
+        o.request_flushed();
+        for status in [499, 502, 504] {
+            let b = o.finish(status, 1);
+            assert_eq!(b["state"], "calculated", "{b}");
+            assert_eq!(b["usage_source"], "estimated");
+            assert_eq!(b["usage"]["output"], 0);
+            assert!(b["usage"]["input"].as_u64().unwrap() > 0);
+            assert_eq!(b["estimate"]["cache_policy"], "ordinary_input");
+        }
+        assert_eq!(o.finish(200, 1)["state"], "pending");
+        let fresh = o.fresh();
+        assert_eq!(fresh.finish(499, 1)["charge_microusd"], 0);
+        assert_eq!(fresh.finish(499, 1)["transport"]["request_flushed"], false);
+    }
+}
+
+#[test]
+fn explicit_upstream_rejection_is_waived_even_if_it_contains_counters() {
+    for status in [400, 401, 403, 404, 408, 422, 429] {
+        let o = observer();
+        o.request_flushed();
+        o.headers(status);
+        o.observe(
+            Protocol::Chat,
+            &json!({"usage":{"prompt_tokens":100,"completion_tokens":5}}),
+            false,
+        );
+        let b = o.finish(502, 1);
+        assert_eq!(b["charge_microusd"], 0, "{b}");
+        assert_eq!(b["usage_source"], "none");
+        assert_eq!(b["waived_usage"]["input"], 100);
+        assert_eq!(b["reason"], "upstream_rejected");
+    }
 }
 
 #[test]
@@ -183,7 +234,7 @@ fn errors_require_model_input_and_processing_evidence_before_estimation() {
         o.headers(502);
         o.observe(Protocol::Chat, &value, false);
         let b = o.finish(502, 1);
-        assert_eq!(b["state"], "pending", "{b}");
+        assert_eq!(b["charge_microusd"], 0, "{b}");
         assert!(b.get("estimate").is_none());
     }
 }
@@ -232,7 +283,7 @@ fn retries_reset_usage_and_sum_exact_amounts_before_rounding() {
         false,
     );
     let second = first.fresh();
-    assert_eq!(second.finish(504, 1)["state"], "pending");
+    assert_eq!(second.finish(504, 1)["charge_microusd"], 0);
     second.observe(
         Protocol::Chat,
         &json!({"usage":{"prompt_tokens":2_000_000,"completion_tokens":0}}),
@@ -248,6 +299,12 @@ fn retries_reset_usage_and_sum_exact_amounts_before_rounding() {
 #[test]
 fn unknown_attempt_does_not_erase_other_billable_attempts() {
     let first = observer();
+    // A malformed usage report is still quarantined, never silently repriced.
+    first.observe(
+        Protocol::Chat,
+        &json!({"usage":{"prompt_tokens":"invalid"}}),
+        false,
+    );
     let second = first.fresh();
     second.observe(
         Protocol::Chat,

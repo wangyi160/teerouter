@@ -32,15 +32,13 @@ pub(crate) async fn send(
     client
         .checked(
             client
-                .profile
-                .json(
+                .dispatch(client.profile.json(
                     "responses",
                     &client.http,
                     url,
                     client.auth_headers(HeaderMap::new()).await?,
                     request,
-                )?
-                .send()
+                )?)
                 .await?,
             crate::upstream::Protocol::Responses,
         )

@@ -3,6 +3,12 @@ use super::*;
 /// Keep each attempt's price dimensions and evidence; round only once per request.
 /// Unknown attempts remain explicit even when other attempts can be charged.
 pub(crate) fn aggregate(attempts: &[Value], expected: usize) -> Value {
+    if expected == 0 && attempts.is_empty() {
+        return json!({"version":2,"state":"calculated","currency":"USD",
+            "reason":"not_forwarded","usage_source":"none","coverage":"complete",
+            "charge_microusd":0,"official_cost_microusd":0,"official_cost_picousd":"0",
+            "attempt_records":[],"unknown_attempts":0});
+    }
     let invalid = |reason| json!({"version":2,"state":"pending","reason":reason});
     if attempts.is_empty() || attempts.len() != expected || attempts.len() > 16 {
         return invalid("attempt_evidence_missing");

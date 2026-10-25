@@ -205,6 +205,14 @@ impl Engine {
                     proxy,
                     &client.base_url,
                 ));
+                client.transport = Some(
+                    crate::network::metered::Transport::new(
+                        deployment.provider,
+                        proxy,
+                        deployment.timeout_secs,
+                    )
+                    .map_err(|_| "cannot create metered upstream transport")?,
+                );
                 let binding = if let Some(name) = &deployment.oauth_account {
                     bundle.accounts[name]
                         .proxy

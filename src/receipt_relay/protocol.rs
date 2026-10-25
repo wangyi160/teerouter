@@ -47,8 +47,15 @@ fn billing_detail(value: &Value, attempts: bool) -> Value {
             "upstream_status",
             "upstream_failed",
             "unknown_attempts",
+            "termination",
         ],
     );
+    if value["transport"].is_object() {
+        out["transport"] = select(
+            &value["transport"],
+            &["version", "phase", "request_flushed"],
+        );
+    }
     if value["items"].is_array() {
         out["items"] = value["items"]
             .as_array()
@@ -74,7 +81,7 @@ fn billing_detail(value: &Value, attempts: bool) -> Value {
             &["service_tier", "speed", "inference_geo"],
         );
     }
-    for field in ["usage", "reported_usage"] {
+    for field in ["usage", "reported_usage", "waived_usage"] {
         if value[field].is_object() {
             out[field] = select(
                 &value[field],

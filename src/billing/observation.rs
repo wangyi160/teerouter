@@ -23,6 +23,8 @@ struct State {
     upstream_status: Option<u16>,
     upstream_failed: bool,
     no_generation: bool,
+    transport_phase: &'static str,
+    request_flushed: bool,
 }
 
 fn tier(value: &str) -> Option<&str> {
@@ -180,6 +182,8 @@ impl Observer {
             upstream_status: None,
             upstream_failed: false,
             no_generation: false,
+            transport_phase: "not_started",
+            request_flushed: false,
         };
         Ok(Self(Arc::new(Mutex::new(state.clone())), Arc::new(state)))
     }
@@ -192,6 +196,33 @@ impl Observer {
     pub(crate) fn headers(&self, status: u16) {
         if let Ok(mut s) = self.0.lock() {
             s.upstream_status = Some(status);
+            s.transport_phase = "response_headers";
+        }
+    }
+
+    pub(crate) fn request_connecting(&self) {
+        if let Ok(mut s) = self.0.lock() {
+            s.transport_phase = "connecting";
+        }
+    }
+    pub(crate) fn request_body(&self, body: &Value) {
+        if let Ok(mut s) = self.0.lock() {
+            s.estimate = super::estimate::Estimate::new(body);
+        }
+    }
+    pub(crate) fn request_writing(&self) {
+        if let Ok(mut s) = self.0.lock()
+            && s.upstream_status.is_none()
+        {
+            s.transport_phase = "writing_request";
+        }
+    }
+    pub(crate) fn request_flushed(&self) {
+        if let Ok(mut s) = self.0.lock() {
+            s.request_flushed = true;
+            if s.upstream_status.is_none() {
+                s.transport_phase = "awaiting_response";
+            }
         }
     }
 
@@ -203,6 +234,9 @@ impl Observer {
 
     pub(crate) fn observe(&self, protocol: Protocol, value: &Value, streaming: bool) {
         if let Ok(mut state) = self.0.lock() {
+            if state.upstream_status.is_some() {
+                state.transport_phase = "receiving_response";
+            }
             state.estimate.observe(protocol, value, streaming);
             if let Err(error) = state.observe(protocol, value, streaming) {
                 state.error = Some(error);
@@ -229,26 +263,31 @@ impl Observer {
             || s.estimate.generated();
         let failed =
             status >= 400 || s.upstream_status.is_some_and(|n| n >= 400) || s.upstream_failed;
-        let rejected = s.no_generation
-            || matches!(
-                s.upstream_status,
-                Some(400 | 401 | 402 | 403 | 404 | 413 | 422 | 429)
-            );
-        let no_charge = rejected
-            && !s.estimate.generated()
-            && [
-                s.usage.input,
-                s.usage.output,
-                s.usage.total,
-                s.usage.cache_read,
-                s.usage.cache_write,
-                s.usage.reasoning,
-            ]
-            .iter()
-            .all(|n| n.unwrap_or(0) == 0)
-            && s.usage.tools.values().all(|n| *n == 0);
+        let rejected = s.no_generation || s.upstream_status.is_some_and(|n| n >= 300);
+        // A failed exchange without evidence of completed transmission or model
+        // processing is closed at zero. This is a billing policy, not a claim
+        // that the remote application definitely did no work.
+        let before_send = failed && !s.request_flushed && s.upstream_status.is_none();
+        let waiting =
+            s.request_flushed || s.upstream_status.is_some_and(|n| (200..300).contains(&n));
+        let refused = s.upstream_status.is_some_and(|n| (300..500).contains(&n));
+        let no_charge = refused
+            || (s.error.is_none()
+                && (rejected || before_send)
+                && !s.estimate.generated()
+                && [
+                    s.usage.input,
+                    s.usage.output,
+                    s.usage.total,
+                    s.usage.cache_read,
+                    s.usage.cache_write,
+                    s.usage.reasoning,
+                ]
+                .iter()
+                .all(|n| n.unwrap_or(0) == 0)
+                && s.usage.tools.values().all(|n| *n == 0));
         let mut missing = None;
-        if no_charge && s.error.is_none() {
+        if no_charge {
             usage = Metrics {
                 input: Some(0),
                 output: Some(0),
@@ -258,7 +297,7 @@ impl Observer {
         } else if !s.final_usage && s.error.is_none() {
             // Missing usage is not itself a generation failure. In particular,
             // successful JSON/SSE responses must never fall back to estimates.
-            if !failed || !s.estimate.model_request || !processing_evidence {
+            if !failed || !s.estimate.model_request || !(processing_evidence || waiting) {
                 missing = Some("final_usage_missing");
             } else {
                 let local_output = s.estimate.output();
@@ -302,32 +341,34 @@ impl Observer {
         let invalid_reported = calculate(s.provider, &s.quote, &s.usage, &s.dimensions)
             .err()
             .filter(|reason| reason.starts_with("inconsistent_") || *reason == "usage_overflow");
-        let error = s.error.or(invalid_reported).or(missing).or_else(|| {
-            if attempts > 1 {
-                Some("multiple_upstream_attempts")
-            } else if no_charge {
-                None
-            } else if s.auto_tier {
-                Some("actual_service_tier_missing")
-            } else if s.speed_unconfirmed {
-                Some("actual_speed_missing")
-            } else if s.geo_unconfirmed {
-                Some("actual_inference_geo_missing")
-            } else if s
-                .expected_tools
-                .iter()
-                .any(|t| !s.usage.tools.contains_key(t))
-            {
-                Some("tool_usage_missing")
-            } else if s.hour_cache_requested
-                && s.usage.cache_write.unwrap_or(0) > 0
-                && !s.hour_split_seen
-            {
-                Some("cache_duration_usage_missing")
-            } else {
-                None
-            }
-        });
+        let error = if no_charge {
+            None
+        } else {
+            s.error.or(invalid_reported).or(missing).or_else(|| {
+                if attempts > 1 {
+                    Some("multiple_upstream_attempts")
+                } else if s.auto_tier {
+                    Some("actual_service_tier_missing")
+                } else if s.speed_unconfirmed {
+                    Some("actual_speed_missing")
+                } else if s.geo_unconfirmed {
+                    Some("actual_inference_geo_missing")
+                } else if s
+                    .expected_tools
+                    .iter()
+                    .any(|t| !s.usage.tools.contains_key(t))
+                {
+                    Some("tool_usage_missing")
+                } else if s.hour_cache_requested
+                    && s.usage.cache_write.unwrap_or(0) > 0
+                    && !s.hour_split_seen
+                {
+                    Some("cache_duration_usage_missing")
+                } else {
+                    None
+                }
+            })
+        };
         let mut record = result(s.provider, &s.quote, &usage, &s.dimensions, error);
         record["usage_source"] = source.into();
         record["coverage"] = if source == "estimated" || source == "mixed" {
@@ -339,11 +380,37 @@ impl Observer {
         }
         .into();
         record["upstream_status"] = s.upstream_status.into();
+        record["transport"] = json!({"version":1,"phase":s.transport_phase,
+            "request_flushed":s.request_flushed});
+        record["termination"] = if status == 499 {
+            "request_cancelled"
+        } else if s.no_generation {
+            "not_forwarded"
+        } else if no_charge && s.upstream_status.is_some() {
+            "upstream_rejected"
+        } else if status == 504 {
+            "timeout"
+        } else if failed {
+            "upstream_error"
+        } else {
+            "completed"
+        }
+        .into();
         if s.upstream_failed {
             record["upstream_failed"] = true.into();
         }
         if source == "none" {
-            record["reason"] = "no_generation".into();
+            if metered {
+                record["waived_usage"] = json!(s.usage);
+            }
+            record["reason"] = if s.no_generation {
+                "no_generation"
+            } else if rejected {
+                "upstream_rejected"
+            } else {
+                "request_not_fully_sent"
+            }
+            .into();
         }
         if !estimate.is_null() {
             record["estimate"] = estimate;

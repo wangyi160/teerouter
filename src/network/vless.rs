@@ -1,6 +1,7 @@
 //! Strict VLESS configuration; secret values never enter diagnostic messages.
 mod process;
 use crate::Error;
+pub(super) use process::Lease;
 pub(super) use process::{LeaseLayer, bind};
 use serde::Serialize;
 use serde_json::{Value, json};

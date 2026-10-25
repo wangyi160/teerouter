@@ -14,6 +14,7 @@ pub struct Client {
     pub(crate) refusal: Option<crate::refusal::Observer>,
     pub(crate) billing: Option<crate::billing::Observer>,
     pub(crate) activity: Option<crate::ledger::Activity>,
+    pub(crate) transport: Option<crate::network::metered::Transport>,
     headers: HeaderMap,
     pub(crate) base_url: reqwest::Url,
     pub(crate) oauth: Option<Arc<crate::oauth::TokenStore>>,
@@ -93,6 +94,7 @@ impl Client {
             refusal: None,
             billing: None,
             activity: None,
+            transport: None,
         })
     }
 
@@ -121,6 +123,7 @@ impl Client {
             refusal: None,
             billing: None,
             activity: None,
+            transport: None,
         })
     }
 
@@ -276,17 +279,14 @@ impl Client {
         };
         let mut url = self.base_url.clone();
         url.set_path(&format!("{}/{endpoint}", url.path().trim_end_matches('/')));
-        let response = self
-            .profile
-            .json(
-                operation,
-                &self.http,
-                url,
-                self.auth_headers(HeaderMap::new()).await?,
-                body,
-            )?
-            .send()
-            .await?;
+        let request = self.profile.json(
+            operation,
+            &self.http,
+            url,
+            self.auth_headers(HeaderMap::new()).await?,
+            body,
+        )?;
+        let response = self.dispatch(request).await?;
         self.checked(response, self.chat_protocol()).await
     }
 
@@ -318,12 +318,21 @@ impl Client {
             self.profile.path("responses", "responses")
         };
         url.set_path(&format!("{}/{endpoint}", url.path().trim_end_matches('/')));
-        let response = self
+        let request = self
             .profile
-            .json(operation, &self.http, url, headers, body)?
-            .send()
-            .await?;
+            .json(operation, &self.http, url, headers, body)?;
+        let response = self.dispatch(request).await?;
         self.checked(response, protocol).await
+    }
+    pub(crate) async fn dispatch(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, Error> {
+        if let (Some(transport), Some(observer)) = (&self.transport, &self.billing) {
+            transport.send(request.build()?, observer.clone()).await
+        } else {
+            Ok(request.send().await?)
+        }
     }
     fn chat_protocol(&self) -> crate::upstream::Protocol {
         if self.provider == Provider::Anthropic {

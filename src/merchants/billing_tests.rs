@@ -84,6 +84,101 @@ fn bill(r: &Runtime) -> Value {
 }
 
 #[tokio::test]
+async fn downstream_cancellation_before_headers_settles_input_once() {
+    let r = root();
+    let live = add(&r, &control("a")).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let upstream = serve(
+        Router::new()
+            .route(
+                "/v1/models",
+                any(|| async { Json(json!({"data":[{"id":"model-test"}]})) }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post({
+                    let entered = entered.clone();
+                    move |_: axum::body::Bytes| {
+                        let entered = entered.clone();
+                        async move {
+                            entered.notify_one();
+                            std::future::pending::<StatusCode>().await
+                        }
+                    }
+                }),
+            ),
+    )
+    .await;
+    let mut config = live.runtime.engine().config.clone();
+    config.models[0].max_attempts = 1;
+    let d = &mut config.models[0].deployments[0];
+    d.api_base = Some(format!("{}/v1", upstream.url));
+    d.proxy = Some(upstream.url.clone());
+    d.enabled = true;
+    live.runtime
+        .apply(
+            Update {
+                config: Some(serde_json::to_value(config).unwrap()),
+                ..Update::default()
+            },
+            &live.admin,
+        )
+        .await
+        .unwrap();
+    let router = serve(crate::server::app_runtime(r.clone())).await;
+    let client = reqwest::Client::builder()
+        .user_agent("codex_cli_rs/1.0 (fixture)")
+        .no_proxy()
+        .build()
+        .unwrap();
+    let url = format!("{}/v1/chat/completions", router.url);
+    let task = tokio::spawn(async move {
+        client
+            .post(url)
+            .bearer_auth("alice-key")
+            .json(&body(false))
+            .send()
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+        .await
+        .unwrap();
+    task.abort();
+    let _ = task.await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if r.engine()
+                .vault
+                .lock()
+                .unwrap()
+                .events
+                .back()
+                .is_some_and(|e| e["event"]["status"] == 499)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let b = bill(&r);
+    assert_eq!(b["state"], "calculated", "{b}");
+    assert_eq!(b["usage_source"], "estimated");
+    assert_eq!(
+        b["attempt_records"][0]["billing"]["transport"]["phase"],
+        "awaiting_response"
+    );
+    assert_eq!(b["attempt_records"][0]["billing"]["usage"]["output"], 0);
+    let charge = b["charge_microusd"].as_u64().unwrap();
+    assert!(charge > 0);
+    assert_eq!(
+        crate::balances::consumption(&r.engine().vault.lock().unwrap().events)["alice"],
+        u128::from(charge)
+    );
+}
+
+#[tokio::test]
 async fn normal_json_and_sse_without_usage_remain_unpriced() {
     let mut json_reply = completion();
     json_reply.as_object_mut().unwrap().remove("usage");
@@ -139,7 +234,7 @@ async fn model_listing_never_creates_model_charges() {
 #[tokio::test]
 async fn full_usage_in_long_http_error_is_charged_once_with_merchant_totals() {
     let error = json!({"error":{"message":"x".repeat(10000)},"usage":{"prompt_tokens":10,"completion_tokens":5}});
-    let (r, live, _upstream, router) = setup(vec![(400, false, error.to_string())], 1).await;
+    let (r, live, _upstream, router) = setup(vec![(500, false, error.to_string())], 1).await;
     assert_eq!(
         call(
             &router,
@@ -150,13 +245,13 @@ async fn full_usage_in_long_http_error_is_charged_once_with_merchant_totals() {
         )
         .await
         .0,
-        400
+        502
     );
     let b = bill(&r);
     assert_eq!(b["version"], 2);
     assert_eq!(b["charge_microusd"], 20, "{b}");
     assert_eq!(b["usage_source"], "official");
-    assert_eq!(b["attempt_records"][0]["billing"]["upstream_status"], 400);
+    assert_eq!(b["attempt_records"][0]["billing"]["upstream_status"], 500);
     let merchant = live.runtime.engine();
     let ledger = merchant.vault.lock().unwrap();
     assert!(ledger.events.is_empty(), "platform owns the receipt");

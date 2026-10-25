@@ -173,6 +173,25 @@ fn billing_v2_wire_fixture_preserves_evidence_without_text() {
             ),
         ));
         let failed = o.fresh();
+        let waiting = o.fresh();
+        waiting.request_connecting();
+        waiting.request_flushed();
+        cases.push((
+            499,
+            aggregate(
+                &[json!({"number":1,"status":499,"billing":waiting.finish(499,1)})],
+                1,
+            ),
+        ));
+        let rejected = o.fresh();
+        rejected.headers(429);
+        cases.push((
+            429,
+            aggregate(
+                &[json!({"number":1,"status":429,"billing":rejected.finish(429,1)})],
+                1,
+            ),
+        ));
         failed.headers(200);
         failed.observe(protocol, &text, true);
         failed.observe(protocol, &json!({"error":{"code":"server_error"}}), true);
@@ -215,7 +234,7 @@ fn billing_v2_wire_fixture_preserves_evidence_without_text() {
     let (_, batch) = v.prepare_public(true).unwrap().unwrap();
     let records: Vec<Value> =
         serde_json::from_str(batch["records_json"].as_str().unwrap()).unwrap();
-    assert_eq!(records.len(), 9);
+    assert_eq!(records.len(), 15);
     assert!(!batch.to_string().contains("PRIVATE_"));
     assert!(
         records
