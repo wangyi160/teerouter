@@ -16,6 +16,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 mod access;
+mod account_sync;
 pub(crate) mod control;
 mod crypto;
 mod customers;

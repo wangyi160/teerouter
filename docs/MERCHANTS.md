@@ -24,13 +24,11 @@
 
 商户页面只从管理平台读取状态快照、模型目录、客户、收入、流水和拒答记录。管理平台每 5 分钟批量调用 `GET /admin/merchant-views` 更新自身存储；页面请求不触发 Router 查询，也没有直连回退。快照可以暂时落后，配置成功回执会立即更新平台快照。
 
-倍率、开放模型、账号启停、客户限制等公开配置由平台调用 `PUT /admin/merchants/{id}/config` 下发。请求为 `{"operation_id":"唯一操作编号","runtime_id":"商户运行时编号","config":{...},"ticket":"可选凭据票据"}`；`config.expected_revision` 提供并发控制，`account_controls` 只允许账号别名对应的 `enabled` 布尔值。该接口拒绝 `accounts`、`secrets`、明文代理、私有端点和自定义协议头；商户凭证没有 admin 权限。
+已有账号池的倍率、开放模型和客户限制由平台调用 `PUT /admin/merchants/{id}/config` 下发，`operation_id` 提供幂等，`runtime_id` 与 `config.expected_revision` 提供并发控制。该公开通道拒绝账号凭据和明文代理。
 
-新增或编辑凭据时，商户先在已验证 TEE 通道提交 `PUT /merchant/accounts/prepare`，携带 `runtime_id`、`expected_revision`、`public_digest` 和 `material`。`public_digest` 是 UTF-8、键递归排序、不带空白的公开 `config` JSON 的 SHA-256；`material` 仅包含 `accounts`、`secrets`、按部署别名索引的 `proxies`。账号项只接受 `provider`、`credential`、`proxy`，不接受 refresh token 或公开启停字段。暂存只存在内存中，十分钟失效，至多保留四份，较新的准备会替代最旧的未提交草稿。
+账号新增、编辑、停用、删除通过 `PUT /merchant/accounts/sync` 直接提交到 TEE，Router 当场校验并激活，不需要平台提交票据或确认。输入包含 `operation_id`、`runtime_id`、`expected_revision`、`pools`、`accounts`、`secrets`、`delete_accounts` 和 `delete_secrets`。第一次发布非空账号池时可携带初始池设置及 `new_pool_pricing`；已有池的模型策略、倍率及商户/客户限制保持不变，须另外通过平台配置通道修改。refresh token 禁止上传。相同操作编号及内容重复提交不会再次应用。
 
-平台只拿到不可读取的票据和公开配置。Router 校验商户、运行时、配置版本与摘要后，将凭据和配置一次性应用；校验失败保持旧配置和旧凭据。纯公开配置变更不需要票据。成功返回 `operation_id`、`applied_revision` 和脱敏 `state`，同一操作编号、相同命令可安全重试；不同命令复用编号会被拒绝。确认回包丢失时平台通过 `GET /admin/merchants/{id}/commands/{operation_id}` 查询回执，不自动重复执行或排队稍后修改费率。运行时保留最近 256 个成功回执；平台持久保存操作结果。
-
-旧的商户直连状态、完整配置和强制目录刷新接口已移除。现有 access token 轮换仍使用下表的凭据接口，refresh token 继续由商户本机管理。Router 重启后，平台恢复用户和商户登记，商户再提交本地凭据并经平台恢复公开配置；平台从不备份账号秘密。
+商户收到 Router 成功回包后，在后台向管理平台发送只含运行时编号和版本号的成功通知。平台再通过 `GET /admin/merchants/{id}/view` 获取该商户公开快照。通知不携带凭据，也不作为账号成功的前提；失败由后续通知或五分钟批次补齐。页面请求仍只查询平台存储。旧 `accounts/prepare` 和 ticket 提交仅保留兼容，当前客户端不再使用。
 
 ## 商户接口
 
@@ -39,7 +37,7 @@
 | `POST /merchant/bind` | 绑定本机独立控制密钥；仅同一密钥可以重复绑定 |
 | `POST /merchant/unlock` | `{"minimum_revision":0}`；创建商户内存状态，重启后 `configuration_required:true` 表示需要从本机同步账号配置 |
 | `PUT /merchant/accounts/access` | 仅独立控制密钥认证的本商户可增量上传 access token，支持幂等重试；平台与其他商户无权操作 |
-| `PUT /merchant/accounts/prepare` | 暂存账号凭据及代理，返回一次性提交票据；不改变正在使用的账号 |
+| `PUT /merchant/accounts/sync` | 直接校验、激活账号及池关联，返回成功状态；不依赖管理平台 |
 | `POST /merchant/accounts/test` | 测试尚未保存的凭证与代理；不修改账号或配置 |
 | `GET /merchant/usage?after_seq=0&limit=500` | 旧兼容接口；保留累计用量统计，不再产生逐笔队列 |
 | `POST /merchant/usage/ack` | 旧兼容接口；新商户程序不调用 |
@@ -50,7 +48,7 @@
 
 测试总超时 75 秒，每商户同时最多一次、全局最多八次，凭证只进入临时内存，不保存、不刷新 refresh token，不记入用户消费或商户收入。上游可能收取这条短请求的实际费用。正式账号必须填写独立代理，不允许 `direct://`，只有授权且编译启用的 Workbuddy 测试池例外。测试结果仅证明所测模型当时可用。
 
-公开 config 包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
+公开 config 包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。账号通道单独提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
 
 ```json
 {

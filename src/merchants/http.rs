@@ -65,6 +65,10 @@ pub(crate) async fn dispatch(
             let input: Input = serde_json::from_value(body).map_err(|_| invalid())?;
             unlock(&runtime, &token, input.minimum_revision).await?
         }
+        ("PUT", "/merchant/accounts/sync") => {
+            let (_, body) = crate::server::admin::input(&runtime, request).await?;
+            account_sync::sync(&runtime, &token, body).await?
+        }
         ("PUT", "/merchant/accounts/prepare") => {
             let (_, body) = crate::server::admin::input(&runtime, request).await?;
             control::prepare(&runtime, &token, body).await?

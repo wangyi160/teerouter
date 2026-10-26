@@ -8,6 +8,7 @@ use axum::{
 
 #[derive(Default)]
 pub(super) struct State {
+    pub(super) owner_completed: std::collections::VecDeque<(String, String, u64)>,
     prepared: BTreeMap<String, Prepared>,
     completed: std::collections::VecDeque<(String, String, u64)>,
 }
@@ -202,6 +203,7 @@ pub(super) fn view(runtime: &Runtime, item: &Registration) -> Result<Value, ApiE
     let mut value = state(runtime, item)?;
     value["compatibility"] = json!({});
     value["merchant"]["control_protocol"] = json!("platform-config-v1");
+    value["merchant"]["account_sync_protocol"] = json!("direct-accounts-v1");
     // account_status contains only aliases, expiry, health and fingerprints.
     // status/catalog are Router-generated summaries, not raw provider replies.
     Ok(value)
@@ -221,6 +223,14 @@ pub(crate) async fn snapshots(
         }
     }
     Ok(Json(json!({"data":data,"locked":locked})))
+}
+
+pub(crate) async fn snapshot(
+    AxumState(runtime): AxumState<Arc<Runtime>>, Path(mid): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let _read = runtime.merchants.write.lock().await;
+    let item = records(&runtime)?.into_iter().find(|m| m.id == mid && m.enabled).ok_or_else(forbidden)?;
+    Ok(Json(view(&runtime, &item)?))
 }
 
 #[derive(Deserialize)]

@@ -10,6 +10,8 @@ mod access_tests;
 mod billing_tests;
 #[path = "control_tests.rs"]
 mod control_tests;
+#[path = "direct_account_tests.rs"]
+mod direct_account_tests;
 #[path = "provider_catalog_tests.rs"]
 mod provider_catalogs;
 #[path = "refusal_tests.rs"]
