@@ -1,4 +1,4 @@
-//! Port of LiteLLM ChatGPTResponsesAPIConfig.transform_responses_api_request.
+//! Native Codex forwarding; response decoding originated in LiteLLM.
 use crate::{Client, Error};
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -8,27 +8,21 @@ pub(crate) async fn send(
     client: &Client,
     model: &str,
     mut request: Value,
+    mut headers: HeaderMap,
 ) -> Result<reqwest::Response, Error> {
-    let extras: Vec<_> = client
-        .profile
-        .chatgpt_extra_parameters
-        .iter()
-        .filter_map(|k| request.get(k).map(|v| (k.clone(), v.clone())))
-        .collect();
-    transform_request(&mut request, model)?;
-    for (key, value) in extras {
-        if !matches!(
-            key.as_str(),
-            "model" | "stream" | "store" | "instructions" | "include"
-        ) {
-            request[&key] = value;
-        }
-    }
-    let url = format!(
+    request
+        .as_object_mut()
+        .ok_or(Error::InvalidRequest("Responses request must be an object"))?
+        .insert("model".into(), model.into());
+    let mut url = client.base_url.clone();
+    url.set_path(&format!(
         "{}/{}",
-        client.base_url.as_str().trim_end_matches('/'),
+        url.path().trim_end_matches('/'),
         client.profile.path("responses", "responses")
-    );
+    ));
+    crate::client::take_native_query(&mut headers, &mut url)?;
+    let mut native_client = client.clone();
+    native_client.profile.headers.clear();
     client
         .checked(
             client
@@ -36,7 +30,7 @@ pub(crate) async fn send(
                     "responses",
                     &client.http,
                     url,
-                    client.auth_headers(HeaderMap::new()).await?,
+                    native_client.auth_headers(headers).await?,
                     request,
                 )?)
                 .await?,
@@ -45,68 +39,7 @@ pub(crate) async fn send(
         .await
 }
 
-fn transform_request(request: &mut Value, model: &str) -> Result<(), Error> {
-    let object = request
-        .as_object_mut()
-        .ok_or(Error::InvalidRequest("Responses request must be an object"))?;
-    object.insert("model".into(), model.into());
-    let instructions = object
-        .get("instructions")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let base = include_str!("chatgpt_instructions.txt");
-    let combined = if instructions.contains(base) {
-        instructions.to_owned()
-    } else if instructions.is_empty() {
-        base.into()
-    } else {
-        format!("{base}\n\n{instructions}")
-    };
-    object.insert("instructions".into(), combined.into());
-    object.insert("stream".into(), true.into());
-    object.insert("store".into(), false.into());
-    let mut include = object
-        .get("include")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if !include.iter().any(|v| v == "reasoning.encrypted_content") {
-        include.push(json!("reasoning.encrypted_content"));
-    }
-    object.insert("include".into(), include.into());
-    let service_tier = object
-        .get("service_tier")
-        .and_then(Value::as_str)
-        .and_then(|s| match s {
-            "default" => Some("default"),
-            "priority" | "fast" => Some("priority"),
-            _ => None,
-        });
-    let tier = service_tier.map(str::to_owned);
-    object.retain(|key, _| {
-        matches!(
-            key.as_str(),
-            "model"
-                | "input"
-                | "instructions"
-                | "stream"
-                | "store"
-                | "include"
-                | "tools"
-                | "tool_choice"
-                | "reasoning"
-                | "previous_response_id"
-                | "truncation"
-        )
-    });
-    if let Some(tier) = tier {
-        object.insert("service_tier".into(), tier.into());
-    }
-    Ok(())
-}
-
-// LiteLLM ChatGPTResponsesAPIConfig.transform_response: the backend always streams,
-// including for callers requesting JSON. Some completions omit the final output array.
+// Some backends return SSE even for JSON callers and omit the terminal output array.
 pub(crate) async fn collect(mut events: crate::upstream::EventStream) -> Result<Value, Error> {
     let mut items = std::collections::BTreeMap::new();
     let mut texts = std::collections::BTreeMap::<(u64, u64), Value>::new();

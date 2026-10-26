@@ -16,16 +16,10 @@ async fn inference_requires_matching_agent_before_forwarding_or_admission(
     .await;
     let mut config = configuration(&mock);
     config.models[0].deployments[0].provider = provider;
-    let operation = if provider == Provider::Anthropic {
-        "messages"
-    } else {
-        "chat_completions"
-    };
     config.compatibility.insert(
         crate::compatibility::name(provider).into(),
-        serde_json::from_value(json!({"headers":{"user-agent":"stale-profile/1.0"},
-            "requests":{(operation):{"headers":{"user-agent":"stale-operation/1.0"}}}}))
-        .unwrap(),
+        serde_json::from_value(json!({"headers":{"user-agent":"stale-catalog-profile/1.0"}}))
+            .unwrap(),
     );
     let gateway = gateway(config).await;
     for other in [Provider::OpenAI, Provider::Anthropic, Provider::XAI] {
@@ -63,7 +57,12 @@ async fn inference_requires_matching_agent_before_forwarding_or_admission(
     }
     assert!(mock.calls.lock().unwrap().is_empty());
     assert_eq!(usage(&gateway).await["requests"], 0);
-    let response = post_as(&gateway, "/v1/chat/completions", request(), provider).await;
+    let endpoint = if provider == Provider::Anthropic {
+        "/v1/messages"
+    } else {
+        "/v1/chat/completions"
+    };
+    let response = post_as(&gateway, endpoint, request(), provider).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     response.bytes().await.unwrap();
     assert_eq!(mock.calls.lock().unwrap().len(), 1);

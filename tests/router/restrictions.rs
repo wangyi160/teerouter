@@ -101,8 +101,7 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
             .status(),
         200
     );
-    let mut expected = body;
-    expected["store"] = false.into();
+    let expected = body;
     assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
 }
 
@@ -146,8 +145,7 @@ async fn blocked_effort_is_separate_from_official_capabilities_and_never_downgra
             post(&gateway, "/v1/responses", body.clone()).await.status(),
             200
         );
-        let mut expected = body;
-        expected["store"] = false.into();
+        let expected = body;
         assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
     }
     for (model, effort) in [("official-alias", "low"), ("other", "high")] {
@@ -156,8 +154,7 @@ async fn blocked_effort_is_separate_from_official_capabilities_and_never_downgra
             post(&gateway, "/v1/responses", body.clone()).await.status(),
             200
         );
-        let mut expected = body;
-        expected["store"] = false.into();
+        let expected = body;
         assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
     }
 }
@@ -323,7 +320,6 @@ async fn official_refresh_updates_evidence_without_erasing_the_independent_deny_
         post(&gateway, "/v1/responses", body.clone()).await.status(),
         200
     );
-    let mut expected = body;
-    expected["store"] = false.into();
+    let expected = body;
     assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
 }

@@ -301,7 +301,7 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
 }
 
 #[tokio::test]
-async fn router_measures_stream_before_filtering_usage_for_the_client() {
+async fn router_measures_stream_without_filtering_upstream_usage() {
     use axum::{body::Body, response::Response};
     let r = root();
     let token = control("a");
@@ -350,7 +350,7 @@ async fn router_measures_stream_before_filtering_usage_for_the_client() {
         .to_owned();
     let text = response.text().await.unwrap();
     assert!(text.contains("[DONE]"));
-    assert!(!text.contains("completion_tokens"));
+    assert!(text.contains("completion_tokens"));
     let (first, tps) = r.merchants.routing.sample(&pool, "model-test").unwrap();
     assert!(first >= 0.0);
     assert!(tps.unwrap() > 0.0 && tps.unwrap() < 100.0);

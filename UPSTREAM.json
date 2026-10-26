@@ -19,24 +19,22 @@
       "target": [
         "src/oauth/tokens.rs"
       ],
-      "retained": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
-      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+      "retained": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
+      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
     },
     {
       "source": "litellm:litellm/llms/chatgpt/responses/transformation.py and litellm/llms/chatgpt/common_utils.py",
       "functions": [
-        "ChatGPTResponsesAPIConfig.transform_responses_api_request",
         "_extract_completed_response_from_sse",
         "_build_completed_response_from_chunk",
         "get_complete_url"
       ],
       "target": [
         "src/oauth/chatgpt.rs",
-        "src/oauth/chatgpt_instructions.txt",
         "src/client.rs"
       ],
-      "retained": "Codex base URL, original instruction text, stream=true, store=false, encrypted reasoning include, request whitelist, service-tier mapping, account/originator headers, recovery of omitted terminal output from item/text events.",
-      "adaptations": "Incremental SSE decoding instead of buffering the entire SSE body. Nonstream JSON is also accepted; streaming requires the SSE media type. Session IDs use secure random URL-safe bytes. HTTP/SSE failures are sanitized."
+      "retained": "Codex base URL, merchant account authentication, and response recovery from terminal item/text events.",
+      "adaptations": "Native Agent request fields are preserved. Removed instruction injection, forced stream/store/include, field allowlist, service-tier mapping, generated session IDs and Chat-to-Responses conversion. Inbound business headers and query are forwarded after credential and hop-by-hop isolation."
     },
     {
       "source": "litellm:litellm/llms/xai/oauth.py",
@@ -51,8 +49,8 @@
         "src/oauth/tokens.rs",
         "src/client.rs"
       ],
-      "retained": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
-      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+      "retained": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
+      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
     },
     {
       "source": "litellm:litellm-rust/crates/llms/src/anthropic/common_utils.rs",
@@ -66,7 +64,7 @@
         "src/client.rs"
       ],
       "retained": "Raw sk-ant-oat token or one exact Bearer prefix, Authorization instead of x-api-key, sorted deduplicated oauth-2025-04-20 beta and dangerous-direct-browser-access companion.",
-      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+      "adaptations": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
     },
     {
       "source": "litellm:litellm/completion_extras/litellm_responses_transformation/transformation.py",
@@ -75,12 +73,12 @@
         "_normalize_tool_choice_for_responses_api",
         "_convert_response_output_to_choices"
       ],
-      "target": [
+      "retained": "None; Chat-to-Responses conversion was removed. Native Responses is required for Codex OAuth accounts.",
+      "adaptations": "Historical provenance only; no request conversion path remains in the Router server.",
+      "removed_targets": [
         "src/oauth/responses_bridge.rs",
         "src/oauth/bridge.rs"
-      ],
-      "retained": "Leading system messages as instructions; message roles; text/images; function call/output mapping; tool-choice flattening; reasoning item replay; usage/finish mapping.",
-      "adaptations": "Selected common Chat subset. One assistant choice aggregates text and function calls; streaming adapter is router integration code. Custom/built-in tools and advanced Responses content use the native endpoint."
+      ]
     },
     {
       "source": "litellm:litellm-rust/crates/{framer,llms,core-utils}",
@@ -108,13 +106,14 @@
       "tests/router/operations.rs",
       "tests/router/compatibility.rs",
       "tests/router.rs",
-      "tests/completion.rs"
+      "tests/completion.rs",
+      "tests/router/faithful.rs"
     ],
-    "scope": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+    "scope": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "proxy_adaptation": {
     "implementation": "New Rust network/storage integration; upstream OAuth algorithms retained.",
-    "behavior": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+    "behavior": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "discovery_adaptation": {
     "implementation": "New Rust catalog refresh, cache and dynamic routing integration, using upstream/provider wire formats; no hardcoded model IDs.",
@@ -161,8 +160,8 @@
       "tests/router/operations.rs"
     ],
     "behavior": "Validated configuration generations, atomic in-memory updates, account health, bounded session affinity and shared limits. Checkpoints contain no request bodies or ordinary responses; explicit refusal text and public refusal metadata are retained for administrator audit; management persists then acknowledges them. The router has no money accounting, database or backup file.",
-    "compatibility": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
-    "excluded": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+    "compatibility": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
+    "excluded": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
   "official_passthrough_adaptation": {
     "implementation": "New teellm Rust code; not copied from LiteLLM.",
@@ -181,7 +180,7 @@
       "tests/router/compatibility.rs",
       "protocol-update.example.json"
     ],
-    "validation": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, provider conversion and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
+    "validation": "All nonempty body edit rules are rejected at configuration activation and runtime. Generation header/query edits are rejected; only discovery metadata is configurable. Native requests preserve Agent parameters."
   },
   "administrator_restrictions": {
     "implementation": "New Rust deny-only policy, independent of immutable authenticated official catalog evidence.",

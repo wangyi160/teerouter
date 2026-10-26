@@ -53,7 +53,7 @@ async fn workbuddy_discovers_and_forwards_chat_through_bound_proxy() {
         );
         assert_eq!(calls[1].body["messages"], body["messages"]);
         assert_eq!(calls[1].body["model"], body["model"]);
-        assert_eq!(calls[1].body["store"], false);
+        assert_eq!(calls[1].body, body);
     }
     let invalid = post(
         &gateway,

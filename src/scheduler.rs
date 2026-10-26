@@ -41,6 +41,13 @@ impl Backend {
         body: &Value,
         rules: &[crate::policy::Restriction],
     ) -> Result<(), crate::error::ApiError> {
+        if !self.client.supports_native(protocol) {
+            return Err(crate::error::ApiError::new(
+                400,
+                "unsupported_protocol",
+                "Use the provider's native protocol; request conversion is disabled",
+            ));
+        }
         let catalog = self.catalog.as_ref().ok_or_else(|| {
             crate::error::ApiError::new(
                 503,

@@ -397,8 +397,7 @@ async fn explicit_sessions_and_known_continuations_pin_the_original_account() {
 }
 
 #[tokio::test]
-async fn compatibility_updates_change_allowed_headers_and_paths_but_cannot_redirect_oauth_secrets()
-{
+async fn compatibility_paths_work_but_catalog_headers_do_not_change_generation() {
     let proxy = mock(vec![Reply::json(native(Provider::Anthropic))]).await;
     let (gateway, _) = oauth_gateway(&proxy).await;
     let update=apply(&gateway,json!({"config":{"compatibility":{"anthropic":{"headers":{"anthropic-version":"2099-01-01"},"paths":{"messages":"future/messages"}}}}})).await;
@@ -410,7 +409,7 @@ async fn compatibility_updates_change_allowed_headers_and_paths_but_cannot_redir
     {
         let calls = proxy.calls.lock().unwrap();
         assert_eq!(calls[0].path, "/v1/future/messages");
-        assert_eq!(calls[0].headers["anthropic-version"], "2099-01-01");
+        assert_eq!(calls[0].headers["anthropic-version"], "2023-06-01");
     }
     assert_eq!(
         apply(

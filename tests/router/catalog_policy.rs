@@ -97,8 +97,7 @@ async fn refresh_admits_new_model_and_effort_then_removes_old_capabilities() {
             .status(),
         200
     );
-    let mut expected = original.clone();
-    expected["store"] = false.into();
+    let expected = original.clone();
     assert_cached_forward(&proxy.calls.lock().unwrap().last().unwrap().body, &expected);
     assert_eq!(
         post(&gateway, "/v1/responses", body("old", "low"))
@@ -138,8 +137,7 @@ async fn shared_pool_capabilities_apply_to_every_account_and_respect_pinning() {
     assert_eq!(response.headers()["x-router-deployment"], "account-1");
     assert_eq!(source.calls.lock().unwrap().len(), 1);
     assert_eq!(other.calls.lock().unwrap().len(), 1);
-    let mut expected = request;
-    expected["store"] = false.into();
+    let expected = request;
     assert_cached_forward(&other.calls.lock().unwrap()[0].body, &expected);
     for account in ["account-0", "account-1"] {
         let response = client()
@@ -178,8 +176,7 @@ async fn missing_capabilities_reject_explicit_effort_but_do_not_invent_defaults(
             .status(),
         200
     );
-    let mut expected = request;
-    expected["store"] = false.into();
+    let expected = request;
     assert_cached_forward(&proxy.calls.lock().unwrap()[1].body, &expected);
 }
 
@@ -212,8 +209,7 @@ async fn official_aliases_are_accepted_without_resolving_them_to_other_ids() {
             .status(),
         200
     );
-    let mut expected = request;
-    expected["store"] = false.into();
+    let expected = request;
     assert_cached_forward(&proxy.calls.lock().unwrap()[1].body, &expected);
 }
 

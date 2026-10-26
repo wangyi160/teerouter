@@ -94,12 +94,10 @@ fn refusal_stream(provider: Provider, native: bool) -> Reply {
 #[case(Provider::XAI, false, true)]
 #[case(Provider::XAI, true, false)]
 #[case(Provider::XAI, true, true)]
-#[case(Provider::Anthropic, false, false)]
-#[case(Provider::Anthropic, false, true)]
 #[case(Provider::Anthropic, true, false)]
 #[case(Provider::Anthropic, true, true)]
 #[tokio::test]
-async fn refusal_is_forwarded_and_audited_once_before_any_protocol_conversion(
+async fn native_refusal_is_forwarded_and_audited_once(
     #[case] provider: Provider,
     #[case] native: bool,
     #[case] stream: bool,
@@ -250,7 +248,7 @@ async fn ordinary_http_errors_are_not_refusals(#[case] status: u16) {
 #[case(false)]
 #[case(true)]
 #[tokio::test]
-async fn codex_chat_bridge_audits_done_only_refusals(#[case] stream: bool) {
+async fn codex_native_responses_audit_done_only_refusals(#[case] stream: bool) {
     let upstream=mock(vec![events(vec![
         json!({"type":"response.created","response":{"id":"resp-codex"}}),
         json!({"type":"response.refusal.done","output_index":0,"content_index":0,"refusal":"Provider declined this request."}),
@@ -260,7 +258,12 @@ async fn codex_chat_bridge_audits_done_only_refusals(#[case] stream: bool) {
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let g = run_fixture(Engine::from_vault(vault).unwrap()).await;
-    let response = post(&g, "/v1/chat/completions", input(stream)).await;
+    let response = post(
+        &g,
+        "/v1/responses",
+        native_input(Provider::OpenAI, true, stream),
+    )
+    .await;
     assert_eq!(response.status(), 200);
     assert!(
         response
@@ -585,7 +588,12 @@ async fn stream_refusal_before_first_client_frame_still_prevents_failover() {
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let g = run_fixture(Engine::from_vault(vault).unwrap()).await;
-    let response = post(&g, "/v1/chat/completions", input(false)).await;
+    let response = post(
+        &g,
+        "/v1/responses",
+        native_input(Provider::OpenAI, true, false),
+    )
+    .await;
     assert_eq!(response.status(), 403);
     assert_eq!(record(&g).await["pending"], 1);
     assert_eq!(upstream.calls.lock().unwrap().len(), 1);

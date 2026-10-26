@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use futures_util::{Stream, StreamExt};
 use reqwest::header::HeaderMap;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio_util::{codec::FramedRead, io::StreamReader};
 
 use crate::{
@@ -20,7 +20,7 @@ pub enum Protocol {
 impl Protocol {
     pub(crate) fn supports(self, provider: Provider) -> bool {
         match self {
-            Self::Chat => true,
+            Self::Chat => provider != Provider::Anthropic,
             Self::Messages => provider == Provider::Anthropic,
             Self::Responses => matches!(provider, Provider::OpenAI | Provider::XAI),
         }
@@ -60,29 +60,10 @@ pub(crate) async fn call(
     client: &Client,
     protocol: Protocol,
     model: &str,
-    mut body: Value,
+    body: Value,
     streaming: bool,
     headers: HeaderMap,
 ) -> Result<Output, Error> {
-    if protocol == Protocol::Chat && client.oauth.is_some() && client.provider == Provider::OpenAI {
-        return crate::oauth::bridge::call(client, model, body, streaming).await;
-    }
-    if protocol == Protocol::Chat {
-        body["model"] = model.into();
-        if streaming {
-            if !body["stream_options"].is_object() {
-                body["stream_options"] = json!({});
-            }
-            body["stream_options"]["include_usage"] = true.into();
-            return Ok(Output::Stream(Box::pin(
-                client
-                    .stream(body)
-                    .await?
-                    .map(|result| result.map(Frame::json)),
-            )));
-        }
-        return client.completion(body).await.map(Output::Json);
-    }
     let response = client.native(protocol, model, body, headers).await?;
     let codex = client.oauth.is_some() && client.provider == Provider::OpenAI;
     if codex {
@@ -128,7 +109,7 @@ pub(crate) async fn decode_native(
         let valid = match protocol {
             Protocol::Messages => value["content"].is_array(),
             Protocol::Responses => value["output"].is_array(),
-            Protocol::Chat => unreachable!(),
+            Protocol::Chat => value["choices"].is_array(),
         };
         if !valid {
             return Err(Error::InvalidResponse("missing native response content"));
@@ -192,6 +173,9 @@ pub(crate) async fn decode_native(
                             } else {
                                 state.terminal = true;
                                 state.done = true;
+                                if let Some(observer) = &state.refusal {
+                                    observer.complete();
+                                }
                                 Ok(Frame::done())
                             }
                         } else {
@@ -214,6 +198,11 @@ pub(crate) async fn decode_native(
                                     {
                                         return Err(Error::Stream(
                                             "upstream reported an error".into(),
+                                        ));
+                                    }
+                                    if protocol == Protocol::Chat && !value["choices"].is_array() {
+                                        return Err(Error::InvalidResponse(
+                                            "missing stream choices array",
                                         ));
                                     }
                                     state.terminal |= match protocol {

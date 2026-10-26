@@ -31,114 +31,49 @@ async fn generate(gateway: &Running, provider: Provider) -> reqwest::Response {
 #[case(Provider::Anthropic)]
 #[case(Provider::XAI)]
 #[tokio::test]
-async fn future_wire_fields_change_live_after_provider_conversion(#[case] provider: Provider) {
-    let mut replies = Vec::new();
-    for _ in 0..2 {
-        replies.push(Reply::json(native(provider)));
-    }
-    let proxy = mock(replies).await;
+async fn generation_rewrites_cannot_be_activated_by_admin(#[case] provider: Provider) {
+    let proxy = mock(vec![Reply::json(native(provider)); 2]).await;
     let mut bundle = discovery::bundle(provider, &[&proxy]);
-    bundle.config.models[0].name = "chat".into();
     bundle.config.models[0].discover = false;
-    bundle.config.models[0].deployments[0].model = "chosen-model".into();
     bundle.config.keys[0].models.clear();
-    let operation = match provider {
-        Provider::Anthropic => "messages",
-        _ => "responses",
-    };
-    let prefix = "";
-    let rule = json!({
-        "headers":{"x-future-version":"1.0.1"}, "query":{"revision":"1.0.1"},
-        "body_set":{format!("{prefix}/version"):"1.0.1",format!("{prefix}/metadata/new_feature"):true},
-        "body_defaults":{format!("{prefix}/metadata/caller"):"default"},
-        "body_remove":[format!("{prefix}/metadata/obsolete")]
-    });
-    let profile: teellm::compatibility::Profile = serde_json::from_value(
-        json!({"chatgpt_extra_parameters":["metadata"],"requests":{operation:rule}}),
-    )
-    .unwrap();
-    bundle
-        .config
-        .compatibility
-        .insert(provider_name(provider).into(), profile);
     let vault = Vault::memory().unwrap();
     vault.provision(&bundle).unwrap();
     let gateway = run_fixture(Engine::from_vault(vault.clone()).unwrap()).await;
-    let response = generate(&gateway, provider).await;
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    let update = apply(&gateway, json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:{
-        "headers":{"x-future-version":"1.1.1"},"query":{"revision":"1.1.1"},
-        "body_set":{format!("{prefix}/version"):"1.1.1",format!("{prefix}/metadata/later_field"):42}
-    }}}}}})).await;
-    assert_eq!(update.status(), 200, "{}", update.text().await.unwrap());
-    let rejected = apply(&gateway, json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:{"body_set":{"/model":"other-account-model"}}}}}}})).await;
-    assert_eq!(rejected.status(), 400);
-    for header in ["content-type", "accept"] {
-        let rejected = apply(&gateway, json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:{"headers":{header:"text/plain"}}}}}}})).await;
-        assert_eq!(rejected.status(), 400);
-    }
-    let rejected = apply(&gateway, json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:{"body_set":{"/store":true}}}}}}})).await;
-    assert_eq!(rejected.status(), 400);
     let unchanged = serde_json::to_value(vault.config().unwrap()).unwrap();
+    let operation = if provider == Provider::Anthropic {
+        "messages"
+    } else {
+        "responses"
+    };
     for rule in [
-        json!({"body_set":{format!("{prefix}/instructions"):"admin instruction"}}),
-        json!({"body_defaults":{format!("{prefix}/system"):"admin system"}}),
-        json!({"body_set":{format!("{prefix}/tools"):[]}}),
-        json!({"body_remove":[format!("{prefix}/messages")]}),
-        json!({"body_null":[format!("{prefix}/input")]}),
-        json!({"body_set":{format!("{prefix}/metadata/wrapper"): {"contents":[{"parts":[{"text":"injected"}]}]}}}),
-        json!({"query":{"instructions":"injected"}}),
+        json!({"body_set":{"/version":"new"}}),
+        json!({"body_defaults":{"/metadata/client":"router"}}),
+        json!({"body_remove":["/metadata/obsolete"]}),
+        json!({"body_null":["/include"]}),
+        json!({"body_set":{"/store":false}}),
+        json!({"body_set":{"/instructions":"admin instruction"}}),
+        json!({"query":{"revision":"new"}}),
+        json!({"headers":{"x-future-version":"new"}}),
     ] {
-        let rejected = apply(&gateway, json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:rule}}}}})).await;
-        assert_eq!(rejected.status(), 400);
+        let response = apply(&gateway,json!({"config":{"compatibility":{provider_name(provider):{"requests":{operation:rule}}}}})).await;
+        assert_eq!(response.status(), 400);
         assert_eq!(
             serde_json::to_value(vault.config().unwrap()).unwrap(),
             unchanged
         );
     }
+    assert!(proxy.calls.lock().unwrap().is_empty());
     let response = generate(&gateway, provider).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    assert_eq!(
-        serde_json::to_value(vault.config().unwrap()).unwrap()["compatibility"]
-            [provider_name(provider)]["requests"][operation]["body_set"]
-            [format!("{prefix}/version")],
-        "1.1.1"
-    );
     let calls = proxy.calls.lock().unwrap();
-    let generated: Vec<_> = calls
-        .iter()
-        .filter(|c| c.body.get("model").is_some())
-        .collect();
-    assert_eq!(generated.len(), 2);
-    for (index, call) in generated.iter().enumerate() {
-        let version = if index == 0 { "1.0.1" } else { "1.1.1" };
-        assert_eq!(call.headers["x-future-version"], version);
-        assert_eq!(call.headers["content-type"], "application/json");
-        assert!(call.path.ends_with(&format!("?revision={version}")));
-        assert_eq!(call.headers["authorization"], "Bearer sk-ant-oat-fixture-0");
-        assert_eq!(call.body["model"], "chat");
-        let body = &call.body;
-        assert_eq!(body["version"], version);
-        match provider {
-            Provider::Anthropic => {
-                assert_eq!(body["messages"], json!([{"role":"user","content":"hello"}]))
-            }
-            _ => assert_eq!(body["input"], "hello"),
-        }
-        assert_eq!(body["metadata"]["caller"], "kept");
-        assert_eq!(body["metadata"]["new_feature"], true);
-        assert!(body["metadata"].get("obsolete").is_none());
-        if index == 1 {
-            assert_eq!(body["metadata"]["later_field"], 42);
-        }
-        if provider == Provider::OpenAI {
-            assert_eq!(body["stream"], true);
-        }
-        if matches!(provider, Provider::OpenAI | Provider::XAI) {
-            assert_eq!(body["store"], false);
-        } else {
-            assert!(body.get("store").is_none());
-        }
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].body["metadata"],
+        json!({"caller":"kept","obsolete":"remove-me"})
+    );
+    assert!(calls[0].body.get("version").is_none());
+    if provider != Provider::Anthropic {
+        assert_eq!(calls[0].body["store"], true);
     }
 }
 
@@ -181,17 +116,16 @@ async fn codex_catalog_query_version_can_change_without_duplicate_parameters() {
 #[rstest]
 #[case(Provider::OpenAI, false, true)]
 #[case(Provider::OpenAI, false, false)]
-#[case(Provider::OpenAI, true, true)]
 #[case(Provider::OpenAI, true, false)]
 #[case(Provider::XAI, false, false)]
 #[case(Provider::XAI, true, false)]
 #[tokio::test]
-async fn storage_is_locked_for_native_and_chat_requests_with_both_auth_modes(
+async fn storage_is_preserved_for_native_and_chat_requests_with_both_auth_modes(
     #[case] provider: Provider,
     #[case] oauth: bool,
     #[case] chat: bool,
 ) {
-    let upstream_chat = chat && !oauth;
+    let upstream_chat = chat;
     let result = if upstream_chat {
         completion()
     } else {
@@ -255,52 +189,11 @@ async fn storage_is_locked_for_native_and_chat_requests_with_both_auth_modes(
     }
     let calls = proxy.calls.lock().unwrap();
     assert_eq!(calls.len(), 3);
-    for call in calls.iter() {
-        assert_eq!(call.body["store"], false);
+    for (call, store) in calls
+        .iter()
+        .zip([None, Some(json!(true)), Some(Value::Null)])
+    {
+        assert_eq!(call.body.get("store"), store.as_ref());
         assert_eq!(call.body["model"], "chat");
     }
-}
-
-#[rstest]
-#[case(Provider::OpenAI)]
-#[tokio::test]
-async fn unified_chat_streams_use_the_configured_native_wire_operation(#[case] provider: Provider) {
-    let mut replies = Vec::new();
-    replies.push(Reply::sse(format!(
-        "data: {}\n\ndata: {}\n\n",
-        json!({"type":"response.output_text.delta","output_index":0,"delta":"ok"}),
-        json!({"type":"response.completed","response":native(provider)})
-    )));
-    let proxy = mock(replies).await;
-    let mut bundle = discovery::bundle(provider, &[&proxy]);
-    bundle.config.models[0].name = "chat".into();
-    bundle.config.models[0].discover = false;
-    bundle.config.models[0].deployments[0].model = "chosen-model".into();
-    bundle.config.keys[0].models.clear();
-    let operation = "responses";
-    let path = "/version";
-    let profile: teellm::compatibility::Profile = serde_json::from_value(json!({"requests":{operation:{"body_set":{path:"1.1.1"},"headers":{"x-stream-version":"1.1.1"}}}})).unwrap();
-
-    bundle
-        .config
-        .compatibility
-        .insert(provider_name(provider).into(), profile);
-    let vault = Vault::memory().unwrap();
-    vault.provision(&bundle).unwrap();
-    let gateway = run_fixture(Engine::from_vault(vault).unwrap()).await;
-    let response = post(
-        &gateway,
-        "/v1/chat/completions",
-        json!({"model":"chat","stream":true,"messages":[{"role":"user","content":"hello"}]}),
-    )
-    .await;
-    assert_eq!(response.status(), 200);
-    let text = response.text().await.unwrap();
-    assert!(text.contains("ok") && text.contains("[DONE]"), "{text}");
-    let calls = proxy.calls.lock().unwrap();
-    let generation = calls.last().unwrap();
-    assert_eq!(generation.body.pointer(path).unwrap(), "1.1.1");
-    assert_eq!(generation.headers["x-stream-version"], "1.1.1");
-    assert_eq!(generation.body["stream"], true);
-    assert_eq!(generation.body["store"], false);
 }

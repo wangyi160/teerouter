@@ -356,7 +356,7 @@ impl Engine {
                         (Protocol::Messages, "messages"),
                     ]
                     .into_iter()
-                    .filter_map(|(p, name)| p.supports(backend.config.provider).then_some(name))
+                    .filter_map(|(p, name)| backend.client.supports_native(p).then_some(name))
                     .collect();
                     visible.entry(model).or_default().push(json!({"pool":group.config.name,
                         "deployment":backend.config.id,"canonical_id":info.canonical_id,
@@ -758,16 +758,6 @@ impl Engine {
             &body,
             &headers,
         );
-        // Client identifiers are routing hints; only the scoped, hashed provider
-        // identifier is allowed upstream.
-        for name in [
-            "x-grok-conv-id",
-            "session_id",
-            "x-session-id",
-            "x-conversation-id",
-        ] {
-            headers.remove(name);
-        }
         let mut affinity = affinity::Affinity::new(self, account, &groups, &body, &mut headers)
             .map_err(|e| reject(&mut parent, e))?;
         let mut ticket = self.accounts[account]
@@ -809,7 +799,6 @@ impl Engine {
             ));
         }
         let streaming = body["stream"] == true;
-        let include_usage = body["stream_options"]["include_usage"] == true;
         let mut tried = HashSet::new();
         let mut last_error = ApiError::new(
             503,
@@ -923,24 +912,14 @@ impl Engine {
             request_client.refusal = Some(observer.clone());
             request_client.billing = ticket.billing.clone();
             request_client.activity = ticket.activity();
-            let mut upstream_body = body.clone();
-            let mut upstream_headers = headers.clone();
-            cache::prepare(
-                &cache_request,
-                backend.config.provider,
-                protocol,
-                &mut upstream_body,
-                &mut request_client,
-                &mut upstream_headers,
-            );
             let result = timeout_at(deadline, async {
                 let output = upstream::call(
                     &request_client,
                     protocol,
                     alias,
-                    upstream_body,
+                    body.clone(),
                     streaming,
-                    upstream_headers,
+                    headers.clone(),
                 )
                 .await?;
                 match output {
@@ -993,7 +972,6 @@ impl Engine {
                         lease,
                         deadline,
                         protocol,
-                        include_usage,
                         ended: false,
                         affinity,
                         cache: self.cache.clone(),
@@ -1090,8 +1068,22 @@ struct StreamState {
     lease: Lease,
     deadline: Instant,
     protocol: Protocol,
-    include_usage: bool,
     ended: bool,
+}
+
+impl StreamState {
+    fn finish_success(&mut self) {
+        if self.cache_ok {
+            self.cache
+                .complete(&self.cache_request, &self.lease.backend, self.ticket.tokens);
+        }
+        if let Some(observation) = &mut self.route_observation {
+            observation.finish();
+        }
+        self.ticket.finish(200);
+        self.lease.success();
+        self.ended = true;
+    }
 }
 
 fn forward_stream(state: StreamState) -> EventStream {
@@ -1101,86 +1093,80 @@ fn forward_stream(state: StreamState) -> EventStream {
             if state.ended {
                 return None;
             }
-            loop {
-                let next = if let Some(frame) = state.first.take() {
-                    Ok(Some(Ok(frame)))
-                } else {
-                    timeout_at(state.deadline, state.stream.next()).await
-                };
-                match next {
-                    Ok(Some(Ok(frame))) => {
-                        if let Some(value) = &frame.value {
-                            state.cache_ok &=
-                                !matches!(
-                                    value["type"].as_str(),
-                                    Some("error" | "response.failed" | "response.incomplete")
-                                ) && !value.get("error").is_some_and(|v| !v.is_null());
+            let next = if let Some(frame) = state.first.take() {
+                Ok(Some(Ok(frame)))
+            } else {
+                timeout_at(state.deadline, state.stream.next()).await
+            };
+            match next {
+                Ok(Some(Ok(frame))) => {
+                    if let Some(value) = &frame.value {
+                        state.cache_ok &= !matches!(
+                            value["type"].as_str(),
+                            Some("error" | "response.failed" | "response.incomplete")
+                        ) && !value.get("error").is_some_and(|v| !v.is_null());
+                        if let Some(observation) = &mut state.route_observation {
+                            observation.value(value);
+                        }
+                        if state
+                            .affinity
+                            .response(state.protocol, value, &state.lease.backend)
+                            .is_err()
+                        {
+                            state.ticket.finish(503);
                             if let Some(observation) = &mut state.route_observation {
-                                observation.value(value);
+                                observation.fail();
                             }
-                            if state
-                                .affinity
-                                .response(state.protocol, value, &state.lease.backend)
-                                .is_err()
-                            {
-                                state.ticket.finish(503);
-                                if let Some(observation) = &mut state.route_observation {
-                                    observation.fail();
-                                }
-                                state.ended = true;
-                                return Some((
-                                    Err(Error::InvalidResponse("cannot persist response affinity")),
-                                    state,
-                                ));
-                            }
-                            state.ticket.tokens.observe(state.protocol, value);
-                            if state.protocol == Protocol::Chat
-                                && !state.include_usage
-                                && value["choices"].as_array().is_some_and(Vec::is_empty)
-                            {
-                                continue;
-                            }
+                            state.ended = true;
+                            return Some((
+                                Err(Error::InvalidResponse("cannot persist response affinity")),
+                                state,
+                            ));
                         }
-                        return Some((Ok(frame), state));
+                        state.ticket.tokens.observe(state.protocol, value);
                     }
-                    Ok(None) => {
-                        if state.cache_ok {
-                            state.cache.complete(
-                                &state.cache_request,
-                                &state.lease.backend,
-                                state.ticket.tokens,
-                            );
-                        }
-                        if let Some(observation) = &mut state.route_observation {
-                            observation.finish();
-                        }
-                        state.ticket.finish(200);
-                        state.lease.success();
-                        state.ended = true;
-                        if state.protocol == Protocol::Chat {
-                            return Some((Ok(Frame::done()), state));
-                        }
-                        return None;
+                    // Settle before exposing the terminal frame: a client may close
+                    // immediately after receiving it without polling the body again.
+                    let terminal = match state.protocol {
+                        Protocol::Chat => frame.data == "[DONE]",
+                        Protocol::Messages => frame
+                            .value
+                            .as_ref()
+                            .is_some_and(|v| v["type"] == "message_stop"),
+                        Protocol::Responses => frame.value.as_ref().is_some_and(|v| {
+                            matches!(
+                                v["type"].as_str(),
+                                Some("response.completed" | "response.incomplete")
+                            )
+                        }),
+                    };
+                    if terminal {
+                        state.finish_success();
                     }
-                    error => {
-                        state
-                            .cache
-                            .failed(&state.cache_request, &state.lease.backend);
-                        let timeout = error.is_err();
-                        state.ticket.finish(if timeout { 504 } else { 502 });
-                        if let Some(observation) = &mut state.route_observation {
-                            observation.fail();
-                        }
-                        state.lease.failure(None, false);
-                        state.ended = true;
-                        let mut frame = Frame::json(
-                            json!({"error":{"type":"upstream_error","code":if timeout {"request_timeout"} else {"stream_interrupted"},"message":"Upstream stream interrupted","request_id":state.ticket.request_id}}),
-                        );
-                        if state.protocol != Protocol::Chat {
-                            frame.event = Some("error".into());
-                        }
-                        return Some((Ok(frame), state));
+                    Some((Ok(frame), state))
+                }
+                Ok(None) => {
+                    state.finish_success();
+                    None
+                }
+                error => {
+                    state
+                        .cache
+                        .failed(&state.cache_request, &state.lease.backend);
+                    let timeout = error.is_err();
+                    state.ticket.finish(if timeout { 504 } else { 502 });
+                    if let Some(observation) = &mut state.route_observation {
+                        observation.fail();
                     }
+                    state.lease.failure(None, false);
+                    state.ended = true;
+                    let mut frame = Frame::json(
+                        json!({"error":{"type":"upstream_error","code":if timeout {"request_timeout"} else {"stream_interrupted"},"message":"Upstream stream interrupted","request_id":state.ticket.request_id}}),
+                    );
+                    if state.protocol != Protocol::Chat {
+                        frame.event = Some("error".into());
+                    }
+                    Some((Ok(frame), state))
                 }
             }
         },

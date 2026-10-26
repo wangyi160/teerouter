@@ -24,6 +24,16 @@
 | POST | `/v1/responses` | input 请求格式，可使用 stream；思考强度字段为 reasoning.effort。不支持 background=true。 |
 | POST | `/v1/messages` | messages 请求格式，需 max_tokens；thinking 选项以模型目录为准。 |
 
+## 原生请求参数约束
+
+Router 保留 Agent 提交的完整 JSON 字段、值和字段缺省状态，包括未知扩展字段。不会补写或删除 `cache_control`、`prompt_cache_options`、`prompt_cache_breakpoint`、`prompt_cache_key`、`instructions`、`stream`、`stream_options.include_usage`、`store`、`include` 等字段，也不映射服务档位。缓存是否开启、有效期和断点由 Agent 与上游决定。原始 query、业务请求头和上游 usage 事件同样保留。
+
+传输层只处理必需的模型命名空间解析、所选商户账号认证，以及 Router 专用头和逐跳 HTTP 头的隔离。平台 API key、Cookie 和客户端伪造的上游账号身份不会传给上游；Claude OAuth 的认证 companion headers 由账号认证层处理。JSON 可重新序列化，不承诺字节、空白或对象键顺序相同。
+
+Codex OAuth 账号只接受 `/v1/responses`，Claude 只接受 `/v1/messages`；Grok 使用其原生 Chat Completions 或 Responses。OpenAI API key 账号仍支持原生 Chat Completions。需要跨协议转换的请求返回 `unsupported_protocol`，不调用上游。已有的不支持功能仍明确拒绝，不删掉参数后再发送。
+
+兼容配置仅可调整目录发现的 metadata；非空 `body_set`、`body_defaults`、`body_remove`、`body_null` 一律拒绝。生成请求的 header/query 改写配置也拒绝；全局兼容 header 仅用于目录发现。旧配置含改写规则时需删除规则，运行时也会拒绝执行，不能静默改写。计费继续观察原始协议的官方 usage，不通过修改请求强求 usage。
+
 ## Agent 与模型提供商匹配 v1
 
 三个模型生成接口都执行同一固定规则：Codex 只能使用 OpenAI（模型目录前缀 `chatgpt/`），Claude Code 只能使用 Claude（`claude/`），Grok Build 只能使用 xAI（`grok/`）。其他客户端不得调用正式模型服务。显式启用的 Workbuddy 实验池保留测试例外，可接受其他客户端；它不能作为正式服务的备用路由。
@@ -72,7 +82,7 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 
 普通请求自动获得软会话粘性：优先识别 `session_id`、`x-session-id`、`x-conversation-id`、`x-grok-conv-id` 和 `prompt_cache_key`；未提供时使用初始对话前缀摘要推断。续接优先使用原池、原账号；`price` 在其他池包含缓存后的估价更低时可以切换。`speed` 对可用的原池优先复用，新会话或原路由不可用时才按速度择池。始终重新校验授权、倍率上限、模型范围和账号容量。无明确标识时，具有相同初始前缀的会话可能共用路由偏好，压缩或改写初始上下文可能被识别为新会话；仅影响路由，不合并对话内容。
 
-粘性记录仅在内存中保存摘要与计数，每个商户最多 4096 条账号记录，平台最多 4096 条会话选池记录，24 小时不使用即不再复用；普通配置更新保留，替换账号凭证或代理时清除对应记录。OpenAI/Grok 会收到稳定的缓存路由标识；Chat → Responses 转换及 OAuth 路径也保留该标识。客户端无需自己选择账号，teeproxy 继续透传标识和请求。
+粘性记录仅在内存中保存摘要与计数，每个商户最多 4096 条账号记录，平台最多 4096 条会话选池记录，24 小时不使用即不再复用；普通配置更新保留，替换账号凭证或代理时清除对应记录。缓存亲和摘要只用于 Router 内部选路，不写入上游请求。Agent 提供的缓存键和会话标识原样转发；未提供时不生成。客户端无需自己选择账号，teeproxy 继续透传标识和请求。
 
 `speed` 表示**低延迟优先**，保留原协议字段以兼容已保存的规则。Router 每 5 分钟通过账号实际配置的 HTTP、SOCKS5h 或 VLESS 代理，对官方 API 入口的模型目录发起无凭证 HTTPS HEAD 请求，不调用模型生成接口、不刷新令牌、不下载响应正文。相同代理配置和入口共用样本；探测使用新连接，耗时包含代理隧道、TLS 和 HTTP 响应头等待，不能代表模型排队或生成速度。401、404、405 可作为连通证据，但不证明账号授权有效；403、429、重定向和服务端错误不作为成功延迟。
 
@@ -184,8 +194,8 @@ Router 按用户和商户授权、精确模型 ID、接口与官方能力、账�
 | 上游 / 接口 | 明确信号 | 保存内容 |
 | --- | --- | --- |
 | OpenAI / Grok / Workbuddy Chat | `choices[].message.refusal`、`delta.refusal`、`finish_reason: content_filter` | 合并的拒答原文、命中字段、结束原因、响应标识 |
-| OpenAI / Grok Responses（含 Codex 转换） | `type: refusal` 内容块、`response.refusal.delta/done`、`incomplete_details.reason: content_filter` | 按 output/content 索引合并的原文和信号；重复 done/最终快照不重复累计 |
-| Claude Messages（含 Chat 转换） | `stop_reason: refusal`、`stop_details.type: refusal` | `stop_details.type/category/explanation` 与同一响应的可见文本；不保存思考内容 |
+| OpenAI / Grok 原生 Responses | `type: refusal` 内容块、`response.refusal.delta/done`、`incomplete_details.reason: content_filter` | 按 output/content 索引合并的原文和信号；重复 done/最终快照不重复累计 |
+| Claude 原生 Messages | `stop_reason: refusal`、`stop_details.type: refusal` | `stop_details.type/category/explanation` 与同一响应的可见文本；不保存思考内容 |
 | 上游明确安全错误 | `error.code/type` 为 `content_policy_violation`、`content_filter`、`safety_violation` | 错误 code/type/message 和原 HTTP 状态；单独的 400/403/429 不算拒答 |
 
 普通 HTTP 200 拒答沿原有协议返回；明确安全错误返回 403 / `upstream_refusal`，不会重试其他账号。流已经开始后的传输错误仍走 SSE `stream_interrupted` 路径，同时保留已观察的拒答。一般的拒答文本、logprobs、工具输出或用户输入不用于推断拒答。Grok/Workbuddy 只在实际返回上述字段时记录，不能保证每次拒答都有结构化标志。

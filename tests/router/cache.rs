@@ -30,14 +30,10 @@ async fn inferred_conversation_reuses_account_and_new_conversations_balance() {
     response.bytes().await.unwrap();
     let calls = a.calls.lock().unwrap();
     assert_eq!(calls.len(), 3);
-    assert_eq!(
-        calls[0].body["prompt_cache_key"],
-        calls[2].body["prompt_cache_key"]
-    );
-    assert_eq!(
-        calls[0].headers["session_id"],
-        calls[2].headers["session_id"]
-    );
+    for call in calls.iter() {
+        assert!(call.body.get("prompt_cache_key").is_none());
+        assert!(!call.headers.contains_key("session_id"));
+    }
     assert_eq!(b.calls.lock().unwrap().len(), 1);
 }
 
@@ -63,7 +59,7 @@ async fn soft_affinity_fails_over_and_keeps_the_replacement_account() {
 }
 
 #[tokio::test]
-async fn agent_session_header_survives_compaction_without_being_forwarded_raw() {
+async fn agent_session_header_is_preserved_while_affinity_survives_compaction() {
     let a = mock(vec![Reply::json(completion()); 3]).await;
     let b = mock(vec![Reply::json(completion()); 3]).await;
     let mut config = configuration(&a);
@@ -87,7 +83,7 @@ async fn agent_session_header_survives_compaction_without_being_forwarded_raw() 
     }
     let calls = a.calls.lock().unwrap();
     assert_eq!(calls.len(), 3);
-    assert_ne!(calls[0].headers["session_id"], "agent-conversation-1");
+    assert_eq!(calls[0].headers["session_id"], "agent-conversation-1");
     assert_eq!(
         calls[0].headers["session_id"],
         calls[2].headers["session_id"]

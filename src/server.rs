@@ -477,33 +477,55 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
     agent.check_model(&alias)?;
     // Parse before reducing headers, so duplicate rules cannot be silently ignored.
     let rule = crate::merchants::route_rule::Rule::parse(&parts.headers)?;
-    for name in [
-        "user-agent",
-        "originator",
-        "x-app",
-        "x-grok-client-identifier",
-        "x-grok-client-version",
-        "x-router-session",
-        "x-router-account",
-        "x-router-pool",
-        "x-router-price-version",
-        "x-router-official-price-revision",
-        "x-router-routing",
-        "x-grok-conv-id",
-        "session_id",
-        "x-session-id",
-        "x-conversation-id",
-    ] {
-        if let Some(value) = parts.headers.get(name) {
-            headers.insert(name, value.clone());
+    let connection_headers: Vec<_> = parts
+        .headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|v| v.trim().to_ascii_lowercase())
+        .collect();
+    for (name, value) in &parts.headers {
+        let name_str = name.as_str();
+        let router_control = matches!(
+            name_str,
+            "x-router-session"
+                | "x-router-account"
+                | "x-router-pool"
+                | "x-router-price-version"
+                | "x-router-official-price-revision"
+                | "x-router-routing"
+        );
+        if connection_headers.iter().any(|v| v == name_str)
+            || (name_str.starts_with("x-router-") && !router_control)
+            || name_str.starts_with("proxy-")
+            || matches!(
+                name_str,
+                "authorization"
+                    | "x-api-key"
+                    | "cookie"
+                    | "host"
+                    | "chatgpt-account-id"
+                    | "content-length"
+                    | "connection"
+                    | "transfer-encoding"
+                    | "keep-alive"
+                    | "te"
+                    | "trailer"
+                    | "upgrade"
+            )
+        {
+            continue;
         }
+        headers.append(name.clone(), value.clone());
     }
-    if protocol == Protocol::Messages {
-        for name in ["anthropic-beta", "anthropic-version"] {
-            if let Some(value) = parts.headers.get(name) {
-                headers.insert(name, value.clone());
-            }
-        }
+    if let Some(query) = parts.uri.query() {
+        headers.insert(
+            crate::client::NATIVE_QUERY,
+            query
+                .parse()
+                .map_err(|_| ApiError::new(400, "invalid_request", "Invalid native query"))?,
+        );
     }
     let merchant_request = rule.is_some()
         || identity.runtime.is_platform()

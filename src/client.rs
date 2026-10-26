@@ -38,12 +38,6 @@ impl Client {
         }
     }
 
-    pub(crate) fn cache_session(&mut self, name: &'static str, id: &str) {
-        self.headers.insert(
-            name,
-            HeaderValue::from_str(id).expect("hashed cache identity"),
-        );
-    }
     pub fn new(provider: Provider, api_key: impl AsRef<str>) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
@@ -138,11 +132,6 @@ impl Client {
             );
         }
         headers.extend(extra);
-        for name in ["session_id", "x-grok-conv-id"] {
-            if let Some(value) = self.headers.get(name) {
-                headers.insert(name, value.clone());
-            }
-        }
         if let Some(account) = &self.oauth {
             let credential = account.credential().await?;
             let mut value = HeaderValue::from_str(&format!("Bearer {}", credential.access_token))
@@ -157,30 +146,14 @@ impl Client {
                     "account file does not contain a recognized Claude OAuth token",
                 ));
             }
-            if self.provider == Provider::OpenAI {
-                headers
-                    .entry("originator")
-                    .or_insert(HeaderValue::from_static("codex_cli_rs"));
-                headers
-                    .entry("user-agent")
-                    .or_insert(HeaderValue::from_static(
-                        "codex_cli_rs/0.0.0 (Unknown 0; unknown) unknown",
-                    ));
-                headers.insert("accept", HeaderValue::from_static("text/event-stream"));
-                if !headers.contains_key("session_id") {
-                    headers.insert(
-                        "session_id",
-                        HeaderValue::from_str(&crate::oauth::random_string()?)
-                            .expect("base64 session ID"),
-                    );
-                }
-                if let Some(id) = credential.account_id {
-                    headers.insert(
-                        "chatgpt-account-id",
-                        HeaderValue::from_str(&id)
-                            .map_err(|_| Error::OAuth("invalid ChatGPT account ID"))?,
-                    );
-                }
+            if self.provider == Provider::OpenAI
+                && let Some(id) = credential.account_id
+            {
+                headers.insert(
+                    "chatgpt-account-id",
+                    HeaderValue::from_str(&id)
+                        .map_err(|_| Error::OAuth("invalid ChatGPT account ID"))?,
+                );
             }
         } else if self.provider == Provider::Anthropic {
             // Extra beta headers must not overwrite the OAuth beta supplied by upstream Rust logic.
@@ -290,34 +263,54 @@ impl Client {
         self.checked(response, self.chat_protocol()).await
     }
 
+    pub(crate) fn supports_native(&self, protocol: crate::upstream::Protocol) -> bool {
+        protocol.supports(self.provider)
+            && !(self.provider == Provider::OpenAI
+                && self.oauth.is_some()
+                && protocol != crate::upstream::Protocol::Responses)
+    }
+
     pub(crate) async fn native(
         &self,
         protocol: crate::upstream::Protocol,
         model: &str,
         mut body: Value,
-        extra_headers: HeaderMap,
+        mut extra_headers: HeaderMap,
     ) -> Result<reqwest::Response, Error> {
         use crate::upstream::Protocol;
         if self.oauth.is_some() && self.provider == Provider::OpenAI {
-            return crate::oauth::chatgpt::send(self, model, body).await;
+            if protocol != Protocol::Responses {
+                return Err(Error::InvalidRequest(
+                    "Codex accounts require the native Responses protocol",
+                ));
+            }
+            return crate::oauth::chatgpt::send(self, model, body, extra_headers).await;
+        }
+        if !protocol.supports(self.provider) {
+            return Err(Error::InvalidRequest(
+                "provider does not support this native protocol",
+            ));
         }
         let object = body
             .as_object_mut()
             .ok_or(Error::InvalidRequest("request must be an object"))?;
-        let mut url = self.base_url.clone();
-        let headers = self.auth_headers(extra_headers).await?;
-        let operation = if protocol == Protocol::Messages {
-            "messages"
-        } else {
-            "responses"
-        };
+        // Resolving the public model namespace is the only body transformation.
         object.insert("model".into(), model.into());
-        let endpoint = if protocol == Protocol::Messages {
-            self.profile.path("messages", "messages")
-        } else {
-            self.profile.path("responses", "responses")
+        if protocol == Protocol::Chat {
+            validate(&body)?;
+        }
+        let mut url = self.base_url.clone();
+        let (operation, default_path) = match protocol {
+            Protocol::Chat => ("chat_completions", "chat/completions"),
+            Protocol::Messages => ("messages", "messages"),
+            Protocol::Responses => ("responses", "responses"),
         };
+        let endpoint = self.profile.path(operation, default_path);
         url.set_path(&format!("{}/{endpoint}", url.path().trim_end_matches('/')));
+        take_native_query(&mut extra_headers, &mut url)?;
+        let mut native_client = self.clone();
+        native_client.profile.headers.clear();
+        let headers = native_client.auth_headers(extra_headers).await?;
         let request = self
             .profile
             .json(operation, &self.http, url, headers, body)?;
@@ -424,6 +417,22 @@ fn validate(request: &Value) -> Result<(), Error> {
         ) {
             return Err(Error::InvalidRequest("unsupported message role"));
         }
+    }
+    Ok(())
+}
+
+// Set by the HTTP ingress only; never accepted as a caller-supplied header.
+pub(crate) const NATIVE_QUERY: &str = "x-router-internal-query";
+pub(crate) fn take_native_query(
+    headers: &mut HeaderMap,
+    url: &mut reqwest::Url,
+) -> Result<(), Error> {
+    if let Some(query) = headers.remove(NATIVE_QUERY) {
+        url.set_query(Some(
+            query
+                .to_str()
+                .map_err(|_| Error::InvalidRequest("invalid native query"))?,
+        ));
     }
     Ok(())
 }

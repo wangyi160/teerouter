@@ -86,39 +86,54 @@ fn oauth_urls_and_transport_headers_are_not_configurable() {
 }
 
 #[test]
-fn metadata_edits_preserve_caller_defaults_and_encode_queries_without_duplicates() {
+fn catalog_metadata_remains_configurable_without_rewriting_generation() {
     let profile = profile(
-        "responses",
-        json!({
-            "headers":{"x-future-version":"1.1.1","anthropic-beta":"future-beta"},
-            "remove_headers":["x-obsolete"],
-            "query":{"version":"1.1.1","label":"a & b"},"remove_query":["old"],
-            "body_defaults":{"/metadata/existing":"default","/metadata/added":true},
-            "body_set":{"/version":"1.1.1","/metadata/a~1b/~0key":[1,2]},
-            "body_remove":["/metadata/obsolete","/missing/old"],"body_null":["/metadata/optional"]
-        }),
+        "models",
+        json!({"headers":{"x-version":"v2"},"remove_headers":["x-old"],
+        "query":{"version":"v2","label":"a & b"},"remove_query":["old"]}),
     );
     profile.validate("openai").unwrap();
     let mut url =
-        Url::parse("https://api.openai.com/v1/responses?version=old&version=older&old=1&keep=2")
-            .unwrap();
+        Url::parse("https://api.openai.com/v1/models?version=v1&version=v0&old=1&keep=2").unwrap();
     let mut headers = HeaderMap::new();
-    headers.insert("authorization", HeaderValue::from_static("Bearer private"));
-    headers.insert("x-obsolete", HeaderValue::from_static("old"));
-    let mut body = json!({"model":"chosen-model","stream":true,"metadata":{"existing":"caller","obsolete":false}});
+    headers.insert("x-old", HeaderValue::from_static("old"));
     profile
-        .prepare("responses", &mut url, &mut headers, Some(&mut body))
+        .prepare("models", &mut url, &mut headers, None)
         .unwrap();
-    assert_eq!(headers["authorization"], "Bearer private");
-    assert_eq!(headers["x-future-version"], "1.1.1");
-    assert!(!headers.contains_key("x-obsolete"));
+    assert_eq!(headers["x-version"], "v2");
+    assert!(!headers.contains_key("x-old"));
     let pairs: Vec<_> = url.query_pairs().into_owned().collect();
     assert_eq!(pairs.iter().filter(|(k, _)| k == "version").count(), 1);
+    assert!(pairs.contains(&("keep".into(), "2".into())));
     assert!(pairs.contains(&("label".into(), "a & b".into())));
-    assert_eq!(
-        body,
-        json!({"model":"chosen-model","stream":true,"version":"1.1.1","metadata":{"existing":"caller","added":true,"optional":null,"a/b":{"~key":[1,2]}}})
-    );
+}
+
+#[test]
+fn all_parameter_edits_fail_at_validation_and_runtime_without_mutation() {
+    for rule in [
+        json!({"body_set":{"/unknown_parameter":42}}),
+        json!({"body_defaults":{"/prompt_cache_options":{"ttl":"12h"}}}),
+        json!({"body_remove":["/unknown_parameter"]}),
+        json!({"body_null":["/metadata"]}),
+        json!({"headers":{"x-future":"injected"}}),
+        json!({"remove_headers":["x-future"]}),
+        json!({"query":{"beta":"true"}}),
+        json!({"remove_query":["beta"]}),
+    ] {
+        let profile = profile("responses", rule.clone());
+        assert!(profile.validate("openai").is_err(), "{rule}");
+        let mut url = Url::parse("https://api.openai.com/v1/responses?beta=false").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-future", HeaderValue::from_static("caller"));
+        let body = json!({"unknown_parameter":1,"metadata":{"keep":true}});
+        let before = (url.clone(), headers.clone(), body.clone());
+        assert!(
+            profile
+                .prepare("responses", &mut url, &mut headers, Some(&body))
+                .is_err()
+        );
+        assert_eq!((url, headers, body), before);
+    }
 }
 
 #[test]
@@ -173,57 +188,6 @@ fn protected_fields_and_ambiguous_rules_are_rejected_before_activation() {
             .is_err()
     );
     assert!(profile("responses", json!({})).validate("gemini").is_err());
-}
-
-#[test]
-fn conflicting_runtime_shape_stops_before_building_a_network_request() {
-    let profile = profile("responses", json!({"body_set":{"/metadata/version":"v1"}}));
-    profile.validate("openai").unwrap();
-    assert!(
-        profile
-            .json(
-                "responses",
-                &reqwest::Client::new(),
-                "https://api.openai.com/v1/responses",
-                HeaderMap::new(),
-                json!({"metadata":"caller-scalar"})
-            )
-            .is_err()
-    );
-}
-
-#[test]
-fn editable_protocol_fields_do_not_allow_ancestor_edits_to_erase_reasoning() {
-    let rules = profile(
-        "responses",
-        json!({"body_set":{
-            "/include":["future.extension"],
-            "/reasoning/summary":"detailed","/version":"1.1.1"
-        }}),
-    );
-    rules.validate("openai").unwrap();
-    let mut url = Url::parse("https://chatgpt.com/backend-api/codex/responses").unwrap();
-    let mut body = json!({"model":"future-model","reasoning":{"effort":"FUTURE"}});
-    rules
-        .prepare(
-            "responses",
-            &mut url,
-            &mut HeaderMap::new(),
-            Some(&mut body),
-        )
-        .unwrap();
-    assert_eq!(body["model"], "future-model");
-    assert_eq!(body["reasoning"]["effort"], "FUTURE");
-    assert_eq!(body["reasoning"]["summary"], "detailed");
-    assert!(body.get("store").is_none());
-    let rules = profile("messages", json!({"body_remove":["/messages"]}));
-    assert!(rules.validate("anthropic").is_err());
-    let mut body = json!({"model":"future","messages":[{"role":"user","output_config":{"effort":"high"},"content":"hello"}]});
-    assert!(
-        rules
-            .prepare("messages", &mut url, &mut HeaderMap::new(), Some(&mut body))
-            .is_err()
-    );
 }
 
 #[test]
@@ -311,52 +275,7 @@ fn user_content_cannot_be_injected_replaced_or_deleted_by_protocol_rules() {
 }
 
 #[test]
-fn metadata_edits_preserve_caller_content_and_ancestor_edits_fail_closed() {
-    let caller = json!({"model":"future", "input":[{"role":"user","content":[{"type":"input_text","text":"keep exactly"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}],
-        "instructions":"caller instructions", "tools":[{"type":"function","name":"keep_tool","parameters":{"type":"object","properties":{"model":{"type":"string"},"store":{"type":"boolean"}}}}],
-        "tool_choice":"auto", "reasoning":{"effort":"high"}, "metadata":{"version":"old"}});
-    let rules = profile("responses", json!({"body_set":{"/metadata/version":"new"}}));
-    rules.validate("openai").unwrap();
-    let request = rules
-        .json(
-            "responses",
-            &reqwest::Client::new(),
-            "https://api.openai.com/v1/responses",
-            HeaderMap::new(),
-            caller.clone(),
-        )
-        .unwrap()
-        .build()
-        .unwrap();
-    let actual: Value =
-        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-    let mut expected = caller;
-    expected["metadata"]["version"] = json!("new");
-    expected["store"] = json!(false);
-    assert_eq!(actual, expected);
-    for rule in [
-        json!({"body_set":{"/wrapper":{}}}),
-        json!({"body_remove":["/wrapper"]}),
-        json!({"body_null":["/wrapper"]}),
-    ] {
-        let rules = profile("responses", rule);
-        rules.validate("openai").unwrap();
-        assert!(
-            rules
-                .json(
-                    "responses",
-                    &reqwest::Client::new(),
-                    "https://api.openai.com/v1/responses",
-                    HeaderMap::new(),
-                    json!({"wrapper":{"nested":{"messages":[{"role":"user","content":"keep"}]}}})
-                )
-                .is_err()
-        );
-    }
-}
-
-#[test]
-fn responses_storage_is_false_in_the_serialized_request_even_without_a_profile() {
+fn responses_storage_preserves_presence_type_and_value() {
     for value in [
         None,
         Some(json!(true)),
@@ -375,14 +294,14 @@ fn responses_storage_is_false_in_the_serialized_request_even_without_a_profile()
                 &reqwest::Client::new(),
                 "https://api.x.ai/v1/responses",
                 HeaderMap::new(),
-                body,
+                body.clone(),
             )
             .unwrap()
             .build()
             .unwrap();
         let sent: Value =
             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-        assert_eq!(sent["store"], false);
+        assert_eq!(sent, body);
         assert_eq!(sent["model"], "future-model");
         assert_eq!(sent["reasoning"]["effort"], "future-level");
     }

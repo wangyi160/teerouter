@@ -138,6 +138,7 @@ impl Request {
             started: Instant::now(),
         }
     }
+    // Internal routing identity only; never written into provider requests.
     pub(crate) fn identity(&self) -> String {
         self.key.iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -328,46 +329,6 @@ fn has_hour_cache(body: &Value) -> bool {
         _ => false,
     }
 }
-fn has_cache_control(body: &Value) -> bool {
-    match body {
-        Value::Object(o) => o.contains_key("cache_control") || o.values().any(has_cache_control),
-        Value::Array(a) => a.iter().any(has_cache_control),
-        _ => false,
-    }
-}
-pub(super) fn prepare(
-    request: &Request,
-    provider: crate::Provider,
-    protocol: Protocol,
-    body: &mut Value,
-    client: &mut Client,
-    headers: &mut HeaderMap,
-) {
-    let id = request.identity();
-    match provider {
-        crate::Provider::OpenAI => {
-            // Also survives Chat -> Responses translation and OAuth auth headers.
-            if body.get("prompt_cache_key").is_none() {
-                body["prompt_cache_key"] = id.clone().into();
-            }
-            client.cache_session("session_id", &id);
-            headers.remove("session_id");
-        }
-        crate::Provider::XAI => {
-            if protocol == Protocol::Chat {
-                client.cache_session("x-grok-conv-id", &id);
-            } else if body.get("prompt_cache_key").is_none() {
-                body["prompt_cache_key"] = id.into();
-            }
-        }
-        crate::Provider::Anthropic if !has_cache_control(body) => {
-            body["cache_control"] = json!({"type":"ephemeral"});
-        }
-        #[allow(unreachable_patterns)]
-        _ => (),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,51 +453,5 @@ mod tests {
                 < s.estimate(&req, "a", crate::Provider::Anthropic, &body, &q)
                     .unwrap()
         );
-    }
-    #[tokio::test]
-    async fn scoped_provider_identity_and_claude_breakpoints_survive_preparation() {
-        let original = json!({"messages":[{"role":"user","content":"hello"}]});
-        let req = request(&original);
-        for (provider, name) in [
-            (crate::Provider::OpenAI, "session_id"),
-            (crate::Provider::XAI, "x-grok-conv-id"),
-        ] {
-            let mut client = Client::new(provider, "fixture-key").unwrap();
-            let mut body = original.clone();
-            let mut h = HeaderMap::new();
-            prepare(
-                &req,
-                provider,
-                Protocol::Chat,
-                &mut body,
-                &mut client,
-                &mut h,
-            );
-            let h = client.auth_headers(h).await.unwrap();
-            assert_eq!(h[name], req.identity());
-        }
-        let mut client = Client::new(crate::Provider::Anthropic, "fixture-key").unwrap();
-        let mut body = original.clone();
-        prepare(
-            &req,
-            crate::Provider::Anthropic,
-            Protocol::Chat,
-            &mut body,
-            &mut client,
-            &mut HeaderMap::new(),
-        );
-        let converted = crate::anthropic::request(body, false).unwrap();
-        assert_eq!(converted["cache_control"], json!({"type":"ephemeral"}));
-        let mut body = json!({"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]});
-        let before = body.clone();
-        prepare(
-            &req,
-            crate::Provider::Anthropic,
-            Protocol::Messages,
-            &mut body,
-            &mut client,
-            &mut HeaderMap::new(),
-        );
-        assert_eq!(body, before);
     }
 }

@@ -87,8 +87,6 @@ async fn legacy_empty_provider_fields_restore_without_reenabling_removed_feature
 #[case(Provider::OpenAI, false)]
 #[case(Provider::Anthropic, false)]
 #[case(Provider::XAI, false)]
-#[case(Provider::OpenAI, true)]
-#[case(Provider::Anthropic, true)]
 #[case(Provider::XAI, true)]
 #[tokio::test]
 async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchanged(
@@ -249,8 +247,7 @@ async fn pool_is_discovered_from_model_and_continuations_stay_on_the_original_ac
     let body = json!({"model":"other","input":"hello"});
     let response = post(&gateway, "/v1/responses", body.clone()).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    let mut expected = body;
-    expected["store"] = false.into();
+    let expected = body;
     assert_cached_forward(&b.calls.lock().unwrap().last().unwrap().body, &expected);
     let continuation = post(
         &gateway,

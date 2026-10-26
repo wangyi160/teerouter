@@ -33,6 +33,8 @@ mod catalog_policy;
 mod compatibility;
 #[path = "router/discovery.rs"]
 mod discovery;
+#[path = "router/faithful.rs"]
+mod faithful;
 #[path = "router/oauth.rs"]
 mod oauth;
 #[path = "router/operations.rs"]
@@ -98,18 +100,7 @@ struct Capture {
     body: Value,
 }
 fn assert_cached_forward(actual: &Value, expected: &Value) {
-    let mut actual = actual.clone();
-    if let Some(key) = actual.as_object_mut().unwrap().remove("prompt_cache_key") {
-        let key = key.as_str().unwrap();
-        assert_eq!(key.len(), 64);
-        assert!(key.bytes().all(|b| b.is_ascii_hexdigit()));
-    } else {
-        assert_eq!(
-            actual.as_object_mut().unwrap().remove("cache_control"),
-            Some(json!({"type":"ephemeral"}))
-        );
-    }
-    assert_eq!(&actual, expected);
+    assert_eq!(actual, expected);
 }
 struct Mock {
     running: Running,
@@ -386,7 +377,7 @@ async fn usage(gateway: &Running) -> Value {
 #[case(Provider::Anthropic, "/v1/messages")]
 #[case(Provider::XAI, "/v1/chat/completions")]
 #[tokio::test]
-async fn unified_chat_routes_all_three_providers(#[case] provider: Provider, #[case] path: &str) {
+async fn native_requests_route_all_three_providers(#[case] provider: Provider, #[case] path: &str) {
     let response = if provider == Provider::Anthropic {
         native(provider)
     } else {
@@ -396,13 +387,16 @@ async fn unified_chat_routes_all_three_providers(#[case] provider: Provider, #[c
     let mut config = configuration(&mock);
     config.models[0].deployments[0].provider = provider;
     let gateway = gateway(config).await;
-    let response = post(&gateway, "/v1/chat/completions", request()).await;
+    let response = post(&gateway, path, request()).await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["x-router-deployment"], "a");
-    assert_eq!(
-        response.json::<Value>().await.unwrap()["choices"][0]["message"]["content"],
-        "ok"
-    );
+    let result = response.json::<Value>().await.unwrap();
+    let text = if provider == Provider::Anthropic {
+        &result["content"][0]["text"]
+    } else {
+        &result["choices"][0]["message"]["content"]
+    };
+    assert_eq!(text, "ok");
     {
         let calls = mock.calls.lock().unwrap();
         assert_eq!(calls[0].path, path);
@@ -750,7 +744,7 @@ async fn least_busy_avoids_an_inflight_deployment() {
 #[case(false)]
 #[case(true)]
 #[tokio::test]
-async fn streaming_accounts_usage_and_honors_include_usage(#[case] include_usage: bool) {
+async fn streaming_preserves_usage_and_does_not_force_include_usage(#[case] include_usage: bool) {
     let chunk = json!({"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]});
     let usage_chunk = json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}});
     let mock = mock(vec![Reply::sse(format!(
@@ -764,7 +758,11 @@ async fn streaming_accounts_usage_and_honors_include_usage(#[case] include_usage
     let response = post(&gateway, "/v1/chat/completions", body).await;
     assert_eq!(response.status(), 200);
     let text = response.text().await.unwrap();
-    assert_eq!(text.contains("prompt_tokens"), include_usage);
+    assert!(text.contains("prompt_tokens"));
+    assert_eq!(
+        mock.calls.lock().unwrap()[0].body["stream_options"]["include_usage"],
+        include_usage
+    );
     assert_eq!(text.matches("[DONE]").count(), 1);
     assert!(usage(&gateway).await.get("cost_microusd").is_none());
     assert_eq!(

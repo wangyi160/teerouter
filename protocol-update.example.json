@@ -3,12 +3,9 @@
     "compatibility": {
       "openai": {
         "requests": {
-          "responses": {
+          "models": {
             "headers": {"x-client-version": "1.1.1"},
-            "query": {"api_version": "1.1.1"},
-            "body_set": {"/version": "1.1.1", "/metadata/new_feature": true},
-            "body_defaults": {"/metadata/client": "router"},
-            "body_remove": ["/metadata/obsolete_feature"]
+            "query": {"client_version": "1.1.1"}
           }
         }
       }

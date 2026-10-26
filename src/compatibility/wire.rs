@@ -1,4 +1,4 @@
-//! Declarative request metadata, applied after the Rust protocol adapter.
+//! Configurable discovery metadata; Agent generation parameters are immutable.
 //! No scripts, secret interpolation, URL substitution or response-parser replacement.
 use super::Profile;
 use crate::Error;
@@ -7,7 +7,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -140,62 +140,8 @@ fn protected(key: &str) -> bool {
     )
 }
 
-fn body_pointer(_operation: &str, path: &str) -> Result<Vec<String>, String> {
-    pointer(path)
-}
-
 #[cfg(test)]
 mod tests;
-fn pointer(path: &str) -> Result<Vec<String>, String> {
-    if !path.starts_with('/') || path.len() > 512 {
-        return Err("body key must be a JSON pointer".into());
-    }
-    let mut parts = Vec::new();
-    for part in path[1..].split('/') {
-        let mut decoded = String::new();
-        let mut chars = part.chars();
-        while let Some(c) = chars.next() {
-            decoded.push(if c == '~' {
-                match chars.next() {
-                    Some('0') => '~',
-                    Some('1') => '/',
-                    _ => return Err("invalid JSON pointer escape".into()),
-                }
-            } else {
-                c
-            });
-        }
-        if decoded.is_empty() || decoded.chars().any(char::is_control) || protected(&decoded) {
-            return Err("invalid or protected body field".into());
-        }
-        parts.push(decoded);
-    }
-    if parts.len() > 16
-        || parts.last().is_some_and(|p| {
-            matches!(
-                p.as_str(),
-                "request"
-                    | "reasoning"
-                    | "generationConfig"
-                    | "generation_config"
-                    | "output_config"
-                    | "outputConfig"
-            )
-        })
-    {
-        return Err("body pointer is too deep or replaces a protected parameter container".into());
-    }
-    Ok(parts)
-}
-fn safe_value(value: &Value) -> bool {
-    match value {
-        Value::Object(map) => map
-            .iter()
-            .all(|(key, v)| !protected(key) && key != "request" && safe_value(v)),
-        Value::Array(values) => values.iter().all(safe_value),
-        _ => true,
-    }
-}
 impl RequestProfile {
     pub(super) fn validate(&self, provider: &str, operation: &str) -> Result<(), String> {
         let supported = match operation {
@@ -236,80 +182,28 @@ impl RequestProfile {
         {
             return Err("invalid compatibility query value".into());
         }
-        let count = self.body_set.len()
-            + self.body_defaults.len()
-            + self.body_remove.len()
-            + self.body_null.len();
-        if count > 64 || (count > 0 && operation == "models") {
-            return Err("body rules exceed limit or target a bodyless operation".into());
-        }
-        let mut paths: Vec<Vec<String>> = Vec::new();
-        for path in self
-            .body_set
-            .keys()
-            .chain(self.body_defaults.keys())
-            .chain(&self.body_remove)
-            .chain(&self.body_null)
+        self.validate_native_parameters(operation)
+            .map_err(str::to_owned)?;
+        Ok(())
+    }
+    fn validate_native_parameters(&self, operation: &str) -> Result<(), &'static str> {
+        if !(self.body_defaults.is_empty()
+            && self.body_set.is_empty()
+            && self.body_remove.is_empty()
+            && self.body_null.is_empty())
         {
-            let parts = if self.body_set.contains_key(path) {
-                body_pointer(operation, path)?
-            } else {
-                pointer(path)?
-            };
-            if paths
-                .iter()
-                .any(|p| p.starts_with(&parts) || parts.starts_with(p))
-            {
-                return Err("overlapping body rules".into());
-            }
-            paths.push(parts);
+            return Err("request body rewrites are forbidden; preserve the agent parameters");
         }
-        for value in self.body_set.values().chain(self.body_defaults.values()) {
-            if !safe_value(value) {
-                return Err("protected or invalid compatibility body value".into());
-            }
+        if operation != "models"
+            && !(self.headers.is_empty()
+                && self.remove_headers.is_empty()
+                && self.query.is_empty()
+                && self.remove_query.is_empty())
+        {
+            return Err("generation request metadata rewrites are forbidden");
         }
         Ok(())
     }
-}
-enum Edit<'a> {
-    Set(&'a Value),
-    Default(&'a Value),
-    Remove,
-}
-fn edit(body: &mut Value, parts: &[String], operation: Edit<'_>) -> Result<(), Error> {
-    let (key, rest) = parts
-        .split_first()
-        .ok_or(Error::InvalidRequest("invalid body pointer"))?;
-    if body.is_null() && !matches!(operation, Edit::Remove) {
-        *body = Value::Object(Map::new());
-    }
-    let map = body.as_object_mut().ok_or(Error::InvalidRequest(
-        "compatibility body pointer crosses a non-object",
-    ))?;
-    if rest.is_empty() {
-        match operation {
-            Edit::Set(value) => {
-                map.insert(key.clone(), value.clone());
-            }
-            Edit::Default(value) => {
-                map.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-            Edit::Remove => {
-                map.remove(key);
-            }
-        }
-        return Ok(());
-    }
-    if matches!(operation, Edit::Remove) && !map.contains_key(key) {
-        return Ok(());
-    }
-    edit(
-        map.entry(key.clone())
-            .or_insert_with(|| Value::Object(Map::new())),
-        rest,
-        operation,
-    )
 }
 impl Profile {
     pub(crate) fn prepare(
@@ -317,12 +211,15 @@ impl Profile {
         operation: &str,
         url: &mut Url,
         headers: &mut HeaderMap,
-        body: Option<&mut Value>,
+        _body: Option<&Value>,
     ) -> Result<(), Error> {
         crate::official::validate(url.as_str(), None)?;
         let Some(rule) = self.requests.get(operation) else {
             return Ok(());
         };
+        // Fail closed even for legacy profiles that bypassed configuration validation.
+        rule.validate_native_parameters(operation)
+            .map_err(Error::InvalidRequest)?;
         for key in &rule.remove_headers {
             headers.remove(key.as_str());
         }
@@ -346,46 +243,6 @@ impl Profile {
                 url.query_pairs_mut().extend_pairs(pairs);
             }
         }
-        if let Some(body) = body {
-            let invariants = operation_invariants(operation, body);
-            for key in &rule.body_null {
-                edit(
-                    body,
-                    &pointer(key)
-                        .map_err(|_| Error::InvalidRequest("invalid compatibility pointer"))?,
-                    Edit::Set(&Value::Null),
-                )?;
-            }
-            for key in &rule.body_remove {
-                edit(
-                    body,
-                    &pointer(key)
-                        .map_err(|_| Error::InvalidRequest("invalid compatibility pointer"))?,
-                    Edit::Remove,
-                )?;
-            }
-            for (key, value) in &rule.body_defaults {
-                edit(
-                    body,
-                    &pointer(key)
-                        .map_err(|_| Error::InvalidRequest("invalid compatibility pointer"))?,
-                    Edit::Default(value),
-                )?;
-            }
-            for (key, value) in &rule.body_set {
-                edit(
-                    body,
-                    &body_pointer(operation, key)
-                        .map_err(|_| Error::InvalidRequest("invalid compatibility pointer"))?,
-                    Edit::Set(value),
-                )?;
-            }
-            if invariants != operation_invariants(operation, body) {
-                return Err(Error::InvalidRequest(
-                    "compatibility rule changes caller content or protected request fields",
-                ));
-            }
-        }
         Ok(())
     }
     pub(crate) fn get(
@@ -406,50 +263,11 @@ impl Profile {
         http: &reqwest::Client,
         url: impl AsRef<str>,
         mut headers: HeaderMap,
-        mut body: Value,
+        body: Value,
     ) -> Result<RequestBuilder, Error> {
-        // Responses storage is a router invariant, including native requests and
-        // ChatGPT's Chat adapter. Apply before edits so invariant checks protect it.
-        if operation == "responses" {
-            body.as_object_mut()
-                .ok_or(Error::InvalidRequest("request must be an object"))?
-                .insert("store".into(), Value::Bool(false));
-        }
         let mut url =
             Url::parse(url.as_ref()).map_err(|_| Error::InvalidRequest("invalid request URL"))?;
-        self.prepare(operation, &mut url, &mut headers, Some(&mut body))?;
+        self.prepare(operation, &mut url, &mut headers, Some(&body))?;
         Ok(http.post(url).headers(headers).json(&body))
     }
-}
-
-fn operation_invariants(_operation: &str, body: &Value) -> BTreeMap<String, Value> {
-    invariants(body)
-}
-
-// Removing/replacing an ancestor must not erase a protected descendant (including
-// per-message reasoning settings). Check presence as well as value, including null.
-fn invariants(body: &Value) -> BTreeMap<String, Value> {
-    fn collect(value: &Value, path: &str, out: &mut BTreeMap<String, Value>) {
-        match value {
-            Value::Object(map) => {
-                for (key, value) in map {
-                    let path = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
-                    if protected(key) {
-                        out.insert(path, value.clone());
-                    } else {
-                        collect(value, &path, out);
-                    }
-                }
-            }
-            Value::Array(values) => {
-                for (i, value) in values.iter().enumerate() {
-                    collect(value, &format!("{path}/{i}"), out);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut result = BTreeMap::new();
-    collect(body, "", &mut result);
-    result
 }

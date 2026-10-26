@@ -57,7 +57,7 @@ async fn native_oauth_uses_account_backend_and_preserves_usage(
         "/v1/responses",
         json!({"model":"chat","input":"hello","stream":streaming,"store":true,"service_tier":"fast"}),
     );
-    let response = post(&gateway, route, body).await;
+    let response = post(&gateway, route, body.clone()).await;
     assert_eq!(response.status(), 200);
     let text = response.text().await.unwrap();
     assert!(text.contains("ok"));
@@ -73,79 +73,33 @@ async fn native_oauth_uses_account_backend_and_preserves_usage(
     }
     assert_eq!(last.path, "/v1/responses");
     assert_eq!(last.headers["chatgpt-account-id"], "fixture-account");
-    assert_eq!(last.headers["originator"], "codex_cli_rs");
-    assert!(last.headers.contains_key("session_id"));
-    assert_eq!(last.body["stream"], true);
-    assert_eq!(last.body["store"], false);
-    assert_eq!(last.body["service_tier"], "priority");
-    assert!(
-        last.body["include"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("reasoning.encrypted_content"))
-    );
+    assert!(!last.headers.contains_key("session_id"));
+    assert_eq!(last.body, body);
 }
 
 #[rstest]
 #[case(Provider::OpenAI, false)]
 #[case(Provider::OpenAI, true)]
 #[tokio::test]
-async fn chat_bridge_handles_tools_and_visible_replay(
+async fn chat_oauth_conversion_is_rejected_before_forwarding(
     #[case] provider: Provider,
     #[case] streaming: bool,
 ) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture-access");
-    let tool = json!({"type":"function_call","call_id":"call-return","name":"lookup","arguments":"{\"city\":\"Paris\"}"});
-    let mut final_response = native(provider);
-    final_response["output"] = json!([tool]);
-    let replies = vec![events(vec![
-        json!({"type":"response.created","response":{"id":"resp-tools"}}),
-        json!({"type":"response.output_item.added","output_index":2,"item":tool}),
-        json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"city\":"}),
-        json!({"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"Paris\"}"}),
-        json!({"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"city\":\"Paris\"}"}),
-        json!({"type":"response.completed","response":final_response}),
-    ])];
-    let mock = mock(replies).await;
+    let mock = mock(vec![]).await;
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
-    let body = json!({"model":"chat","stream":streaming,"stream_options":{"include_usage":true},
-        "messages":[{"role":"system","content":"system instructions"},{"role":"user","content":"weather"},
-        {"role":"assistant","content":"checking","tool_calls":[{"id":"call-before","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Rome\"}"}}]},
-        {"role":"tool","tool_call_id":"call-before","content":"{\"weather\":\"sunny\"}"}],
-        "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
-        "tool_choice":{"type":"function","function":{"name":"lookup"}}});
+    let mut body = request();
+    body["stream"] = streaming.into();
     let response = post(&gateway, "/v1/chat/completions", body).await;
-    assert_eq!(response.status(), 200);
-    let text = response.text().await.unwrap();
-    assert!(text.contains("tool_calls"));
-    assert!(text.contains("lookup"));
-    assert!(text.contains("Paris"));
-    if streaming {
-        assert!(text.contains("[DONE]"));
-        let chunks: Vec<Value> = text
-            .lines()
-            .filter_map(|l| l.strip_prefix("data: "))
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
-        let args: String = chunks
-            .iter()
-            .filter_map(|c| {
-                c["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
-            })
-            .collect();
-        assert_eq!(args, "{\"city\":\"Paris\"}");
-    }
-    let used = usage(&gateway).await;
-    assert_eq!(used["input_tokens"], 10);
-    assert_eq!(used["output_tokens"], 5);
-    let calls = mock.calls.lock().unwrap();
-    let sent = &calls.last().unwrap().body;
-    assert_eq!(sent["input"][2]["type"], "function_call");
-    assert_eq!(sent["input"][3]["type"], "function_call_output");
-    assert_eq!(sent["tools"][0]["type"], "function");
-    assert_eq!(sent["tool_choice"]["name"], "lookup");
+    assert_eq!(response.status(), 400);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["error"]["code"],
+        "unsupported_protocol"
+    );
+    assert!(mock.calls.lock().unwrap().is_empty());
+    assert_eq!(usage(&gateway).await["input_tokens"], 0);
 }
 
 #[tokio::test]
@@ -254,9 +208,8 @@ async fn truncated_codex_stream_returns_error_instead_of_success(#[case] done_se
     let mut config = oauth_config(&mock, Provider::OpenAI, &path);
     config.models[0].max_attempts = 1;
     let gateway = gateway(config).await;
-    let mut body = request();
-    body["stream"] = true.into();
-    let response = post(&gateway, "/v1/chat/completions", body).await;
+    let body = json!({"model":"chat","input":"hello","stream":true});
+    let response = post(&gateway, "/v1/responses", body).await;
     assert_eq!(response.status(), 200);
     let text = response.text().await.unwrap();
     assert!(text.contains("stream_interrupted"));
@@ -266,23 +219,22 @@ async fn truncated_codex_stream_returns_error_instead_of_success(#[case] done_se
 #[rstest]
 #[case(Provider::OpenAI)]
 #[tokio::test]
-async fn oauth_chat_usage_is_accounted_but_hidden_unless_requested(#[case] provider: Provider) {
+async fn oauth_native_usage_is_accounted_and_forwarded(#[case] provider: Provider) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture");
     let replies = vec![codex_events(native(provider)["output"].clone())];
     let mock = mock(replies).await;
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
-    let mut body = request();
-    body["stream"] = true.into();
-    let text = post(&gateway, "/v1/chat/completions", body)
+    let body = json!({"model":"chat","input":"hello","stream":true});
+    let text = post(&gateway, "/v1/responses", body)
         .await
         .text()
         .await
         .unwrap();
     assert!(text.contains("ok"));
-    assert!(text.contains("[DONE]"));
-    assert!(!text.contains("prompt_tokens"));
+    assert!(text.contains("response.completed"));
+    assert!(text.contains("input_tokens"));
     assert_eq!(usage(&gateway).await["input_tokens"], 10);
 }
 
@@ -320,12 +272,16 @@ async fn codex_nonstream_also_accepts_a_json_backend_response() {
     account(&path, Provider::OpenAI, "fixture");
     let mock = mock(vec![Reply::json(native(Provider::OpenAI))]).await;
     let gateway = gateway(oauth_config(&mock, Provider::OpenAI, &path)).await;
-    let value: Value = post(&gateway, "/v1/chat/completions", request())
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(value["choices"][0]["message"]["content"], "ok");
+    let value: Value = post(
+        &gateway,
+        "/v1/responses",
+        json!({"model":"chat","input":"hello"}),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(value["output"][0]["content"][0]["text"], "ok");
 }
 
 #[rstest]

@@ -4,6 +4,7 @@ use crate::{
     Client, Error,
     upstream::{Output, Protocol},
 };
+use futures_util::StreamExt;
 use std::time::Duration;
 
 #[derive(Deserialize)]
@@ -209,22 +210,58 @@ async fn run(
     let Some(model) = model else {
         return json!({"ok":false,"stage":"models","code":"probe_no_text_model","model_count":catalog.len()});
     };
-    let body = json!({"messages":[{"role":"user","content":"Reply with OK."}],"max_completion_tokens":32,"stream":false});
-    match crate::upstream::call(
-        client,
-        Protocol::Chat,
-        model,
-        body,
-        false,
-        Default::default(),
-    )
-    .await
+    // This is an explicit merchant-requested test, not an Agent request.
+    // Construct a native probe for each provider; never convert caller traffic.
+    let (protocol, body) = if client.provider == crate::Provider::Anthropic {
+        (
+            Protocol::Messages,
+            json!({"messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":32,"stream":false}),
+        )
+    } else if client.provider == crate::Provider::OpenAI && client.oauth.is_some() {
+        (
+            Protocol::Responses,
+            json!({"input":[{"role":"user","content":[{"type":"input_text","text":"Reply with OK."}]}],"instructions":"","stream":true,"store":false}),
+        )
+    } else {
+        (
+            Protocol::Chat,
+            json!({"messages":[{"role":"user","content":"Reply with OK."}],"max_completion_tokens":32,"stream":false}),
+        )
+    };
+    let streaming = body["stream"] == true;
+    match crate::upstream::call(client, protocol, model, body, streaming, Default::default()).await
     {
         Ok(Output::Json(value))
-            if value["choices"].as_array().is_some_and(|v| !v.is_empty())
+            if ["choices", "content", "output"]
+                .iter()
+                .any(|key| value[*key].as_array().is_some_and(|v| !v.is_empty()))
                 && value.get("error").is_none_or(Value::is_null) =>
         {
             json!({"ok":true,"model":model,"model_count":catalog.len()})
+        }
+        Ok(Output::Stream(mut events)) => {
+            let mut received_output = false;
+            while let Some(frame) = events.next().await {
+                match frame {
+                    Err(error) => return failure("generation", error),
+                    Ok(frame) => {
+                        if let Some(value) = frame.value {
+                            received_output |= value["type"] == "response.output_text.delta"
+                                || value["response"]["output"]
+                                    .as_array()
+                                    .is_some_and(|items| !items.is_empty());
+                        }
+                    }
+                }
+            }
+            if received_output {
+                json!({"ok":true,"model":model,"model_count":catalog.len()})
+            } else {
+                failure(
+                    "generation",
+                    Error::InvalidResponse("missing model response"),
+                )
+            }
         }
         Ok(_) => failure(
             "generation",
