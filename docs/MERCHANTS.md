@@ -14,11 +14,23 @@
 {"id":"m_<摘要前32字符>","credential_hash":"<64字符摘要>","name":"商户名称","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"allow_test":false,"users":["平台用户ID"]}
 ```
 
-商户端另外生成独立的 32 字节控制密钥并在本机加密保存。商户通道的 Bearer 为 `<接入凭证>.<控制密钥>`；首次 `POST /merchant/bind` 将控制密钥摘要 `owner_hash` 绑定到此商户，后续请求必须同时验证两者。平台只保存摘要，不接收控制密钥；平台登记更新不能设置或替换已经绑定的摘要。单独的接入凭证不能操作商户账号池。
+商户端另外生成独立的 32 字节控制密钥并在本机加密保存。商户通道的 Bearer 为 `<接入凭证>.<控制密钥>`；首次 `POST /merchant/bind` 将控制密钥摘要 `owner_hash` 绑定到此商户，后续请求必须同时验证两者。平台只保存摘要，不接收控制密钥；平台登记更新不能设置或替换已经绑定的摘要。接入凭证可在管理平台操作公开配置，但不能调用凭据私有通道。
 
 `GET /admin/merchants` 返回登记信息和解锁状态。平台可以停用商户、撤销用户或降低上限。商户 token 无权调用 `/admin/*`，平台管理员和用户 key 无权调用 `/merchant/*`。首次绑定前，知道接入凭证的主体可能抢先绑定而造成拒绝服务，但不能获得尚未上传的账号秘密；商户必须确认绑定响应与本机控制密钥一致后才上传账号配置。
 
-商户须以自己审核的本地信任策略验证 TEE 证明、启动测量和当前 TLS 公钥绑定，再在**同一条已验证的 TLS 连接**发送 token、账号和设置。teemerchant 的内置验证组件提供此受限私有管道，只允许下表中的商户接口，验证失败不发送凭证。信任策略不能从待验证服务器自动生成或接受。
+商户须以自己审核的本地信任策略验证 TEE 证明、启动测量和当前 TLS 公钥绑定，再在**同一条已验证的 TLS 连接**发送 token 和代理凭据。teemerchant 的内置验证组件提供此受限私有管道，只允许下表中的商户接口，验证失败不发送凭证。信任策略不能从待验证服务器自动生成或接受。
+
+## 查询与配置通道
+
+商户页面只从管理平台读取状态快照、模型目录、客户、收入、流水和拒答记录。管理平台每 5 分钟批量调用 `GET /admin/merchant-views` 更新自身存储；页面请求不触发 Router 查询，也没有直连回退。快照可以暂时落后，配置成功回执会立即更新平台快照。
+
+倍率、开放模型、账号启停、客户限制等公开配置由平台调用 `PUT /admin/merchants/{id}/config` 下发。请求为 `{"operation_id":"唯一操作编号","runtime_id":"商户运行时编号","config":{...},"ticket":"可选凭据票据"}`；`config.expected_revision` 提供并发控制，`account_controls` 只允许账号别名对应的 `enabled` 布尔值。该接口拒绝 `accounts`、`secrets`、明文代理、私有端点和自定义协议头；商户凭证没有 admin 权限。
+
+新增或编辑凭据时，商户先在已验证 TEE 通道提交 `PUT /merchant/accounts/prepare`，携带 `runtime_id`、`expected_revision`、`public_digest` 和 `material`。`public_digest` 是 UTF-8、键递归排序、不带空白的公开 `config` JSON 的 SHA-256；`material` 仅包含 `accounts`、`secrets`、按部署别名索引的 `proxies`。账号项只接受 `provider`、`credential`、`proxy`，不接受 refresh token 或公开启停字段。暂存只存在内存中，十分钟失效，至多保留四份，较新的准备会替代最旧的未提交草稿。
+
+平台只拿到不可读取的票据和公开配置。Router 校验商户、运行时、配置版本与摘要后，将凭据和配置一次性应用；校验失败保持旧配置和旧凭据。纯公开配置变更不需要票据。成功返回 `operation_id`、`applied_revision` 和脱敏 `state`，同一操作编号、相同命令可安全重试；不同命令复用编号会被拒绝。确认回包丢失时平台通过 `GET /admin/merchants/{id}/commands/{operation_id}` 查询回执，不自动重复执行或排队稍后修改费率。运行时保留最近 256 个成功回执；平台持久保存操作结果。
+
+旧的商户直连状态、完整配置和强制目录刷新接口已移除。现有 access token 轮换仍使用下表的凭据接口，refresh token 继续由商户本机管理。Router 重启后，平台恢复用户和商户登记，商户再提交本地凭据并经平台恢复公开配置；平台从不备份账号秘密。
 
 ## 商户接口
 
@@ -26,10 +38,8 @@
 | --- | --- |
 | `POST /merchant/bind` | 绑定本机独立控制密钥；仅同一密钥可以重复绑定 |
 | `POST /merchant/unlock` | `{"minimum_revision":0}`；创建商户内存状态，重启后 `configuration_required:true` 表示需要从本机同步账号配置 |
-| `GET /merchant/state` | 本商户设置、账号状态、账号池与目录；不返回账号凭证 |
 | `PUT /merchant/accounts/access` | 仅独立控制密钥认证的本商户可增量上传 access token，支持幂等重试；平台与其他商户无权操作 |
-| `PUT /merchant/config` | 完整配置更新，须带 `expected_revision`，冲突返回 409 |
-| `POST /merchant/models/refresh` | 刷新官方模型目录 |
+| `PUT /merchant/accounts/prepare` | 暂存账号凭据及代理，返回一次性提交票据；不改变正在使用的账号 |
 | `POST /merchant/accounts/test` | 测试尚未保存的凭证与代理；不修改账号或配置 |
 | `GET /merchant/usage?after_seq=0&limit=500` | 旧兼容接口；保留累计用量统计，不再产生逐笔队列 |
 | `POST /merchant/usage/ack` | 旧兼容接口；新商户程序不调用 |
@@ -40,7 +50,7 @@
 
 测试总超时 75 秒，每商户同时最多一次、全局最多八次，凭证只进入临时内存，不保存、不刷新 refresh token，不记入用户消费或商户收入。上游可能收取这条短请求的实际费用。正式账号必须填写独立代理，不允许 `direct://`，只有授权且编译启用的 Workbuddy 测试池例外。测试结果仅证明所测模型当时可用。
 
-完整配置包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
+公开 config 包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。可同时提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
 
 ```json
 {
@@ -48,8 +58,7 @@
   "pools":[{"name":"openai","provider":"openai","deployments":[{"id":"account1","provider":"openai","api_key_ref":"upstream1","proxy":"socks5h://YOUR_ACCOUNT_PROXY:1080"}]}],
   "customer_defaults":{"enabled":true,"models":[],"max_concurrent":4,"rpm":30,"tpm":50000},
   "customers":[],
-  "pool_pricing":[{"pool":"openai","multiplier_millionths":200000}],
-  "secrets":{"upstream1":"ADMINISTER_THROUGH_ATTESTED_CHANNEL"}
+  "pool_pricing":[{"pool":"openai","multiplier_millionths":200000}]
 }
 ```
 
@@ -59,19 +68,19 @@
 
 调用事件的 `merchant_pricing` 包含 `basis: official_pool_multiplier`、**未经倍率乘算的基准费率**、`multiplier_millionths`、`official_price_revision`、`official_version`、`official_source`、`official_checked_at` 和 `billing_rules`。Router 按提供商分别计算，将结果与分项写入事件的 `billing`；管理平台校验后入账，不重新套用通用 Token 公式。报价和规则在请求开始时冻结。缺少池倍率、模型基准价或基准价过期时拒绝模型调用；缺少实际使用的缓存类别费率时保留待结算记录。重启恢复时，平台先加载官方价格簿，商户再从本机同步账号池倍率。详细字段、支持范围与拒绝策略见 [计费协议](BILLING.md)。
 
-每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 账号在 deployment 的 `proxy` 中配置；OAuth 账号在 `accounts` 对象内配置 `proxy`。代理仅提供网络出口，模型请求目标仍固定为官方服务。仅获授权的 Workbuddy 测试账号允许 `direct://`。
+每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 部署的代理通过私有 `material.proxies` 提交；OAuth 账号在私有 `material.accounts` 内配置 `proxy`。公开配置只保留 `[redacted]` 代理占位。代理仅提供网络出口，模型请求目标仍固定为官方服务。仅获授权的 Workbuddy 测试账号允许 `direct://`。
 
 ## 账号池对外模型名单
 
-`PUT /merchant/config` 的每个 `pools[]` 可设置 `allowed_models`，填写官方原始模型 ID（不加 `chatgpt/`、`claude/`、`grok/` 展示前缀）。例如池内账号实际支持 20 个模型，可只设置 `"allowed_models": ["model-a", "model-b", "model-c"]`。
+管理平台配置命令 `config` 中的每个 `pools[]` 可设置 `allowed_models`，填写官方原始模型 ID（不加 `chatgpt/`、`claude/`、`grok/` 展示前缀）。例如池内账号实际支持 20 个模型，可只设置 `"allowed_models": ["model-a", "model-b", "model-c"]`。
 
 名单属于账号池，池内所有账号共用；账号不支持单独配置名单。省略或 `null` 表示开放全部经过官方目录验证的模型，保留旧配置行为；`[]` 表示不开放任何模型。明确设置名单后，新发现的模型不会自动开放。最多 4096 个有效且不重复的 ID，不支持通配符，也不会自动放行其他别名。
 
-`GET /merchant/state` 返回该名单和未经过名单过滤的官方模型目录，供商户勾选。用户的 `/v1/models`、`/v1/pools` 模型计数、自动选池和指定池请求都执行这项限制，并继续执行官方能力、用户授权和调用时的计费校验；写入一个不存在的模型不会使其可用。策略经已验证的商户通道同步，按配置版本更新，由商户本机保存恢复资料。修改应用于之后受理的请求，已经受理的请求继续使用受理时的配置。
+管理平台商户状态快照返回该名单和未经过名单过滤的官方模型目录，供商户勾选。用户的 `/v1/models`、`/v1/pools` 模型计数、自动选池和指定池请求都执行这项限制，并继续执行官方能力、用户授权和调用时的计费校验；写入一个不存在的模型不会使其可用。公开策略由管理平台下发，按配置版本更新，由商户本机保存恢复资料。修改应用于之后受理的请求，已经受理的请求继续使用受理时的配置。
 
 正式上游的模型目录按提供商共享：OpenAI、Claude、Grok 各一份，覆盖所有启用商户的所有账号池。池内账号仍须属于同一提供商，并由商户保证提供相同的模型服务。Router 通过一个启用且未判定失效账号的凭证和代理查询官方目录，成功即停止；优先使用上次成功的来源，失败时可切换其他池、其他商户的账号。不逐账号拉取，不合并不同来源的结果。共享的仅是官方模型及能力，账号凭证、代理、健康、限额及各池开放名单保持独立。Workbuddy 测试池仍按池隔离。
 
-平台的 `discovery.refresh_secs` 默认 300，即每 5 分钟到期刷新。后台最多每 30 秒检查一次，无需用户查询模型列表；「更新目录」立即强制刷新同一提供商的共享目录。一次刷新使用 `discovery.timeout_secs` 的总时间预算（默认 15 秒），存在备用账号时单次尝试最多使用一半预算；未尝试完的来源在下一轮继续轮换。并发刷新合并为同一任务。若全部候选失败、没有候选或时间预算内未取得完整成功结果，立即清空该提供商目录，返回 `complete_catalog:false`，下一周期再尝试；手动刷新也可恢复。没有有效目录时不得以旧目录接收请求。商户客户端应保留本地开放名单，不能把失败导致的空目录当成官方已下架全部模型。
+平台的 `discovery.refresh_secs` 默认 300，即每 5 分钟到期刷新。后台最多每 30 秒检查一次，无需用户查询模型列表；商户「更新目录」只读取管理平台已保存的快照，不强制访问 Router 或官方。一次刷新使用 `discovery.timeout_secs` 的总时间预算（默认 15 秒），存在备用账号时单次尝试最多使用一半预算；未尝试完的来源在下一轮继续轮换。并发刷新合并为同一任务。若全部候选失败、没有候选或时间预算内未取得完整成功结果，立即清空该提供商目录，返回 `complete_catalog:false`，下一周期再尝试。没有有效目录时不得以旧目录接收请求。商户客户端应保留本地开放名单，不能把失败导致的空目录当成官方已下架全部模型。
 
 正式上游目录状态为 `scope:"provider"`，`provider` 为 `openai`、`anthropic` 或 `xai`，并带 `refresh_secs`；不返回来源商户或 `source_deployment`。Workbuddy 保留 `scope:"pool"`。`catalog.data` 仍按本商户账号返回条目，但同提供商条目引用相同目录和刷新状态。同步账号仅验证权限、配置及凭证格式，不自动逐账号请求官方；真实连通性测试使用独立的 `/merchant/accounts/test`。共享目录就绪不表示该条目对应的账号已经通过生成测试。
 
@@ -109,7 +118,7 @@
 
 累计按商户 ID 和平台用户 ID 归属，覆盖该用户全部 API key、账号池及模型，更换或重新生成 key 不会解除限制。自动路由会排除被限制商户，仍可选择用户有权限的其他商户；固定池不会绕过限制。只有上游明确的拒答信号计数，一次请求最多一次；普通网络错误、429 和普通 5xx 不计数。
 
-`GET /merchant/state` 的 `customer_refusals` 只显示已使用客户的 `total`（历史总数）、`count`（清零后的次数）、`limit` 和 `blocked`。这些是准入控制统计，不是第二套流水接口。清零时提交该用户的 `refusal_baseline: total`，同时将 `enabled` 设为 `true`；基线单调递增，陈旧表单不能恢复已清零的次数，读取基线之后新增的拒答仍保留。
+管理平台商户状态快照 的 `customer_refusals` 只显示已使用客户的 `total`（历史总数）、`count`（清零后的次数）、`limit` 和 `blocked`。这些是准入控制统计，不是第二套流水接口。清零时提交该用户的 `refusal_baseline: total`，同时将 `enabled` 设为 `true`；基线单调递增，陈旧表单不能恢复已清零的次数，读取基线之后新增的拒答仍保留。
 
 累计总数随平台账务统计保存，启用本地流水日志时在同一持久化事务写入；删除或上传逐笔记录不会清零。管理平台可在首次升级恢复时从已归档流水回填历史总数。商户的阈值及清零基线仍由商户程序本地保存，Router 重启后随商户配置恢复，不需要平台持有商户凭据。没有本地日志时，尚未同步的尾部统计仍有崩溃丢失窗口。
 

@@ -8,6 +8,8 @@ const ADMIN: &str = "platform-admin";
 mod access_tests;
 #[path = "billing_tests.rs"]
 mod billing_tests;
+#[path = "control_tests.rs"]
+mod control_tests;
 #[path = "provider_catalog_tests.rs"]
 mod provider_catalogs;
 #[path = "refusal_tests.rs"]
@@ -941,8 +943,9 @@ async fn merchant_credentials_are_separate_and_root_backups_are_opaque() {
     ] {
         assert!(call(&server, Method::GET, path, token, Value::Null).await.0 >= 400);
     }
-    let (status, value) = call(&server, Method::GET, "/merchant/state", &a, Value::Null).await;
-    assert_eq!(status, 200);
+    let (status, _value) = call(&server, Method::GET, "/merchant/state", &a, Value::Null).await;
+    assert_eq!(status, 404);
+    let value = super::control::view(&r, &registration(&a)).unwrap();
     assert_eq!(value["merchant"]["id"], crypto::identity(&a));
     assert!(!value.to_string().contains("MERCHANT_PRIVATE"));
     assert!(!value.to_string().contains(&crypto::identity(&b)));

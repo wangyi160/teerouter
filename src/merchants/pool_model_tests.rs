@@ -17,7 +17,7 @@ async fn removing_last_account_withdraws_pool_and_price_but_disabled_accounts_ke
         .as_array_mut()
         .unwrap()
         .push(json!({"pool":"draft","multiplier_millionths":500000}));
-    let (status, saved) = call(&server, Method::PUT, "/merchant/config", &token, body).await;
+    let (status, saved) = control_tests::submit(&server, &r, &token, body).await;
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["pools"].as_array().unwrap().len(), 1);
     assert_eq!(saved["pools"][0]["name"], "official");
@@ -30,7 +30,7 @@ async fn removing_last_account_withdraws_pool_and_price_but_disabled_accounts_ke
     empty["pools"][0]["deployments"] = json!([]);
     empty["secrets"] = json!({});
     empty["delete_secrets"] = json!(["upstream"]);
-    let (status, removed) = call(&server, Method::PUT, "/merchant/config", &token, empty).await;
+    let (status, removed) = control_tests::submit(&server, &r, &token, empty).await;
     assert_eq!(status, 200, "{removed}");
     assert_eq!(removed["pools"], json!([]));
     assert_eq!(removed["settings"]["pool_pricing"], json!([]));
@@ -42,8 +42,7 @@ async fn removing_last_account_withdraws_pool_and_price_but_disabled_accounts_ke
         state(&r, &registration(&token)).unwrap()["pools"],
         json!([])
     );
-    let (status, restored) =
-        call(&server, Method::PUT, "/merchant/config", &token, update(4)).await;
+    let (status, restored) = control_tests::submit(&server, &r, &token, update(4)).await;
     assert_eq!(status, 200, "{restored}");
     assert_eq!(restored["pools"][0]["name"], "official");
 }
@@ -65,22 +64,13 @@ async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_inval
         let mut body = update(2);
         body["pools"][0]["allowed_models"] = invalid;
         assert_eq!(
-            call(&server, Method::PUT, "/merchant/config", &token, body)
-                .await
-                .0,
+            control_tests::submit(&server, &r, &token, body).await.0,
             400
         );
     }
     let mut body = update(2);
     body["pools"][0]["allowed_models"] = json!(["model-test", "model-other"]);
-    let (status, saved) = call(
-        &server,
-        Method::PUT,
-        "/merchant/config",
-        &token,
-        body.clone(),
-    )
-    .await;
+    let (status, saved) = control_tests::submit(&server, &r, &token, body.clone()).await;
     assert_eq!(status, 200, "{saved}");
     assert_eq!(
         saved["pools"][0]["allowed_models"],
@@ -90,7 +80,7 @@ async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_inval
     let empty = unlock(&r, &token, 3).await.unwrap();
     assert_eq!(empty["pools"], json!([]));
     body["expected_revision"] = 3.into();
-    let (status, restored) = call(&server, Method::PUT, "/merchant/config", &token, body).await;
+    let (status, restored) = control_tests::submit(&server, &r, &token, body).await;
     assert_eq!(status, 200);
     assert_eq!(
         restored["pools"][0]["allowed_models"],
@@ -99,12 +89,10 @@ async fn pool_model_policy_survives_merchant_sync_and_recovery_and_rejects_inval
     let mut body = update(4);
     body["pools"][0]["allowed_models"] = json!([]);
     assert_eq!(
-        call(&server, Method::PUT, "/merchant/config", &token, body)
-            .await
-            .1["pools"][0]["allowed_models"],
+        control_tests::submit(&server, &r, &token, body).await.1["pools"][0]["allowed_models"],
         json!([])
     );
-    let (_, saved) = call(&server, Method::PUT, "/merchant/config", &token, update(5)).await;
+    let (_, saved) = control_tests::submit(&server, &r, &token, update(5)).await;
     assert!(saved["pools"][0].get("allowed_models").is_none());
 }
 

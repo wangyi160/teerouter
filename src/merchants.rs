@@ -16,6 +16,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 mod access;
+pub(crate) mod control;
 mod crypto;
 mod customers;
 pub(crate) mod http;
@@ -163,6 +164,7 @@ impl Default for Settings {
     }
 }
 pub(crate) struct Live {
+    control: Mutex<control::State>,
     probe_gate: Arc<crate::resources::Gate>,
     pub runtime: Arc<Runtime>,
     pub settings: Mutex<Settings>,
@@ -417,6 +419,7 @@ pub(crate) async fn unlock(
     runtime.merchants.live.lock().unwrap().insert(
         item.id.clone(),
         Arc::new(Live {
+            control: Mutex::default(),
             probe_gate: Arc::default(),
             runtime: child,
             settings: Mutex::new(settings),
@@ -570,13 +573,23 @@ pub(crate) struct MerchantUpdate {
     pub compatibility: Option<BTreeMap<String, crate::compatibility::Profile>>,
     pub restrictions: Option<Vec<crate::policy::Restriction>>,
 }
+#[cfg(test)]
 pub(crate) async fn apply(
     runtime: &Runtime,
     token: &str,
-    mut input: MerchantUpdate,
+    input: MerchantUpdate,
 ) -> Result<Value, ApiError> {
     let _write = runtime.merchants.write.lock().await;
     let item = authenticate(runtime, token)?;
+    apply_for(runtime, &item, input).await
+}
+
+// The caller holds Registry::write, across validation and activation.
+async fn apply_for(
+    runtime: &Runtime,
+    item: &Registration,
+    mut input: MerchantUpdate,
+) -> Result<Value, ApiError> {
     let live = live(runtime, &item.id)?;
     if !input.prices.is_empty() {
         return Err(ApiError::new(
@@ -742,6 +755,7 @@ pub(crate) fn state(runtime: &Runtime, item: &Registration) -> Result<Value, Api
     merchant["configuration_required"] =
         (!live.configured.load(std::sync::atomic::Ordering::Acquire)).into();
     merchant["credential_protocol"] = "access-token-only-v1".into();
+    merchant["control_protocol"] = "platform-config-v1".into();
     merchant["runtime_id"] = engine
         .vault
         .lock()

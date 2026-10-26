@@ -65,27 +65,13 @@ pub(crate) async fn dispatch(
             let input: Input = serde_json::from_value(body).map_err(|_| invalid())?;
             unlock(&runtime, &token, input.minimum_revision).await?
         }
-        ("GET", "/merchant/state") => {
-            let _read = runtime.merchants.write.lock().await;
-            state(&runtime, &item)?
+        ("PUT", "/merchant/accounts/prepare") => {
+            let (_, body) = crate::server::admin::input(&runtime, request).await?;
+            control::prepare(&runtime, &token, body).await?
         }
         ("PUT", "/merchant/accounts/access") => {
             let (_, body) = crate::server::admin::input(&runtime, request).await?;
             access::replace(&runtime, &token, body).await?
-        }
-        ("PUT", "/merchant/config") => {
-            let (_, body) = crate::server::admin::input(&runtime, request).await?;
-            apply(
-                &runtime,
-                &token,
-                serde_json::from_value(body).map_err(|_| invalid())?,
-            )
-            .await?
-        }
-        ("POST", "/merchant/models/refresh") => {
-            let live = live(&runtime, &item.id)?;
-            live.runtime.engine().refresh_models(true).await;
-            state(&runtime, &item)?
         }
         ("POST", "/merchant/accounts/test") => {
             let (_, body) = crate::server::admin::input(&runtime, request).await?;

@@ -1,6 +1,6 @@
 # Merchant pool publication
 
-`PUT /merchant/config` replaces the merchant's published pool set. Pools with no
+The platform command `PUT /admin/merchants/{id}/config` replaces the merchant's published pool set. Pools with no
 deployments are omitted, together with their `pool_pricing` entries. Removing the
 last account withdraws the pool; a disabled account still counts as an account.
 Other merchants are unaffected. Clients retain empty drafts and their settings

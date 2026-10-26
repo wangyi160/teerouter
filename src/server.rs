@@ -68,6 +68,9 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
             "/merchant/{*path}",
             axum::routing::any(crate::merchants::http::dispatch),
         )
+        .route("/admin/merchant-views", get(crate::merchants::control::snapshots))
+        .route("/admin/merchants/{mid}/config", axum::routing::put(crate::merchants::control::put))
+        .route("/admin/merchants/{mid}/commands/{oid}", get(crate::merchants::control::receipt))
         .route("/v1/chat/completions", post(generate))
         .route("/v1/messages", post(generate))
         .route("/v1/responses", post(generate))
