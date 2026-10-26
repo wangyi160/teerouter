@@ -5,21 +5,20 @@ use std::{
 };
 
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::{to_bytes, Body},
     extract::Request,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
+    Router,
 };
 use futures_util::StreamExt;
 use rstest::rstest;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use teellm::{
-    Provider,
     config::{Config, Strategy},
     router::Engine,
-    server,
+    server, Provider,
 };
 use tokio::{net::TcpListener, sync::Notify, task::JoinHandle};
 
@@ -239,6 +238,9 @@ async fn mock_inner(replies: Vec<Reply>, automatic_catalog: bool) -> Mock {
                 body,
             )
                 .into_response();
+            if reply.content_type.is_empty() {
+                response.headers_mut().remove("content-type");
+            }
             if let Some(n) = reply.retry_after {
                 response
                     .headers_mut()
@@ -511,13 +513,11 @@ async fn authentication_allowlists_and_admin_isolation() {
     assert!(response.headers().contains_key("x-request-id"));
     let models: Value = response.json().await.unwrap();
     assert_eq!(models["data"].as_array().unwrap().len(), 5);
-    assert!(
-        models["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|m| m["router_pools"] == json!(["chat"]))
-    );
+    assert!(models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|m| m["router_pools"] == json!(["chat"])));
     let mut body = request();
     body["model"] = "hidden".into();
     // Model IDs are not pool selectors. This ID is absent from the authorized

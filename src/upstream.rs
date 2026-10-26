@@ -6,8 +6,8 @@ use serde_json::Value;
 use tokio_util::{codec::FramedRead, io::StreamReader};
 
 use crate::{
-    Client, Error, Provider,
     sse::{SseCodec, SseEvent},
+    Client, Error, Provider,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +83,7 @@ pub(crate) async fn call(
         client.limits,
         client.refusal.clone(),
         client.billing.clone(),
+        false,
     )
     .await
 }
@@ -94,6 +95,7 @@ pub(crate) async fn decode_native(
     limits: crate::resources::Limits,
     refusal: Option<crate::refusal::Observer>,
     billing: Option<crate::billing::Observer>,
+    allow_untyped_stream: bool,
 ) -> Result<Output, Error> {
     if !streaming {
         let value = crate::resources::json(response, limits.bytes).await?;
@@ -116,18 +118,17 @@ pub(crate) async fn decode_native(
         }
         return Ok(Output::Json(value));
     }
-    if !response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
+    let stream_type = match response.headers().get("content-type") {
+        None => allow_untyped_stream,
+        Some(value) => value.to_str().ok().is_some_and(|v| {
             v.split(';')
                 .next()
                 .unwrap_or("")
                 .trim()
                 .eq_ignore_ascii_case("text/event-stream")
-        })
-    {
+        }),
+    };
+    if !stream_type {
         return Err(Error::InvalidResponse("expected text/event-stream"));
     }
     let events = FramedRead::new(

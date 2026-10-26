@@ -2,7 +2,7 @@
 use crate::{Client, Error};
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub(crate) async fn send(
     client: &Client,
@@ -118,7 +118,7 @@ pub(crate) async fn decode(
     refusal: Option<crate::refusal::Observer>,
     billing: Option<crate::billing::Observer>,
 ) -> Result<crate::upstream::Output, Error> {
-    use crate::upstream::{Output, Protocol, decode_native};
+    use crate::upstream::{decode_native, Output, Protocol};
     // The Python implementation also accepts an ordinary JSON response for nonstream callers.
     let is_json = response
         .headers()
@@ -138,6 +138,10 @@ pub(crate) async fn decode(
         limits,
         refusal,
         billing,
+        // Codex's official backend can omit Content-Type on a valid SSE
+        // response. Keep bounded SSE parsing and terminal-event validation;
+        // an explicitly incompatible media type is still rejected.
+        true,
     )
     .await?;
     match output {

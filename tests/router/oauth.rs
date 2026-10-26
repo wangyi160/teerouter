@@ -46,11 +46,16 @@ fn codex_events(output: Value) -> Reply {
 async fn native_oauth_uses_account_backend_and_preserves_usage(
     #[case] provider: Provider,
     #[case] streaming: bool,
+    #[values(false, true)] untyped: bool,
 ) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.json");
     account(&path, provider, "fixture-access");
-    let replies = vec![codex_events(native(provider)["output"].clone())];
+    let mut reply = codex_events(native(provider)["output"].clone());
+    if untyped {
+        reply.content_type = "";
+    }
+    let replies = vec![reply];
     let mock = mock(replies).await;
     let gateway = gateway(oauth_config(&mock, provider, &path)).await;
     let (route, body) = (
@@ -75,6 +80,39 @@ async fn native_oauth_uses_account_backend_and_preserves_usage(
     assert_eq!(last.headers["chatgpt-account-id"], "fixture-account");
     assert!(!last.headers.contains_key("session_id"));
     assert_eq!(last.body, body);
+}
+
+#[rstest]
+#[case("<html>not an event stream</html>", None)]
+#[case("data: {not-json}\n\n", None)]
+#[case("data: {\"type\":\"response.created\"}\n\n", None)]
+#[case(
+    "data: {\"type\":\"error\",\"error\":{\"code\":\"overloaded\"}}\n\n",
+    None
+)]
+#[case(
+    "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+    Some("application/json")
+)]
+#[tokio::test]
+async fn codex_untyped_stream_still_requires_valid_complete_events(
+    #[case] data: &str,
+    #[case] content_type: Option<&'static str>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json");
+    account(&path, Provider::OpenAI, "fixture-access");
+    let mut reply = Reply::sse(data.to_owned());
+    reply.content_type = content_type.unwrap_or("");
+    let mock = mock(vec![reply]).await;
+    let gateway = gateway(oauth_config(&mock, Provider::OpenAI, &path)).await;
+    let response = post(
+        &gateway,
+        "/v1/responses",
+        json!({"model":"chat","input":"hello"}),
+    )
+    .await;
+    assert_eq!(response.status(), 502);
 }
 
 #[rstest]
