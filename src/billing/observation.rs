@@ -497,10 +497,17 @@ impl State {
             .or_else(|| usage.and_then(|v| v.get("service_tier")))
             .filter(|v| !v.is_null())
         {
-            self.dimensions.service_tier = tier(t.as_str().ok_or("invalid_service_tier")?)
-                .ok_or("unknown_service_tier")?
-                .into();
-            self.auto_tier = false;
+            let selected = t.as_str().ok_or("invalid_service_tier")?;
+            if selected == "auto" {
+                // Responses can echo "auto" in response.created/in_progress,
+                // then report the actual tier with the final usage. It is a
+                // selector, not a price or a permanent observation error.
+                // If it never resolves, finish() keeps the bill pending.
+                self.auto_tier = true;
+            } else {
+                self.dimensions.service_tier = tier(selected).ok_or("unknown_service_tier")?.into();
+                self.auto_tier = false;
+            }
         }
         if let Some(geo) = usage
             .and_then(|v| v.get("inference_geo"))

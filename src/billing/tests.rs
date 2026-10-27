@@ -223,6 +223,102 @@ fn actual_tier_selects_frozen_variant_including_fallback_to_standard() {
 }
 
 #[test]
+fn responses_auto_events_wait_for_actual_tier_and_preserve_cache_pricing() {
+    let mut q = quote();
+    q.billing_rules.variants.push(Variant {
+        service_tier: "priority".into(),
+        speed: "standard".into(),
+        inference_geo: "global".into(),
+        rates: TokenRates {
+            input: 4_000_000,
+            output: 20_000_000,
+            cache_read: Some(200_000),
+            cache_write: None,
+            cache_write_hour: None,
+        },
+        long_context: None,
+    });
+    for (actual, expected) in [("default", 2210), ("priority", 4420)] {
+        for request in [json!({}), json!({"service_tier":"auto"})] {
+            let o = Observer::new(Provider::OpenAI, &request, q.clone()).unwrap();
+            // The Codex backend echoes the selector before it chooses a tier.
+            for kind in ["response.created", "response.in_progress"] {
+                o.observe(
+                    Protocol::Responses,
+                    &json!({"type":kind,
+                    "response":{"status":"in_progress","service_tier":"auto","usage":null}}),
+                    true,
+                );
+            }
+            o.observe(
+                Protocol::Responses,
+                &json!({"type":"response.completed",
+                "response":{"status":"completed","service_tier":actual,"usage":{
+                    "input_tokens":1200,"input_tokens_details":{"cached_tokens":100},
+                    "output_tokens":0,"total_tokens":1200}}}),
+                true,
+            );
+            let b = o.finish(200, 1);
+            assert_eq!(b["state"], "calculated", "{b}");
+            assert_eq!(b["usage_source"], "official");
+            assert_eq!(b["coverage"], "complete");
+            assert_eq!(b["dimensions"]["service_tier"], actual);
+            assert_eq!(b["official_cost_microusd"], expected);
+            assert_eq!(b["charge_microusd"], expected * 8 / 10);
+        }
+    }
+}
+
+#[test]
+fn responses_auto_without_actual_tier_never_assumes_standard_price() {
+    for final_tier in [json!("auto"), Value::Null] {
+        let o = Observer::new(Provider::OpenAI, &json!({}), quote()).unwrap();
+        o.observe(
+            Protocol::Responses,
+            &json!({"type":"response.created",
+            "response":{"service_tier":"auto","usage":null}}),
+            true,
+        );
+        o.observe(
+            Protocol::Responses,
+            &json!({"type":"response.completed",
+            "response":{"service_tier":final_tier,"usage":{"input_tokens":10,"output_tokens":2}}}),
+            true,
+        );
+        let b = o.finish(200, 1);
+        assert_eq!(b["state"], "pending", "{b}");
+        assert_eq!(b["reason"], "actual_service_tier_missing");
+        assert_eq!(b["usage"]["input"], 10);
+        assert!(b.get("estimate").is_none());
+    }
+}
+
+#[test]
+fn responses_actual_tier_does_not_clear_other_billing_errors() {
+    for (bad, reason) in [
+        (json!("not-a-tier"), "unknown_service_tier"),
+        (json!(42), "invalid_service_tier"),
+    ] {
+        let o = Observer::new(Provider::OpenAI, &json!({}), quote()).unwrap();
+        o.observe(
+            Protocol::Responses,
+            &json!({"type":"response.created",
+            "response":{"service_tier":bad}}),
+            true,
+        );
+        o.observe(
+            Protocol::Responses,
+            &json!({"type":"response.completed",
+            "response":{"service_tier":"default","usage":{"input_tokens":10,"output_tokens":2}}}),
+            true,
+        );
+        let b = o.finish(200, 1);
+        assert_eq!(b["state"], "pending");
+        assert_eq!(b["reason"], reason);
+    }
+}
+
+#[test]
 fn malformed_details_and_conflicting_counts_never_silently_use_full_input_price() {
     for (provider, protocol, usage, reason) in [
         (
