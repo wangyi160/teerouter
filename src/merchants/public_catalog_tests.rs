@@ -80,6 +80,10 @@ async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_ca
     assert_eq!(pool["concurrency"]["available"], 2);
     assert_eq!(pool["merchant_limits"]["in_flight"], 1);
     assert_eq!(pool["available_accounts"], 1);
+    assert_eq!(pool["client_accounts"].as_array().unwrap().len(), 1);
+    assert_eq!(pool["client_accounts"][0]["available"], true);
+    assert_eq!(pool["client_accounts"][0]["catalog"]["visible_models"], 1);
+    assert_eq!(pool["client_accounts"][0]["proxy_latency"]["latency_ms"], 170.0);
     assert_eq!(pool["available"], true);
     assert_eq!(pool["proxy_latency"]["status"], "measured");
     assert_eq!(pool["proxy_latency"]["latency_ms"], 170.0);
