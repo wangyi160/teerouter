@@ -24,6 +24,8 @@ mod receipt_relay;
 mod receipts;
 mod refusal;
 mod resources;
+mod request_proof;
+mod user_auth;
 pub mod router;
 mod runtime;
 mod scheduler;

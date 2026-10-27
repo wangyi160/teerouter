@@ -12,7 +12,7 @@ teellm [run] --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8443]
 Optional: --journal-dir /data (sealed accounting spool, dstack TEE key required).
 Supply one admin token line over a
 protected stdin pipe. Management initializes state through /admin/initialize,
-saves /admin/checkpoint and acknowledges it before business requests are served.
+restores /admin/checkpoint/diff and settles archived receipt relay batches.
 Plain HTTP is restricted to loopback. Use the attested TLS endpoint for TEE access.";
 pub async fn run() -> Result<(), String> {
     #[cfg(target_os = "linux")]

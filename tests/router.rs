@@ -58,6 +58,7 @@ struct Running {
     url: String,
     task: JoinHandle<()>,
     agent: &'static str,
+    runtime: Option<Arc<crate::runtime::Runtime>>,
 }
 impl Drop for Running {
     fn drop(&mut self) {
@@ -75,6 +76,7 @@ async fn run(app: Router) -> Running {
         url,
         task,
         agent: agent_ua(Provider::OpenAI),
+        runtime: None,
     }
 }
 
@@ -87,7 +89,9 @@ async fn run_fixture(engine: Arc<Engine>) -> Running {
         .next()
         .map(|d| d.provider)
         .unwrap_or(Provider::OpenAI);
-    let mut running = run(server::app_upstream_fixture(engine)).await;
+    let runtime=crate::runtime::Runtime::merchant(engine);
+    let mut running = run(server::app_runtime(runtime.clone())).await;
+    running.runtime=Some(runtime);
     running.agent = agent_ua(provider);
     running
 }
@@ -362,16 +366,16 @@ async fn post_as(
         .unwrap()
 }
 async fn usage(gateway: &Running) -> Value {
-    client()
-        .get(format!("{}/v1/usage", gateway.url))
-        .bearer_auth("client-secret")
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()["usage"]
-        .clone()
+    gateway.runtime.as_ref().unwrap().engine().usage(Some(0)).unwrap()["usage"].clone()
+}
+async fn fixture_models(gateway: &Running, key: &str) -> Value {
+    let engine=gateway.runtime.as_ref().unwrap().engine();
+    engine.models(engine.authenticate(key).unwrap()).await
+}
+async fn fixture_catalog_status(gateway: &Running) -> Value {
+    let engine=gateway.runtime.as_ref().unwrap().engine();
+    engine.refresh_models(false).await;
+    engine.discovery_status()
 }
 
 #[rstest]
@@ -505,14 +509,7 @@ async fn authentication_allowlists_and_admin_isolation() {
             .status(),
         401
     );
-    let response = http
-        .get(format!("{}/v1/models", gateway.url))
-        .bearer_auth("client-secret")
-        .send()
-        .await
-        .unwrap();
-    assert!(response.headers().contains_key("x-request-id"));
-    let models: Value = response.json().await.unwrap();
+    let models = fixture_models(&gateway,"client-secret").await;
     assert_eq!(models["data"].as_array().unwrap().len(), 5);
     assert!(models["data"]
         .as_array()

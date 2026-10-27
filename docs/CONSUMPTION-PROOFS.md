@@ -79,38 +79,11 @@ The independent verifier supports both public batches and the legacy private
 protocol below. A detached public envelope proves its signature and committed
 records hash; verifying records also requires the original `records_json`.
 
-## Legacy private export and durability
+## Historical private proofs
 
-`POST /admin/checkpoint/diff` accepts `sign_receipts:true` in addition to `boot_id`
-and `base_id`. Checkpoint envelopes advertise `receipt_proof_version:1`.
-Once initialized, a signed export freezes an exact recovery snapshot and consumption
-batch until acknowledgement. Repeating an export returns the same signed bytes;
-concurrent requests continue recording into the next batch. Diff semantics are unchanged.
+Historical private proof bundles remain verifiable using their original manifest and Merkle format. Their checkpoint ACK API has been removed. New consumption records use the autonomous public relay above: signed upload, management archive, then relay settlement. Checkpoint diff is used for configuration/recovery state and is not the consumption-record transport.
 
-`receipt_batch` contains `manifest` (an exact UTF-8 JSON string), `signature`
-(lowercase Ed25519 hex), `batch_hash` and private `records` (`payload`, `salt`).
-Management verifies signatures, record order/root/summary, exact correspondence to
-the exported events, and its previously persisted head. It commits the raw evidence,
-settlement, cursor and recovery snapshot in one durable transaction, then sends
-`receipt_batch_hash` with `POST /admin/checkpoint/ack`. Wrong/missing proof hashes
-cannot clear a pending signed batch. Lost ACK retries never charge twice.
-
-Once a signed head exists, subsequent checkpoint exports remain signed. A manager
-that has adopted this protocol refuses unsigned checkpoints, including downgrades.
-Proof records are stored separately from mutable settlement status and cannot be
-silently replaced by a manual accounting adjustment.
-
-Management persists the new `receipt_head` and empty `events` in recovery state,
-even if the ACK response is lost. Initialization refuses replayed historical events.
-The signing key is generated inside each Router process, never exported/persisted.
-On restart the new key/boot ID points to the supplied last durable head and labels
-the batch `restart`. This is **not rollback prevention**: independent witnesses
-are required to detect a malicious manager withholding/forking the durable head.
-
-Normal automatic synchronization is 300 seconds. Manual operations also generate
-real batches. A restart may lose everything since the last successful persistence;
-long disconnections increase this window. Missing records are never invented or
-billed. There is no promise of complete history or global publication availability.
+The per-boot signing key is generated inside Router. A restart links the new boot to the last durable head; this does not itself prevent a malicious manager from withholding or forking history. Independent retained public heads are needed to detect rollback.
 
 ## Cryptography
 

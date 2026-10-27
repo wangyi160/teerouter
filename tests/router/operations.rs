@@ -33,61 +33,6 @@ fn message() -> Value {
 }
 
 #[tokio::test]
-async fn credential_read_is_admin_only_uncached_and_returns_current_account_record() {
-    let proxy = mock(vec![]).await;
-    let (gateway, vault) = oauth_gateway(&proxy).await;
-    let path = "/admin/accounts/account-0/credential";
-    for token in ["", "client-secret"] {
-        let response = client()
-            .get(format!("{}{path}", gateway.url))
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 401);
-    }
-    let before = vault.account("account-0", Provider::Anthropic).unwrap();
-    let response = admin(&gateway, reqwest::Method::GET, path, json!(null)).await;
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.headers()["cache-control"], "no-store");
-    let record: Value = response.json().await.unwrap();
-    assert_eq!(record["credential"], before.0);
-    assert_eq!(record["revision"], before.1);
-    assert!(record.get("proxy").is_none());
-    let refreshed = json!({"access_token":"sk-ant-oat-DISPLAY_NEW", "expires_at":4102444800u64});
-    vault
-        .put_account("account-0", Provider::Anthropic, &refreshed)
-        .unwrap();
-    let record: Value = admin(&gateway, reqwest::Method::GET, path, json!(null))
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(record["credential"], refreshed);
-    assert_eq!(record["revision"], before.1 + 1);
-    for path in ["/admin/accounts", "/admin/config", "/admin/logs?admin=true"] {
-        let body = admin(&gateway, reqwest::Method::GET, path, json!(null))
-            .await
-            .text()
-            .await
-            .unwrap();
-        assert!(!body.contains("DISPLAY_NEW") && !body.contains("REFRESH_JSON_SENTINEL"));
-    }
-    assert_eq!(
-        admin(
-            &gateway,
-            reqwest::Method::GET,
-            "/admin/accounts/missing/credential",
-            json!(null)
-        )
-        .await
-        .status(),
-        404
-    );
-    assert!(proxy.calls.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn proxy_secret_bindings_persist_rotate_and_survive_engine_restart() {
     let first = mock(vec![]).await;
     let second = mock(vec![
@@ -194,7 +139,7 @@ async fn proxy_and_credentials_change_live_and_accounts_can_be_disabled_and_dele
         post(&gateway, "/v1/messages", message()).await.status(),
         200
     );
-    let updated = admin(&gateway,reqwest::Method::PUT,"/admin/accounts/account-0",json!({"proxy":second.running.url,"credential":{"access_token":"sk-ant-oat-REPLACEMENT_PRIVATE","expires_at":4102444800u64}})).await;
+    let updated = apply(&gateway,json!({"accounts":{"account-0":{"proxy":second.running.url,"credential":{"access_token":"sk-ant-oat-REPLACEMENT_PRIVATE","expires_at":4102444800u64}}}})).await;
     assert_eq!(updated.status(), 200, "{}", updated.text().await.unwrap());
     assert_eq!(
         post(&gateway, "/v1/messages", message()).await.status(),
@@ -206,12 +151,7 @@ async fn proxy_and_credentials_change_live_and_accounts_can_be_disabled_and_dele
         "Bearer sk-ant-oat-REPLACEMENT_PRIVATE"
     );
     assert_eq!(
-        admin(
-            &gateway,
-            reqwest::Method::PUT,
-            "/admin/accounts/account-0",
-            json!({"enabled":false})
-        )
+        apply(&gateway,json!({"accounts":{"account-0":{"enabled":false}}}))
         .await
         .status(),
         200
@@ -220,40 +160,17 @@ async fn proxy_and_credentials_change_live_and_accounts_can_be_disabled_and_dele
         post(&gateway, "/v1/messages", message()).await.status(),
         200
     );
-    let accounts: Value = admin(
-        &gateway,
-        reqwest::Method::GET,
-        "/admin/accounts",
-        json!(null),
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
+    let accounts=gateway.runtime.as_ref().unwrap().engine().account_status().unwrap();
     assert_eq!(accounts["data"][0]["enabled"], false);
     assert!(!accounts.to_string().contains("REPLACEMENT_PRIVATE"));
     assert_eq!(
-        admin(
-            &gateway,
-            reqwest::Method::DELETE,
-            "/admin/accounts/account-0",
-            json!(null)
-        )
+        apply(&gateway,json!({"delete_accounts":["account-0"]}))
         .await
         .status(),
         400
     );
     assert_eq!(apply(&gateway,json!({"config":{"server":{"allow_empty_routes":true},"models":[{"name":"chat","deployments":[]}]},"delete_accounts":["account-0"]})).await.status(),200);
-    let accounts: Value = admin(
-        &gateway,
-        reqwest::Method::GET,
-        "/admin/accounts",
-        json!(null),
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
+    let accounts=gateway.runtime.as_ref().unwrap().engine().account_status().unwrap();
     assert!(accounts["data"].as_array().unwrap().is_empty());
 }
 

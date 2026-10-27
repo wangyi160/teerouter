@@ -2,14 +2,8 @@ use super::*;
 use teellm::vault::Vault;
 
 async fn inventory(gateway: &Running, key: &str) -> Value {
-    let response = client()
-        .get(format!("{}/v1/pools", gateway.url))
-        .bearer_auth(key)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    response.json().await.unwrap()
+    let engine=gateway.runtime.as_ref().unwrap().engine();
+    engine.pools(engine.authenticate(key).unwrap(), &crate::network::latency::State::default())
 }
 
 #[tokio::test]

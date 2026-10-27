@@ -89,16 +89,7 @@ async fn codex_catalog_query_version_can_change_without_duplicate_parameters() {
         if i == 1 {
             assert_eq!(apply(&gateway, json!({"config":{"compatibility":{"openai":{"requests":{"models":{"query":{"client_version":version}}}}}}})).await.status(), 200);
         }
-        let response = client()
-            .get(format!("{}/v1/models", gateway.url))
-            .bearer_auth("client-secret")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            response.json::<Value>().await.unwrap()["data"][0]["id"],
-            "future"
-        );
+        assert_eq!(fixture_models(&gateway,"client-secret").await["data"][0]["id"],"future");
         let calls = proxy.calls.lock().unwrap();
         let call = calls.last().unwrap();
         let url = reqwest::Url::parse(&call.uri).unwrap();

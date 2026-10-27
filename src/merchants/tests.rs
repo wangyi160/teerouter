@@ -19,7 +19,7 @@ mod refusal_tests;
 #[tokio::test]
 async fn signed_checkpoint_requires_its_proof_hash_and_rejects_arbitrary_digest_attestation() {
     let r = root();
-    let server = serve(crate::server::app_runtime(r)).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
     let (status, first) = call(
         &server,
         Method::POST,
@@ -32,41 +32,8 @@ async fn signed_checkpoint_requires_its_proof_hash_and_rejects_arbitrary_digest_
     let manifest: Value =
         serde_json::from_str(first["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
     assert_eq!(manifest["record_count"], 0);
-    let mut ack = json!({"boot_id":first["boot_id"],"generation":first["state"]["generation"],
-        "sequence":first["state"]["sequence"],"balances_patch":{}});
-    assert_eq!(
-        call(
-            &server,
-            Method::POST,
-            "/admin/checkpoint/ack",
-            ADMIN,
-            ack.clone()
-        )
-        .await
-        .0,
-        409
-    );
-    ack["receipt_batch_hash"] = first["receipt_batch"]["batch_hash"].clone();
-    assert_eq!(
-        call(&server, Method::POST, "/admin/checkpoint/ack", ADMIN, ack)
-            .await
-            .0,
-        200
-    );
-    let (_, next) = call(
-        &server,
-        Method::POST,
-        "/admin/checkpoint/diff",
-        ADMIN,
-        json!({}),
-    )
-    .await;
-    let next_manifest: Value =
-        serde_json::from_str(next["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        next_manifest["previous_batch_hash"],
-        first["receipt_batch"]["batch_hash"]
-    );
+    let (_,again)=call(&server,Method::POST,"/admin/checkpoint/diff",ADMIN,json!({"sign_receipts":true})).await;
+    assert_eq!(again["receipt_batch"]["batch_hash"],first["receipt_batch"]["batch_hash"]);
     assert_eq!(
         call(
             &server,
@@ -144,36 +111,7 @@ async fn checkpoint_diff_is_admin_only_and_survives_explicit_quiesce() {
     assert_eq!(code, 200);
     assert_eq!(diff["changes"], json!([]));
     assert!(diff.get("state").is_none());
-    let ack = json!({"boot_id":boot,"generation":first["state"]["generation"],
-        "sequence":first["state"]["sequence"],"balances_patch":{}});
-    for _ in 0..2 {
-        assert_eq!(
-            call(
-                &server,
-                Method::POST,
-                "/admin/checkpoint/ack",
-                ADMIN,
-                ack.clone()
-            )
-            .await
-            .0,
-            200
-        );
-    }
-    let mut ambiguous = ack;
-    ambiguous["balances"] = json!({});
-    assert_eq!(
-        call(
-            &server,
-            Method::POST,
-            "/admin/checkpoint/ack",
-            ADMIN,
-            ambiguous
-        )
-        .await
-        .0,
-        400
-    );
+
 }
 
 #[tokio::test]
@@ -287,10 +225,10 @@ async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
     assert_eq!(
         call(
             &server,
-            Method::GET,
-            "/admin/checkpoint",
+            Method::POST,
+            "/admin/checkpoint/diff",
             ADMIN,
-            Value::Null
+            json!({})
         )
         .await
         .0,
@@ -310,8 +248,7 @@ async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
     );
     assert!(merchant.runtime.background_job().is_some());
     assert_eq!(
-        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&r,"models","alice-key").await
             .0,
         200
     );
@@ -423,7 +360,7 @@ async fn price_source_is_platform_admin_only_and_blocks_static_overwrites() {
 #[tokio::test]
 async fn price_book_is_only_available_to_management_and_checkpoints() {
     let r = root();
-    let s = serve(crate::server::app_runtime(r)).await;
+    let s = serve(crate::server::app_runtime(r.clone())).await;
     for key in ["alice-key", "bob-key"] {
         assert_eq!(
             call(&s, Method::GET, "/v1/pricing", key, Value::Null)
@@ -457,9 +394,9 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
     let _mock = fixture(&live, completion()).await;
     let frozen = routing::selections(&r, "alice").await.unwrap().remove(0);
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
     assert_eq!(pools["data"][0]["multiplier_millionths"], 200000);
-    let (_, models) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let (_, models) = catalog_fixture(&r,"models","alice-key").await;
     let quote = &models["data"][0]["router_pricing"]["rates"][0];
     assert_eq!(quote["basis"], "official_pool_multiplier");
     assert_eq!(quote["input"], 1000000);
@@ -594,8 +531,24 @@ async fn legacy_prices_migrate_only_when_the_whole_pool_has_one_exact_multiplier
     settings.pool_pricing[0].multiplier_millionths = 1_000_000_000_000_001;
     assert!(crate::pricing::validate_pools(&settings, &config).is_err());
 }
+fn signing_key(user: &str) -> ring::signature::Ed25519KeyPair {
+    ring::signature::Ed25519KeyPair::from_seed_unchecked(&[if user=="alice" {7} else {8};32]).unwrap()
+}
+fn test_user(user: &str) -> String {
+    use ring::signature::KeyPair;
+    crate::request_proof::user_id(signing_key(user).public_key().as_ref())
+}
+async fn catalog_fixture(r:&Runtime,kind:&str,key:&str)->(u16,Value) {
+    let e=r.engine();let account=e.authenticate(key).unwrap();
+    let rows=match kind {
+        "models"=>model_catalog::models(r,&e,account).await.unwrap(),
+        "pools"=>routing::pools(r,&e,account).await.unwrap(),
+        _=>panic!("unknown catalog fixture")
+    };
+    (200,json!({"data":rows}))
+}
 fn root() -> Arc<Runtime> {
-    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":"alice"},{"id":"bob"}],"keys":[{"name":"alice-key","user_id":"alice","key_ref":"ALICE"},{"name":"bob-key","user_id":"bob","key_ref":"BOB"}],"models":[]})).unwrap();
+    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":test_user("alice"),"customer_id":"alice"},{"id":test_user("bob"),"customer_id":"bob"}],"keys":[{"name":"alice-key","user_id":test_user("alice"),"key_ref":"ALICE"},{"name":"bob-key","user_id":test_user("bob"),"key_ref":"BOB"}],"models":[]})).unwrap();
     let runtime = Runtime::new(
         Engine::new(config, |k| {
             Some(
@@ -649,19 +602,47 @@ async fn serve(app: Router) -> Server {
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     Server { url, task }
 }
+trait SignedRequest {
+    async fn signed_send(self) -> Result<reqwest::Response, reqwest::Error>;
+}
+impl SignedRequest for reqwest::RequestBuilder {
+    async fn signed_send(self) -> Result<reqwest::Response, reqwest::Error> {
+        use ring::signature::KeyPair;
+        let (client,request)=self.build_split();let mut request=request?;
+        if request.method()==Method::POST && request.url().path().starts_with("/v1/") {
+            let mut health=request.url().clone();health.set_path("/health/live");health.set_query(None);
+            let value:Value=client.get(health).bearer_auth(ADMIN).send().await?.json().await?;
+            let boot=value["boot_id"].as_str().unwrap();
+            let token=request.headers().get("authorization").and_then(|h|h.to_str().ok()).unwrap_or("");
+            let key=signing_key(if token.contains("bob") {"bob"} else {"alice"});
+            let headers=request.headers_mut();
+            if !headers.contains_key("user-agent") {headers.insert("user-agent","codex_cli_rs/1.0 (signed fixture)".parse().unwrap());}
+            if !headers.contains_key("accept") {headers.insert("accept","*/*".parse().unwrap());}
+            let uri=format!("{}{}",request.url().path(),request.url().query().map(|q|format!("?{q}")).unwrap_or_default()).parse().unwrap();
+            let time=crate::anthropic::unix_now().to_string();let nonce=crypto::digest(&crate::vault::random_id().unwrap());
+            let uid=crate::request_proof::user_id(key.public_key().as_ref());
+            let sig=key.sign(&crate::request_proof::message(boot,&uid,request.method(),&uri,request.headers(),request.body().and_then(|b|b.as_bytes()).unwrap_or_default(),&time,&nonce));
+            for (name,value) in [("x-router-user-public-key",crate::request_proof::hex(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(sig.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
+        }
+        client.execute(request).await
+    }
+}
 async fn call(s: &Server, method: Method, path: &str, token: &str, body: Value) -> (u16, Value) {
-    let r = reqwest::Client::builder()
-        .user_agent("codex_cli_rs/1.0 (merchant fixture)")
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap()
-        .request(method, format!("{}{path}", s.url))
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
+    use ring::signature::KeyPair;
+    let client=reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(10)).build().unwrap();
+    let mut request=client.request(method,format!("{}{path}",s.url)).bearer_auth(token)
+        .header("user-agent","codex_cli_rs/1.0 (merchant fixture)").header("accept","*/*").json(&body).build().unwrap();
+    if matches!(path,"/v1/chat/completions"|"/v1/messages"|"/v1/responses") && (token.starts_with("alice-") || token.starts_with("bob-")) {
+        let health:Value=client.get(format!("{}/health/live",s.url)).bearer_auth(ADMIN).send().await.unwrap().json().await.unwrap();
+        let boot=health["boot_id"].as_str().unwrap();
+        let key=signing_key(if token.starts_with("alice-") {"alice"} else {"bob"});
+        let uid=crate::request_proof::user_id(key.public_key().as_ref());
+        let time=crate::anthropic::unix_now().to_string();
+        let nonce=crypto::digest(&crate::vault::random_id().unwrap());
+        let signature=key.sign(&crate::request_proof::message(boot,&uid,request.method(),&path.parse().unwrap(),request.headers(),request.body().unwrap().as_bytes().unwrap(),&time,&nonce));
+        for (name,value) in [("x-router-user-public-key",crate::request_proof::hex(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(signature.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
+    }
+    let r=client.execute(request).await.unwrap();
     let status = r.status().as_u16();
     let value = r.json().await.unwrap();
     (status, value)
@@ -735,16 +716,14 @@ async fn platform_rejects_upstream_configuration_and_unowned_requests() {
     assert_eq!(status, 400);
     assert_eq!(result["error"]["code"], "merchant_required");
     assert!(
-        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&runtime,"models","alice-key").await
             .1["data"]
             .as_array()
             .unwrap()
             .is_empty()
     );
     assert!(
-        call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&runtime,"pools","alice-key").await
             .1["data"]
             .as_array()
             .unwrap()
@@ -777,7 +756,7 @@ async fn unified_platform_rpm_is_shared_across_merchants() {
     )
     .await
     .unwrap();
-    let server = serve(crate::server::app_runtime(r)).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
     for (token, expected) in [(&a, 200), (&b, 429)] {
         let body = json!({"model":format!("{}/model-test",crypto::identity(token)),"messages":[{"role":"user","content":"hello"}]});
         let (status, result) = call(
@@ -802,7 +781,7 @@ async fn merchant_concurrency_cap_is_enforced_and_released() {
     registration.max_concurrent = 1;
     register(&r, registration, ADMIN).await.unwrap();
     let held = l.gate.acquire(1).unwrap();
-    let server = serve(crate::server::app_runtime(r)).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
     let body = json!({"model":format!("{}/model-test",crypto::identity(&a)),"messages":[{"role":"user","content":"hello"}]});
     assert_eq!(
         call(
@@ -851,7 +830,7 @@ async fn namespaced_model_acl_accepts_only_its_merchant() {
     )
     .await
     .unwrap();
-    let server = serve(crate::server::app_runtime(r)).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
     for (token, expected) in [(&a, 200), (&b, 403)] {
         let (status, result) = call(
             &server,
@@ -1035,7 +1014,7 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
     let _ma = fixture(&la, completion()).await;
     let _mb = fixture(&lb, completion()).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, models) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let (_, models) = catalog_fixture(&r,"models","alice-key").await;
     assert_eq!(models["data"].as_array().unwrap().len(), 1);
     assert_eq!(models["data"][0]["id"], "chatgpt/model-test");
     assert_eq!(
@@ -1049,7 +1028,7 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
             .len(),
         2
     );
-    let (_, bob) = call(&server, Method::GET, "/v1/models", "bob-key", Value::Null).await;
+    let (_, bob) = catalog_fixture(&r,"models","bob-key").await;
     assert!(bob["data"].as_array().unwrap().is_empty());
     for token in [&a, &b] {
         let body = json!({"model":format!("{}/model-test",crypto::identity(token)),"messages":[{"role":"user","content":"REQUEST_BODY_MUST_NOT_BE_SAVED"}]});
@@ -1063,7 +1042,7 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
         .await;
         assert_eq!(status, 200, "{result}");
     }
-    let (_, global) = call(&server, Method::GET, "/admin/refusals", ADMIN, Value::Null).await;
+    let global = r.engine().vault.lock().unwrap().refusal_queue.page(0,1000);
     assert_eq!(global["data"].as_array().unwrap().len(), 2);
     assert_eq!(global["last_id"], 2);
     assert!(global["data"][0]["merchant_id"].is_string());
@@ -1072,24 +1051,11 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
             .to_string()
             .contains("REQUEST_BODY_MUST_NOT_BE_SAVED")
     );
-    for token in [&a, &b] {
-        let (_, usage) = call(&server, Method::GET, "/merchant/usage", token, Value::Null).await;
-        assert!(usage["data"].as_array().unwrap().is_empty());
-        assert_eq!(usage["usage"]["alice"]["requests"], 1);
-    }
+    for live in [&la,&lb] {assert_eq!(live.runtime.engine().vault.lock().unwrap().usage[&test_user("alice")].requests,1);}
     assert_eq!(
         r.engine().vault.lock().unwrap().usage["alice-key"].requests,
         2
     );
-    let (status, _) = call(
-        &server,
-        Method::DELETE,
-        "/merchant/refusals?through_id=0",
-        &a,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, 200);
     assert_eq!(
         la.runtime
             .engine()
@@ -1190,27 +1156,13 @@ async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
     )
     .await
     .unwrap();
-    let server = serve(crate::server::app_runtime(r)).await;
-    let (_, catalog) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let (_, catalog) = catalog_fixture(&r,"models","alice-key").await;
     assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
     assert!(!catalog.to_string().contains(&crypto::identity(&b)));
-    let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
     assert_eq!(pools["data"].as_array().unwrap().len(), 1);
-    let (_, merchants) = call(
-        &server,
-        Method::GET,
-        "/v1/merchants",
-        "alice-key",
-        Value::Null,
-    )
-    .await;
-    let other = merchants["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"] == crypto::identity(&b))
-        .unwrap();
-    assert!(other["prices"].as_array().unwrap().is_empty());
+
 }
 
 #[tokio::test]
@@ -1230,15 +1182,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         .unwrap();
     let _mock = fixture(&la, completion()).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    // Discovery may build internal admission entries; neither user becomes visible.
-    for key in ["alice-key", "bob-key"] {
-        for path in ["/v1/models", "/v1/pools", "/v1/merchants"] {
-            assert_eq!(
-                call(&server, Method::GET, path, key, Value::Null).await.0,
-                200
-            );
-        }
-    }
+    for key in ["alice-key","bob-key"] {for kind in ["models","pools"] {assert_eq!(catalog_fixture(&r,kind,key).await.0,200);}}
     let state = state(&r, &reg).unwrap();
     assert!(state["merchant"].get("users").is_none());
     assert_eq!(state["settings"]["customers"], json!([]));
@@ -1268,8 +1212,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         .await
         .0 >= 400
     );
-    let (_, usage) = call(&server, Method::GET, "/merchant/usage", &a, Value::Null).await;
-    assert!(!usage.to_string().contains("bob"));
+    assert!(!super::state(&r,&reg).unwrap()["settings"]["customers"].to_string().contains("bob"));
     let request =
         json!({"model":format!("{id}/model-test"),"messages":[{"role":"user","content":"Hello"}]});
     assert_eq!(
@@ -1317,31 +1260,6 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         .await
         .0,
         403
-    );
-    let (_, usage) = call(&server, Method::GET, "/merchant/usage", &a, Value::Null).await;
-    assert_eq!(
-        call(
-            &server,
-            Method::POST,
-            "/merchant/usage/ack",
-            &a,
-            json!({"instance_id":usage["instance_id"],"through_seq":usage["last_seq"]})
-        )
-        .await
-        .0,
-        200
-    );
-    assert_eq!(
-        call(
-            &server,
-            Method::DELETE,
-            "/merchant/refusals?through_id=0",
-            &a,
-            Value::Null
-        )
-        .await
-        .0,
-        200
     );
     let restored = super::state(&r, &authenticate(&r, &a).unwrap()).unwrap();
     assert_eq!(
@@ -1394,4 +1312,29 @@ async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
     assert!(data.upstream_users.is_empty());
     customers::restore(&mut data);
     assert_eq!(data.upstream_users, BTreeSet::from(["alice".into()]));
+}
+
+#[tokio::test]
+async fn retired_endpoints_are_absent_and_platform_bearer_cannot_generate() {
+    let r=root();let token=control("a");add(&r,&token).await;
+    let server=serve(crate::server::app_runtime(r.clone())).await;
+    let operations=[
+        ("GET","/v1/models"),("GET","/v1/pools"),("GET","/v1/usage"),("GET","/v1/identity"),("GET","/v1/merchants"),
+        ("GET","/merchant/usage"),("POST","/merchant/usage/ack"),("GET","/merchant/refusals"),("DELETE","/merchant/refusals"),("PUT","/merchant/accounts/prepare"),
+        ("GET","/admin/accounts"),("GET","/admin/accounts/a/credential"),("PUT","/admin/accounts/a"),("DELETE","/admin/accounts/a"),
+        ("GET","/admin/users"),("POST","/admin/users"),("GET","/admin/users/a"),("PUT","/admin/users/a"),("DELETE","/admin/users/a"),
+        ("GET","/admin/refusals"),("DELETE","/admin/refusals"),("GET","/admin/checkpoint"),("POST","/admin/checkpoint/ack"),("GET","/admin/models"),("POST","/admin/models/refresh")
+    ];
+    for (method,path) in operations {
+        let auth=if path.starts_with("/merchant/"){token.as_str()}else if path.starts_with("/admin/"){ADMIN}else{"alice-key"};
+        let (status,value)=call(&server,method.parse().unwrap(),path,auth,json!({})).await;
+        assert_eq!(status,404,"{method} {path}: {value}");
+    }
+    for path in ["/v1/responses","/v1/messages","/v1/chat/completions"] {
+        let reply=reqwest::Client::new().post(format!("{}{path}",server.url)).bearer_auth("alice-key")
+            .header("user-agent","codex_cli_rs/1.0").json(&json!({})).send().await.unwrap();
+        assert_eq!(reply.status(),401);
+        assert_eq!(reply.json::<Value>().await.unwrap()["error"]["code"],"user_signature_invalid");
+    }
+    assert!(r.engine().vault.lock().unwrap().events.is_empty());
 }

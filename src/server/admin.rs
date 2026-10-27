@@ -3,8 +3,7 @@ use crate::{
     runtime::{Runtime, storage},
     vault::operations::Update,
 };
-use axum::extract::{Path, Query};
-use std::collections::BTreeMap;
+use axum::extract::{Query};
 
 pub(crate) async fn input(
     runtime: &Runtime,
@@ -151,67 +150,6 @@ pub(super) async fn admin_config_update(
         .await
         .map(Json)
 }
-pub(super) async fn admin_accounts(
-    State(runtime): State<Arc<Runtime>>,
-) -> Result<Json<Value>, ApiError> {
-    runtime.engine().account_status().map(Json)
-}
-pub(super) async fn admin_account_credential(
-    State(runtime): State<Arc<Runtime>>,
-    Path(name): Path<String>,
-) -> Result<Response, ApiError> {
-    if !crate::config::valid_name(&name) {
-        return Err(invalid());
-    }
-    let record = runtime
-        .engine()
-        .vault
-        .account_credential(&name)
-        .map_err(storage)?
-        .ok_or_else(|| ApiError::new(404, "account_not_found", "Account not found"))?;
-    Ok(([("cache-control", "no-store")], Json(record)).into_response())
-}
-pub(super) async fn admin_account_update(
-    State(runtime): State<Arc<Runtime>>,
-    Path(name): Path<String>,
-    request: Request,
-) -> Result<Json<Value>, ApiError> {
-    let (secret, mut body) = input(&runtime, request).await?;
-    let expected_revision = body
-        .as_object_mut()
-        .ok_or_else(invalid)?
-        .remove("expected_revision")
-        .map(|v| v.as_i64().ok_or_else(invalid))
-        .transpose()?;
-    runtime
-        .apply(
-            Update {
-                expected_revision,
-                accounts: BTreeMap::from([(name, body)]),
-                ..Update::default()
-            },
-            &secret,
-        )
-        .await
-        .map(Json)
-}
-pub(super) async fn admin_account_delete(
-    State(runtime): State<Arc<Runtime>>,
-    Path(name): Path<String>,
-    request: Request,
-) -> Result<Json<Value>, ApiError> {
-    let secret = credential(request.headers()).unwrap_or("");
-    runtime
-        .apply(
-            Update {
-                delete_accounts: vec![name],
-                ..Update::default()
-            },
-            secret,
-        )
-        .await
-        .map(Json)
-}
 #[derive(serde::Deserialize, Default)]
 pub(super) struct LogQuery {
     #[serde(default)]
@@ -247,59 +185,6 @@ pub(super) async fn admin_maintenance(
         .await
         .map_err(|_| ApiError::new(503, "maintenance_failed", "Maintenance worker failed"))??;
     Ok(Json(json!({"healthy":true})))
-}
-
-pub(super) async fn admin_checkpoint(
-    State(runtime): State<Arc<Runtime>>,
-) -> Result<impl IntoResponse, ApiError> {
-    let checkpoint = runtime.engine().vault.checkpoint().map_err(storage)?;
-    Ok(([("cache-control", "no-store")], Json(checkpoint)))
-}
-pub(super) async fn admin_acknowledge(
-    State(runtime): State<Arc<Runtime>>,
-    request: Request,
-) -> Result<Json<Value>, ApiError> {
-    let (secret, body) = input(&runtime, request).await?;
-    if !runtime.engine().authenticate_admin(&secret) {
-        return Err(ApiError::new(
-            401,
-            "authentication_error",
-            "Admin credential was revoked",
-        ));
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Ack {
-        boot_id: String,
-        generation: u64,
-        sequence: u64,
-        balances: Option<BTreeMap<String, i64>>,
-        balances_patch: Option<BTreeMap<String, Option<i64>>>,
-        receipt_batch_hash: Option<String>,
-    }
-    let ack: Ack = serde_json::from_value(body).map_err(|_| invalid())?;
-    if ack.balances.is_some() == ack.balances_patch.is_some() {
-        return Err(invalid());
-    }
-    runtime
-        .engine()
-        .vault
-        .acknowledge_receipts(
-            &ack.boot_id,
-            ack.generation,
-            ack.sequence,
-            ack.balances,
-            ack.balances_patch.unwrap_or_default(),
-            ack.receipt_batch_hash.as_deref(),
-        )
-        .map_err(|_| {
-            ApiError::new(
-                409,
-                "checkpoint_conflict",
-                "Checkpoint acknowledgement mismatch",
-            )
-        })?;
-    Ok(Json(json!({"acknowledged":true})))
 }
 
 pub(super) async fn admin_checkpoint_diff(

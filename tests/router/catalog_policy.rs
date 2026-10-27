@@ -47,15 +47,7 @@ async fn rejects_unlisted_models_and_efforts_without_sending_generation() {
             code
         );
     }
-    let list: Value = client()
-        .get(format!("{}/v1/models", gateway.url))
-        .bearer_auth("client-secret")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let list=fixture_models(&gateway,"client-secret").await;
     assert_eq!(list["data"].as_array().unwrap().len(), 1);
     assert_eq!(list["data"][0]["id"], "official");
     assert_eq!(

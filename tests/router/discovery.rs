@@ -46,14 +46,7 @@ fn catalog(provider: Provider, names: &[&str]) -> Reply {
 }
 
 async fn listed(gateway: &Running) -> Vec<String> {
-    let response = client()
-        .get(format!("{}/v1/models", gateway.url))
-        .bearer_auth("client-secret")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    response.json::<Value>().await.unwrap()["data"]
+    fixture_models(gateway,"client-secret").await["data"]
         .as_array()
         .unwrap()
         .iter()
@@ -105,15 +98,7 @@ async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model
     }
     let response = generate(&gateway, provider, "future-model-not-in-config").await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    let status: Value = client()
-        .get(format!("{}/admin/models", gateway.url))
-        .bearer_auth("admin-secret")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let status = fixture_catalog_status(&gateway).await;
     assert_eq!(status["data"][0]["catalog"]["complete_catalog"], true);
     let calls = proxy.calls.lock().unwrap();
     assert_eq!(calls.len(), 2);

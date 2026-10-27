@@ -137,7 +137,7 @@ async fn downstream_cancellation_before_headers_settles_input_once() {
             .post(url)
             .bearer_auth("alice-key")
             .json(&body(false))
-            .send()
+            .signed_send()
             .await
     });
     tokio::time::timeout(Duration::from_secs(3), entered.notified())
@@ -173,7 +173,7 @@ async fn downstream_cancellation_before_headers_settles_input_once() {
     let charge = b["charge_microusd"].as_u64().unwrap();
     assert!(charge > 0);
     assert_eq!(
-        crate::balances::consumption(&r.engine().vault.lock().unwrap().events)["alice"],
+        crate::balances::consumption(&r.engine().vault.lock().unwrap().events)[&test_user("alice")],
         u128::from(charge)
     );
 }
@@ -196,7 +196,7 @@ async fn normal_json_and_sse_without_usage_remain_unpriced() {
             .post(format!("{}/v1/chat/completions", router.url))
             .bearer_auth("alice-key")
             .json(&body(streaming))
-            .send()
+            .signed_send()
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
@@ -223,8 +223,7 @@ async fn model_listing_never_creates_model_charges() {
     let (r, _, _upstream, router) = setup(vec![], 1).await;
     let before = r.engine().vault.lock().unwrap().events.len();
     assert_eq!(
-        call(&router, Method::GET, "/v1/models", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&r,"models","alice-key").await
             .0,
         200
     );
@@ -255,12 +254,12 @@ async fn full_usage_in_long_http_error_is_charged_once_with_merchant_totals() {
     let merchant = live.runtime.engine();
     let ledger = merchant.vault.lock().unwrap();
     assert!(ledger.events.is_empty(), "platform owns the receipt");
-    assert_eq!(ledger.usage["alice"].requests, 1);
-    assert_eq!(ledger.usage["alice"].errors, 1);
-    assert_eq!(ledger.usage["alice"].input_tokens, 10);
-    assert_eq!(ledger.usage["alice"].output_tokens, 5);
+    assert_eq!(ledger.usage[&test_user("alice")].requests, 1);
+    assert_eq!(ledger.usage[&test_user("alice")].errors, 1);
+    assert_eq!(ledger.usage[&test_user("alice")].input_tokens, 10);
+    assert_eq!(ledger.usage[&test_user("alice")].output_tokens, 5);
     let data = r.engine().vault.lock().unwrap().clone();
-    assert_eq!(crate::balances::consumption(&data.events)["alice"], 20);
+    assert_eq!(crate::balances::consumption(&data.events)[&test_user("alice")], 20);
 }
 
 #[tokio::test]
@@ -311,7 +310,7 @@ async fn interrupted_sse_without_final_usage_is_estimated_and_charged_once() {
         .post(format!("{}/v1/chat/completions", router.url))
         .bearer_auth("alice-key")
         .json(&body(true))
-        .send()
+        .signed_send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
@@ -394,7 +393,7 @@ async fn dropping_downstream_after_official_usage_still_charges() {
         .post(format!("{}/v1/chat/completions", router.url))
         .bearer_auth("alice-key")
         .json(&request)
-        .send()
+        .signed_send()
         .await
         .unwrap();
     let mut stream = response.bytes_stream();

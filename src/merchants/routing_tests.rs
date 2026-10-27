@@ -196,7 +196,7 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
     let pa = format!("{}.official", crypto::identity(&a));
     let pb = format!("{}.official", crypto::identity(&b));
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, catalog) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let (_, catalog) = catalog_fixture(&r,"models","alice-key").await;
     assert_eq!(catalog["data"].as_array().unwrap().len(), 2);
     assert_eq!(catalog["data"][0]["id"], "chatgpt/model-test");
     assert_eq!(catalog["data"][1]["id"], "grok/model-test");
@@ -244,7 +244,7 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
         .header("user-agent", "grok-shell/1.0")
         .header("x-router-pool", &pa)
         .json(&json!({"model":"model-test","messages":[]}))
-        .send()
+        .signed_send()
         .await
         .unwrap();
     assert_eq!(legacy.status(), 403);
@@ -280,10 +280,10 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
     )
     .await
     .unwrap();
-    let (_, catalog) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let (_, catalog) = catalog_fixture(&r,"models","alice-key").await;
     assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
     assert_eq!(catalog["data"][0]["id"], "grok/model-test");
-    let (_, pools) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
     assert_eq!(pools["data"].as_array().unwrap().len(), 1);
     assert_eq!(pools["data"][0]["id"], pb);
     let response = grok_request(
@@ -420,10 +420,10 @@ async fn request_with_agent(
         .build()
         .unwrap()
         .post(format!("{}/v1/chat/completions", server.url))
-        .bearer_auth(token)
+        .bearer_auth(token).header("user-agent",ua)
         .header("x-router-routing", policy.to_string())
         .json(&body)
-        .send()
+        .signed_send()
         .await
         .unwrap()
 }
@@ -605,7 +605,7 @@ async fn bad_rules_and_ambiguous_continuations_never_reach_a_provider() {
             .header("x-router-routing", good.to_string())
             .header(name, "1")
             .json(&body)
-            .send()
+            .signed_send()
             .await
             .unwrap();
         assert_eq!(response.status(), 400);
@@ -626,7 +626,7 @@ async fn bad_rules_and_ambiguous_continuations_never_reach_a_provider() {
         .bearer_auth("alice-key")
         .headers(duplicate)
         .json(&body)
-        .send()
+        .signed_send()
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
@@ -662,7 +662,7 @@ async fn session_bound_to_a_merchant_never_moves_to_a_cheaper_merchant() {
             .header("x-router-routing", policy.to_string())
             .header("x-router-session", "my-session")
             .json(&json!({"model":"model-test","messages":[{"role":"user","content":"hello"}]}))
-            .send()
+            .signed_send()
             .await
             .unwrap();
         assert_eq!(response.status(), 200);

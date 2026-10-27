@@ -23,65 +23,37 @@ fn user(id: &str, key: &str) -> Value {
 }
 
 #[tokio::test]
-async fn managed_balance_blocks_upstream_but_keeps_catalog_access_and_accepts_topup() {
-    let mock = mock(vec![Reply::json(native(Provider::OpenAI))]).await;
-    let engine = engine(configuration(&mock));
-    engine.vault.require_manager();
-    let initial = engine.vault.lock().unwrap().clone();
-    engine.vault.initialize(initial).unwrap();
-    let g = run_fixture(engine.clone()).await;
-    for (balances, status, code) in [
-        (json!({}), 503, "balance_unavailable"),
-        (json!({"test-user":0}), 402, "insufficient_balance"),
-        (json!({"test-user":-1}), 402, "insufficient_balance"),
-    ] {
-        let checkpoint = engine.vault.checkpoint().unwrap();
-        let response = admin(
-            &g,
-            "POST",
-            "/admin/checkpoint/ack",
-            json!({
-                "boot_id":checkpoint["boot_id"], "generation":checkpoint["state"]["generation"],
-                "sequence":checkpoint["state"]["sequence"], "balances":balances
-            }),
-        )
-        .await;
-        assert_eq!(response.status(), 200);
-        let response = generate(&g, "client-secret", false).await;
-        assert_eq!(response.status(), status);
-        assert_eq!(
-            response.json::<Value>().await.unwrap()["error"]["code"],
-            code
-        );
-        assert!(mock.calls.lock().unwrap().is_empty());
+async fn managed_balance_blocks_upstream_and_accepts_topup() {
+    let mock=mock(vec![Reply::json(native(Provider::OpenAI))]).await;
+    let engine=engine(configuration(&mock));engine.vault.require_manager();
+    let initial=engine.vault.lock().unwrap().clone();engine.vault.initialize(initial).unwrap();
+    let g=run_fixture(engine.clone()).await;
+    for (balance,status) in [(None,503),(Some(0),402),(Some(-1),402),(Some(100),200)] {
+        let mut data=engine.vault.lock().unwrap();
+        if let Some(balance)=balance {data.balances.insert("test-user".into(),balance);} else {data.balances.clear();}
+        drop(data);
+        assert_eq!(generate(&g,"client-secret",false).await.status(),status);
     }
-    assert_eq!(
-        client()
-            .get(format!("{}/v1/models", g.url))
-            .bearer_auth("client-secret")
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        200
-    );
-    let checkpoint = engine.vault.checkpoint().unwrap();
-    assert_eq!(
-        admin(
-            &g,
-            "POST",
-            "/admin/checkpoint/ack",
-            json!({
-                "boot_id":checkpoint["boot_id"], "generation":checkpoint["state"]["generation"],
-                "sequence":checkpoint["state"]["sequence"], "balances":{"test-user":100}
-            })
-        )
-        .await
-        .status(),
-        200
-    );
-    assert_eq!(generate(&g, "client-secret", false).await.status(), 200);
-    assert_eq!(mock.calls.lock().unwrap().len(), 1);
+    assert_eq!(mock.calls.lock().unwrap().len(),1);
+}
+fn effective(g:&Running)->usize {
+    let e=g.runtime.as_ref().unwrap().engine();let data=e.vault.lock().unwrap();
+    crate::balances::concurrency_limit(&data,&e.config.users[0],&e.config.balance_concurrency).unwrap()
+}
+async fn replace_user(g:&Running,id:&str,body:Option<Value>)->reqwest::Response {
+    let e=g.runtime.as_ref().unwrap().engine();let mut config=e.config.clone();
+    config.users.retain(|u|u.id!=id);config.keys.retain(|k|k.user_id!=id);
+    let mut secrets=serde_json::Map::new();
+    if let Some(mut body)=body {
+        let keys=body.as_object_mut().unwrap().remove("keys").unwrap();
+        config.users.push(serde_json::from_value(body).unwrap());
+        for key in keys.as_array().unwrap() {
+            let name=key["name"].as_str().unwrap();let reference=format!("fixture-{name}");
+            config.keys.push(serde_json::from_value(json!({"name":name,"user_id":id,"key_ref":reference})).unwrap());
+            secrets.insert(reference,key["key"].clone());
+        }
+    }
+    admin(g,"POST","/admin/apply",json!({"config":config,"secrets":secrets})).await
 }
 
 #[tokio::test]
@@ -107,12 +79,7 @@ async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
         .json()
         .await
         .unwrap();
-    let u: Value = admin(&g, "GET", "/admin/users/test-user", Value::Null)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(u["user"]["effective_max_concurrent"], 2);
+    assert_eq!(effective(&g), 2);
     let policy = json!({"tiers":[{"up_to_microusd":3_000_000,"max_concurrent":1}]});
     assert_eq!(
         admin(
@@ -125,12 +92,7 @@ async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
         .status(),
         200
     );
-    let u: Value = admin(&g, "GET", "/admin/users/test-user", Value::Null)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(u["user"]["effective_max_concurrent"], 1);
+    assert_eq!(effective(&g), 1);
     let changed: Value = admin(&g, "GET", "/admin/config", Value::Null)
         .await
         .json()
@@ -171,104 +133,6 @@ async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
 }
 
 #[tokio::test]
-async fn user_crud_is_atomic_admin_only_and_contains_no_money() {
-    let mock = mock(vec![]).await;
-    let g = gateway(configuration(&mock)).await;
-    assert_eq!(
-        post(&g, "/admin/users", user("a", "a-secret"))
-            .await
-            .status(),
-        401
-    );
-    let mut u = user("a", "a-secret");
-    u["balance"] = json!(100);
-    assert_eq!(admin(&g, "POST", "/admin/users", u).await.status(), 400);
-    assert_eq!(
-        admin(&g, "GET", "/admin/users/a", Value::Null)
-            .await
-            .status(),
-        404
-    );
-    assert_eq!(
-        admin(&g, "POST", "/admin/users", user("a", "a-secret"))
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(
-        admin(&g, "POST", "/admin/users", user("a", "a-secret"))
-            .await
-            .status(),
-        409
-    );
-    let res = admin(&g, "GET", "/admin/users/a", Value::Null).await;
-    assert_eq!(res.headers()["cache-control"], "no-store");
-    let before: Value = res.json().await.unwrap();
-    assert_eq!(before["user"]["keys"][0]["user_id"], "a");
-    assert_eq!(before["user"]["keys"][0]["key"], "a-secret");
-    for bad in [
-        json!({"max_concurrent":0}),
-        json!({"keys":[{"name":"broken"}]}),
-        json!({"keys":[{"name":"user","key":"stolen"}]}),
-        json!({"expected_revision":0,"name":"stale"}),
-    ] {
-        assert!(
-            admin(&g, "PUT", "/admin/users/a", bad)
-                .await
-                .status()
-                .is_client_error()
-        );
-        let after: Value = admin(&g, "GET", "/admin/users/a", Value::Null)
-            .await
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(before, after);
-    }
-    assert_eq!(
-        admin(
-            &g,
-            "PUT",
-            "/admin/users/a",
-            json!({"name":"updated","max_concurrent":3})
-        )
-        .await
-        .status(),
-        200
-    );
-    let updated: Value = admin(&g, "GET", "/admin/users/a", Value::Null)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(updated["user"]["keys"], before["user"]["keys"]);
-    assert_eq!(updated["user"]["max_concurrent"], 3);
-    assert_eq!(
-        admin(&g, "DELETE", "/admin/users/a", Value::Null)
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(generate(&g, "a-secret", false).await.status(), 401);
-    let checkpoint: Value = admin(&g, "GET", "/admin/checkpoint", Value::Null)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        checkpoint["state"]["bundle"]["secrets"]
-            .get("user-key-a-key")
-            .is_none()
-    );
-    assert!(
-        admin(&g, "POST", "/admin/apply", json!({"config":{"users":[]}}))
-            .await
-            .status()
-            .is_client_error()
-    );
-}
-
-#[tokio::test]
 async fn all_keys_share_user_concurrency_across_rotation_delete_recreate_and_stream_cancel() {
     let reply = Reply { tail: Some((Duration::from_secs(30),"data: [DONE]\n\n".into())),
         ..Reply::sse("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"one\"}}\n\n".into()) };
@@ -285,11 +149,11 @@ async fn all_keys_share_user_concurrency_across_rotation_delete_recreate_and_str
         .unwrap()
         .push(json!({"name":"a-other","key":"a-other-secret"}));
     assert_eq!(
-        admin(&g, "POST", "/admin/users", a.clone()).await.status(),
+        replace_user(&g,"a",Some(a.clone())).await.status(),
         200
     );
     assert_eq!(
-        admin(&g, "POST", "/admin/users", user("b", "b-secret"))
+        replace_user(&g,"b",Some(user("b","b-secret")))
             .await
             .status(),
         200
@@ -305,7 +169,7 @@ async fn all_keys_share_user_concurrency_across_rotation_delete_recreate_and_str
     );
     a["keys"][0]["key"] = json!("rotated");
     assert_eq!(
-        admin(&g, "PUT", "/admin/users/a", a.clone()).await.status(),
+        replace_user(&g,"a",Some(a.clone())).await.status(),
         200
     );
     assert_eq!(generate(&g, "a-secret", false).await.status(), 401);
@@ -314,32 +178,27 @@ async fn all_keys_share_user_concurrency_across_rotation_delete_recreate_and_str
     let mut raised = a.clone();
     raised["max_concurrent"] = json!(2);
     assert_eq!(
-        admin(&g, "PUT", "/admin/users/a", raised).await.status(),
+        replace_user(&g,"a",Some(raised)).await.status(),
         200
     );
     assert_eq!(generate(&g, "a-other-secret", false).await.status(), 200);
     assert_eq!(
-        admin(&g, "PUT", "/admin/users/a", a.clone()).await.status(),
+        replace_user(&g,"a",Some(a.clone())).await.status(),
         200
     );
     assert_eq!(generate(&g, "a-other-secret", false).await.status(), 429);
     assert_eq!(
-        admin(&g, "DELETE", "/admin/users/a", Value::Null)
+        replace_user(&g,"a",None)
             .await
             .status(),
         200
     );
     assert_eq!(generate(&g, "a-other-secret", false).await.status(), 401);
-    assert_eq!(admin(&g, "POST", "/admin/users", a).await.status(), 200);
+    assert_eq!(replace_user(&g,"a",Some(a)).await.status(), 200);
     assert_eq!(generate(&g, "a-other-secret", false).await.status(), 429);
     drop(stream);
     for _ in 0..100 {
-        let u: Value = admin(&g, "GET", "/admin/users/a", Value::Null)
-            .await
-            .json()
-            .await
-            .unwrap();
-        if u["user"]["in_flight"] == 0 {
+        if g.runtime.as_ref().unwrap().engine().status()["in_flight"] == 0 {
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

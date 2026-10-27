@@ -154,6 +154,9 @@ impl Default for Operations {
 #[serde(deny_unknown_fields)]
 pub struct User {
     pub id: String,
+    /// Stable merchant customer reference during migration to a signing identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<String>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -304,6 +307,10 @@ fn default_timeout() -> u64 {
 }
 
 impl Config {
+    pub(crate) fn customer_id<'a>(&'a self, user: &'a str) -> &'a str {
+        self.users.iter().find(|u|u.id==user).and_then(|u|u.customer_id.as_deref()).unwrap_or(user)
+    }
+
     pub fn parse(text: &str) -> Result<Self, String> {
         let config: Self =
             toml::from_str(text).map_err(|e| format!("invalid TOML configuration: {e}"))?;
@@ -327,6 +334,7 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), String> {
         crate::policy::validate(&self.restrictions)?;
+        if self.users.iter().any(|u|u.customer_id.as_ref().is_some_and(|id| !valid_name(id))) {return Err("invalid customer reference".into());}
         if self.server.router_access_key_ref.as_ref().is_some_and(|v| !valid_name(v)) {
             return Err("invalid Router access signing key reference".into());
         }

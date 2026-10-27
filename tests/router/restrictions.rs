@@ -15,20 +15,12 @@ async fn setup(proxy: &Mock) -> (Arc<Vault>, Running) {
     let app = run_fixture(Engine::from_vault(vault.clone()).unwrap()).await;
     (vault, app)
 }
-async fn read(gateway: &Running, path: &str, admin: bool) -> Value {
-    client()
-        .get(format!("{}{path}", gateway.url))
-        .bearer_auth(if admin {
-            "admin-secret"
-        } else {
-            "client-secret"
-        })
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap()
+async fn read(gateway: &Running, resource: &str, _admin: bool) -> Value {
+    match resource {
+        "models"=>fixture_models(gateway,"client-secret").await,
+        "discovery"=>fixture_catalog_status(gateway).await,
+        _=>panic!("unknown fixture view")
+    }
 }
 async fn apply(gateway: &Running, value: Value) -> reqwest::Response {
     client()
@@ -51,15 +43,15 @@ fn request(model: &str, effort: &str) -> Value {
 async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
     let proxy = catalog_mock(vec![catalog()]).await;
     let (vault, gateway) = setup(&proxy).await;
-    let before = read(&gateway, "/v1/models", false).await;
+    let before = read(&gateway, "models", false).await;
     let original =
-        read(&gateway, "/admin/models", true).await["data"][0]["official_models"].clone();
+        read(&gateway, "discovery", true).await["data"][0]["official_models"].clone();
     update(
         &gateway,
         json!([{"provider":"xai","model":"official","block_model":true}]),
     )
     .await;
-    let models = read(&gateway, "/v1/models", false).await;
+    let models = read(&gateway, "models", false).await;
     assert_eq!(models["data"].as_array().unwrap().len(), 1);
     assert_eq!(models["data"][0]["id"], "other");
     for model in ["official", "official-alias"] {
@@ -71,7 +63,7 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
         );
     }
     assert_eq!(
-        read(&gateway, "/admin/models", true).await["data"][0]["official_models"],
+        read(&gateway, "discovery", true).await["data"][0]["official_models"],
         original
     );
     proxy.replies.lock().unwrap().push_back(catalog());
@@ -83,9 +75,9 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
         403
     );
     update(&restarted, json!([])).await;
-    assert_eq!(read(&restarted, "/v1/models", false).await, before);
+    assert_eq!(read(&restarted, "models", false).await, before);
     assert_eq!(
-        read(&restarted, "/admin/models", true).await["data"][0]["official_models"],
+        read(&restarted, "discovery", true).await["data"][0]["official_models"],
         original
     );
     assert_eq!(proxy.calls.lock().unwrap().len(), 2); // A new runtime fetches; policy edits do not.
@@ -109,13 +101,13 @@ async fn block_unblock_and_restart_leave_the_official_catalog_intact() {
 async fn blocked_effort_is_separate_from_official_capabilities_and_never_downgraded() {
     let proxy = catalog_mock(vec![catalog()]).await;
     let (_, gateway) = setup(&proxy).await;
-    read(&gateway, "/v1/models", false).await;
+    read(&gateway, "models", false).await;
     update(
         &gateway,
         json!([{"model":"official","blocked_efforts":["high"]}]),
     )
     .await;
-    let list = read(&gateway, "/v1/models", false).await;
+    let list = read(&gateway, "models", false).await;
     for id in ["official", "official-alias"] {
         let entry = list["data"]
             .as_array()
@@ -188,8 +180,8 @@ async fn blocked_thinking_type_does_not_require_thinking_on_native_messages() {
 async fn administrator_cannot_upload_or_edit_official_models_and_unblocking_cannot_invent_values() {
     let proxy = catalog_mock(vec![catalog()]).await;
     let (_, gateway) = setup(&proxy).await;
-    read(&gateway, "/v1/models", false).await;
-    let before = read(&gateway, "/admin/models", true).await["data"][0]["official_models"].clone();
+    read(&gateway, "models", false).await;
+    let before = read(&gateway, "discovery", true).await["data"][0]["official_models"].clone();
     for update in [
         json!({"config":{"official_models":{"fake":{}}}}),
         json!({"config":{"restrictions":[{"model":"fake","allowed_efforts":["high"]}]}}),
@@ -207,7 +199,7 @@ async fn administrator_cannot_upload_or_edit_official_models_and_unblocking_cann
             .await
             .unwrap()
             .status(),
-        405
+        404
     );
     update(&gateway, json!([{"model":"fake","block_model":false}])).await;
     assert_eq!(
@@ -223,7 +215,7 @@ async fn administrator_cannot_upload_or_edit_official_models_and_unblocking_cann
         400
     );
     assert_eq!(
-        read(&gateway, "/admin/models", true).await["data"][0]["official_models"],
+        read(&gateway, "discovery", true).await["data"][0]["official_models"],
         before
     );
     assert_eq!(proxy.calls.lock().unwrap().len(), 1);
@@ -269,7 +261,7 @@ async fn global_restrictions_cannot_be_bypassed_by_another_account_or_fallback_p
 async fn official_refresh_updates_evidence_without_erasing_the_independent_deny_policy() {
     let proxy = catalog_mock(vec![catalog()]).await;
     let (_, gateway) = setup(&proxy).await;
-    read(&gateway, "/v1/models", false).await;
+    read(&gateway, "models", false).await;
     update(
         &gateway,
         json!([{"model":"official","blocked_efforts":["high"]}]),
@@ -278,17 +270,8 @@ async fn official_refresh_updates_evidence_without_erasing_the_independent_deny_
     proxy.replies.lock().unwrap().push_back(Reply::json(json!({"models":[
         {"id":"official","aliases":["new-official-alias"],"capabilities":{"reasoning_effort":["low","high","future"]}}
     ]})));
-    assert_eq!(
-        client()
-            .post(format!("{}/admin/models/refresh", gateway.url))
-            .bearer_auth("admin-secret")
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        200
-    );
-    let list = read(&gateway, "/v1/models", false).await;
+    gateway.runtime.as_ref().unwrap().engine().refresh_models(true).await;
+    let list = read(&gateway, "models", false).await;
     for entry in list["data"].as_array().unwrap() {
         let c = &entry["router_capabilities"][0];
         assert_eq!(

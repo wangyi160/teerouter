@@ -17,17 +17,19 @@ pub(crate) struct Selection {
 }
 
 pub(crate) async fn selections(runtime: &Runtime, user: &str) -> Result<Vec<Selection>, ApiError> {
+    let root = runtime.engine();
+    let customer = root.config.customer_id(user);
     let _read = runtime.merchants.write.lock().await;
     let mut selected = Vec::new();
     let price_book = Arc::new(crate::pricing::book(runtime)?);
     for item in records(runtime)? {
-        if !item.enabled || !item.users.contains(user) {
+        if !item.enabled || !item.users.contains(customer) {
             continue;
         }
         let Ok(live) = live(runtime, &item.id) else {
             continue;
         };
-        customers::ensure(&live, user).await?;
+        customers::ensure_identity(&live, user, customer).await?;
         let engine = live.runtime.engine();
         let Some(account) = engine
             .config
@@ -73,7 +75,7 @@ pub(crate) fn platform_allows(
                 || r == &format!("{pool}/*")
         })
 }
-pub(crate) use super::model_catalog::models;
+#[cfg(test)]
 pub(crate) async fn pools(
     runtime: &Runtime,
     root: &Engine,

@@ -24,10 +24,6 @@ use crate::{
 #[path = "server/admin.rs"]
 pub(crate) mod admin;
 use admin::*;
-#[path = "server/refusals.rs"]
-mod refusals;
-#[path = "server/users.rs"]
-mod users;
 
 #[derive(Clone)]
 struct Identity {
@@ -41,32 +37,22 @@ pub fn app(engine: Arc<Engine>) -> Router {
     let runtime = crate::runtime::Runtime::new(engine);
     app_runtime(runtime)
 }
-// Provider protocol fixtures exercise a merchant engine directly. This entry
-// point is absent from production; platform boundary tests use app/app_runtime.
-#[cfg(test)]
-pub(crate) fn app_upstream_fixture(engine: Arc<Engine>) -> Router {
-    app_runtime(crate::runtime::Runtime::merchant(engine))
-}
 pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
             "/health/live",
-            get(|| async { Json(json!({"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache","speed_routing":"proxy_https_latency","proxy_probe_interval_secs":300})) }),
+            get(|State(runtime): State<Arc<crate::runtime::Runtime>>| async move { Json(json!({"user_auth_version":1,"boot_id":runtime.engine().vault.boot_id,"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache","speed_routing":"proxy_https_latency","proxy_probe_interval_secs":300})) }),
         )
         .route("/health/ready", get(ready))
-        .route("/v1/models", get(models))
-        .route("/v1/pools", get(pools))
-        .route("/v1/usage", get(usage))
-        .route("/v1/identity", get(user_identity))
-        .route("/v1/merchants", get(user_merchants))
         .route(
             "/admin/merchants",
             get(crate::merchants::http::platform_list).put(crate::merchants::http::platform_put),
         )
-        .route(
-            "/merchant/{*path}",
-            axum::routing::any(crate::merchants::http::dispatch),
-        )
+        .route("/merchant/bind", axum::routing::post(crate::merchants::http::dispatch))
+        .route("/merchant/unlock", axum::routing::post(crate::merchants::http::dispatch))
+        .route("/merchant/accounts/sync", axum::routing::put(crate::merchants::http::dispatch))
+        .route("/merchant/accounts/access", axum::routing::put(crate::merchants::http::dispatch))
+        .route("/merchant/accounts/test", axum::routing::post(crate::merchants::http::dispatch))
         .route("/admin/merchant-views", get(crate::merchants::control::snapshots))
         .route("/admin/merchants/{mid}/config", axum::routing::put(crate::merchants::control::put))
         .route("/admin/merchants/{mid}/view", get(crate::merchants::control::snapshot))
@@ -92,40 +78,16 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
             "/admin/pricing/refresh",
             post(crate::pricing::source::refresh),
         )
-        .route("/admin/models", get(discovery_status))
-        .route("/admin/models/refresh", post(refresh_models))
         .route(
             "/admin/config",
             get(admin_config).patch(admin_config_update),
         )
         .route("/admin/apply", post(admin_apply))
-        .route("/admin/users", get(users::list).post(users::create))
-        .route(
-            "/admin/refusals",
-            get(refusals::list).delete(refusals::delete),
-        )
-        .route(
-            "/admin/users/{id}",
-            get(users::get_one)
-                .put(users::replace)
-                .delete(users::delete),
-        )
-        .route("/admin/accounts", get(admin_accounts))
-        .route(
-            "/admin/accounts/{name}/credential",
-            get(admin_account_credential),
-        )
-        .route(
-            "/admin/accounts/{name}",
-            axum::routing::put(admin_account_update).delete(admin_account_delete),
-        )
-        .route("/admin/checkpoint", get(admin_checkpoint))
         .route("/admin/checkpoint/diff", post(admin_checkpoint_diff))
         .route("/admin/receipts/evidence", post(admin_receipt_evidence))
         .route("/admin/receipts/relay", get(admin_relay_status).put(admin_relay_configure))
         .route("/admin/receipts/relay/flush", post(admin_relay_flush))
         .route("/admin/receipts/relay/settle", post(admin_relay_settle))
-        .route("/admin/checkpoint/ack", post(admin_acknowledge))
         .route("/admin/initialize", post(admin_initialize))
         .route("/admin/quiesce", post(admin_quiesce))
         .route("/admin/logs", get(admin_logs))
@@ -198,18 +160,6 @@ async fn authenticate(
             ))
     };
     result = result.and_then(|identity| {
-        if runtime.is_platform()
-            && (path == "/admin/accounts"
-                || path.starts_with("/admin/accounts/")
-                || path == "/admin/models"
-                || path.starts_with("/admin/models/"))
-        {
-            return Err(ApiError::new(
-                404,
-                "merchant_owned_resource",
-                "Manage upstream accounts and models through the merchant API",
-            ));
-        }
         if let Some(index) = identity {
             engine.authorize(index)?;
         }
@@ -235,7 +185,6 @@ async fn authenticate(
             || matches!(
                 path,
                 "/admin/quiesce"
-                    | "/admin/checkpoint/ack"
                     | "/admin/checkpoint/diff"
                     | "/admin/receipts/evidence"
                     | "/admin/receipts/relay/flush"
@@ -311,68 +260,6 @@ async fn ready(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Response 
     }
 }
 
-async fn models(request: Request) -> Result<Json<Value>, ApiError> {
-    let identity = request.extensions().get::<Identity>().unwrap();
-    let account = identity.account.unwrap();
-    let mut result = if identity.runtime.is_platform() {
-        json!({"object":"list","data":[]})
-    } else {
-        identity.engine.models(account).await
-    };
-    let merchants =
-        crate::merchants::routing::models(&identity.runtime, &identity.engine, account).await?;
-    result["data"].as_array_mut().unwrap().extend(merchants);
-    Ok(Json(result))
-}
-
-async fn discovery_status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
-    let engine = runtime.engine();
-    Json(engine.discovery_status())
-}
-
-async fn pools(request: Request) -> Result<Json<Value>, ApiError> {
-    let identity = request.extensions().get::<Identity>().unwrap();
-    let mut result = if identity.runtime.is_platform() {
-        json!({"object":"list","data":[]})
-    } else {
-        identity.engine.pools(
-            identity.account.unwrap(),
-            &identity.runtime.merchants.latency,
-        )
-    };
-    result["data"].as_array_mut().unwrap().extend(
-        crate::merchants::routing::pools(
-            &identity.runtime,
-            &identity.engine,
-            identity.account.unwrap(),
-        )
-        .await?,
-    );
-    Ok(Json(result))
-}
-async fn user_identity(request: Request) -> Json<Value> {
-    let identity = request.extensions().get::<Identity>().unwrap();
-    Json(json!({"user_id":identity.engine.config.keys[identity.account.unwrap()].user_id}))
-}
-async fn user_merchants(request: Request) -> Result<Json<Value>, ApiError> {
-    let identity = request.extensions().get::<Identity>().unwrap();
-    let user = &identity.engine.config.keys[identity.account.unwrap()].user_id;
-    Ok(Json(
-        json!({"data":crate::merchants::routing::selections(&identity.runtime,user).await?.into_iter().map(|s| {
-            let settings=&s.settings;
-            let quotes=crate::pricing::quotes(settings,&s.engine.config,&s.price_book);
-            json!({"id":s.item.id,"name":s.item.name,"price_version":settings.revision,
-                "official_price_revision":s.price_book.revision,
-                "prices":quotes.iter().filter(|q|s.engine.model_allowed(s.account,&q.price.pool,&q.price.model) && crate::merchants::routing::platform_allows(&identity.engine,identity.account.unwrap(),&format!("{}.{}",s.item.id,q.price.pool),&q.price.model,s.engine.config.models.iter().find(|p|p.name==q.price.pool).and_then(|p|p.provider))).collect::<Vec<_>>()})
-        }).collect::<Vec<_>>()}),
-    ))
-}
-async fn refresh_models(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
-    let engine = runtime.engine();
-    engine.refresh_models(true).await;
-    Json(engine.discovery_status())
-}
-
 async fn usage(request: Request) -> Result<Json<Value>, ApiError> {
     let engine = request
         .extensions()
@@ -442,6 +329,12 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
             "Cannot read request body within configured limit",
         )
     })?;
+    if identity.runtime.is_platform() {
+        identity.runtime.lifecycle.user_auth.verify(
+            &engine.vault.boot_id, &engine.config.keys[identity.account.unwrap()].user_id,
+            &parts.method, &parts.uri, &parts.headers, &bytes,
+        )?;
+    }
     let body: Value = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::new(400, "invalid_json", "Request body must be valid JSON"))?;
     if !body.is_object() {

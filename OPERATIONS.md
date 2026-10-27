@@ -18,10 +18,10 @@
 
 router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8443] [--journal-dir PATH]`。标准输入是一行管理凭证。可选的本地流水日志使用 dstack TEE 派生密钥；不接受管理员提供的日志密钥。配置、账号与最终账务仍由独立管理服务持久化，流水恢复规则见 [本地流水日志](docs/ACCOUNTING-JOURNAL.md)。
 
-1. 冷启动 `GET /admin/checkpoint` 返回新的 boot_id、initialized=false。
+管理平台使用 `POST /admin/checkpoint/diff` 读取启动状态和配置增量；缺少基线时返回完整 state。流水经 receipt relay 上传并归档，归档完成后调用 `POST /admin/receipts/relay/settle`，不使用旧 checkpoint ACK。
 2. 管理端发送 `POST /admin/initialize`：`{"boot_id":"当前值","state":已保存的state或null}`。null 只用于首次空初始化；已有服务必须恢复管理数据库保存的快照。
 3. 初始化仅允许一次，验证全部配置、凭证、管理员身份与账号版本；失败不激活候选状态。拒答审计默认启用，无需下发独立审核服务的配置或密钥。
-4. 管理端通过 `/admin/checkpoint/diff` 获取增量，在本地重建完整快照，在同一事务中保存快照、结算新消费、更新用户余额和消费游标，然后 POST `/admin/checkpoint/ack`，包含同一 boot_id、generation、sequence 及 `balances_patch`（变化的用户 ID → 整数 micro-USD，删除使用 null）。旧客户端仍可读取完整 `/admin/checkpoint` 并提交完整 `balances`。
+管理平台使用 `POST /admin/checkpoint/diff` 读取启动状态和配置增量；缺少基线时返回完整 state。流水经 receipt relay 上传并归档，归档完成后调用 `POST /admin/receipts/relay/settle`，不使用旧 checkpoint ACK。
 5. ACK 原子更新余额并清除已同步消费；读取快照之后产生的新消费保留到下一轮。管理端的恢复快照使用结算后的余额、空 events 和空 consumption，重启时不会重复扣款。密码、token 和完整快照必须经经过验证的保密连接传输，不放在日志中。
 
 管理 API 沿用 Bearer 认证，快照响应禁止缓存；业务 API key 不能读取快照或初始化。充值和持久化账务由独立管理平台负责；Router 通过同步 ACK 接收余额，通过价格 API 管理报价。
@@ -45,48 +45,9 @@ OAuth 采用 access-token-only-v1 协议，商户服务负责续期。Router 拒
 
 升级前应由管理服务保存旧版加密快照，移除 Gemini 账号、部署、空池及其关联的池权限、fallback、restrictions、compatibility 和专用密钥，再保存并恢复新快照。禁用但仍存在的 Gemini 账号或部署也会被拒绝；不要用空初始化覆盖用户及用量。其余提供商的旧快照允许 `gemini_project: null` 和 `client_secret_ref: null`，新版导出时省略；非空值会被拒绝。管理端的供应商选项也应同步移除 Gemini。
 
-## 用户与并发 API
+## 用户权限与余额
 
-所有 `/admin/users` 接口要求管理 Bearer 凭证；用户资料不接受余额、额度或价格字段。完整 key 仅在认证后的管理读取接口显示，响应禁止缓存。
-
-| 方法 | 路径 | 行为 |
-| --- | --- | --- |
-| GET | `/admin/users` | 所有用户，包含各自 keys 和 in_flight |
-| POST | `/admin/users` | 创建用户，可原子导入全部 keys |
-| GET | `/admin/users/{id}` | 单个用户及其 keys |
-| PUT | `/admin/users/{id}` | 替换用户资料，省略 keys 时保留现有 keys |
-| DELETE | `/admin/users/{id}` | 撤销用户、其全部 keys 和不再引用的 key 密钥 |
-
-例如创建用户（密钥值为示例）：
-
-```json
-{"id":"user-1","name":"示例用户","note":"","enabled":true,"max_concurrent":4,
- "keys":[{"name":"key-1","key":"replace-with-random-api-key","models":[]}]}
-```
-
-`keys` 中的 `user_id` 自动绑定当前用户，不允许指定其他用户。提供 `keys: []` 会撤销该用户全部 key；修改列表中的 key 值可轮换密钥。POST/PUT 可带 `expected_revision`，版本冲突返回 409；非法资料或缺少密钥引用时整次更新失败。批量下发用 `/admin/apply` 的 `config.users` 和 `config.keys`，所有 key 必须有合法的 `user_id`。
-
-用户并发范围为正在执行的模型请求，所有关联 API key 共享 `max_concurrent`（1 至 100000，默认 16）。超限响应为 429 / `user_concurrency_limit`，不会排队。流式调用直到流结束或客户端断开才释放。单个 key、router 总体和上游账号的限制仍可能更严格。
-
-Router 内存保存上次同步余额 `balances` 和尚未同步的消费 `consumption`，请求只累加消费。新模型请求检查「余额 − 消费」，不足时返回 402 / `insufficient_balance`；用户尚未同步余额时返回 503 / `balance_unavailable`。同一用户的所有 key 共享余额，模型目录查询不受余额限制。已开始的并发请求仍会完成，因此可能出现负余额。
-
-受管理的 Router 按上述可用余额降低用户共享并发：`0 < 余额 ≤ $1` 为 1，`$1 < 余额 ≤ $5` 为 2，`$5 < 余额 ≤ $10` 为 4，高于 $10 使用原用户上限。实际取阶梯与原用户上限的较小值；key、商户和全局限额继续独立生效。每次准入在余额及消费的同一把锁内选档并取得用户许可，无需请求管理平台。消费入账后立即降档，充值 ACK 后自动恢复。旧快照缺少配置时采用这些默认值，商户子引擎不重复执行平台余额限制。
-
-`GET /admin/config` 的 `config.balance_concurrency` 返回当前规则；通过 `PATCH /admin/config` 热更新，例如：
-
-```json
-{"expected_revision":42,"patch":{"balance_concurrency":{"tiers":[
-  {"up_to_microusd":1000000,"max_concurrent":1},
-  {"up_to_microusd":5000000,"max_concurrent":2},
-  {"up_to_microusd":10000000,"max_concurrent":4}
-]}}}
-```
-
-金额为整数 micro-USD（1 USD = 1000000 micro-USD），1 至 5 档，阈值为正数且严格递增，并发上限不递减、最低档必须为 1。`GET /admin/users` 和 `GET /admin/users/{id}` 增加 `effective_max_concurrent`，表示用户并发与余额阶梯合并后的上限；余额未同步或耗尽时为 0。阶梯导致的拒绝返回 429 / `balance_concurrency_limit`，不会排队；余额耗尽仍返回 402。
-
-降档不取消已经执行的请求。此机制降低同时在途请求造成的透支风险，不是费用预留或透支金额保证；在途请求及单次高费用请求仍可能使余额变负，尚待核算的费用也不计入已知消费。
-
-`/admin/status` 和 `/admin/checkpoint` 的 `balance_sync_version: 1` 表示支持此协议。先升级管理端，再升级 Router；ACK 必须包含完整的 `balances`，可以为空，但未列出的用户不能发起模型请求。重复 ACK 不允许修改余额；充值等后续余额变动应读取新 checkpoint 后确认。官方价格计算与账单格式见 [billing v1](docs/BILLING.md)。
+用户和权限通过 `POST /admin/apply` 原子同步。模型请求必须具备 [独立用户签名](docs/USER-AUTH.md)。余额由管理平台持久化，Router 保留上次余额与未结算消费；通过 `/admin/receipts/relay/settle` 结算已归档批次并更新余额。
 
 ## 上游拒答审计
 

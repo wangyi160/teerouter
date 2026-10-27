@@ -21,6 +21,7 @@ pub(crate) mod control;
 mod crypto;
 mod customers;
 pub(crate) mod http;
+#[cfg(test)]
 mod model_catalog;
 mod probe;
 pub(crate) mod public_catalog;
@@ -320,7 +321,7 @@ pub(crate) async fn register(
     if item
         .users
         .iter()
-        .any(|id| !engine.config.users.iter().any(|u| &u.id == id))
+        .any(|id| !engine.config.users.iter().any(|u| &u.id == id || u.customer_id.as_ref() == Some(id)))
     {
         return Err(invalid());
     }

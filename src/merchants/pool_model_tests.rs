@@ -147,13 +147,13 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
     let server = serve(crate::server::app_runtime(r.clone())).await;
     let qualified_pool = format!("{}.official", crypto::identity(&token));
     let (status, visible) =
-        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+        catalog_fixture(&r,"models","alice-key").await;
     assert_eq!(status, 200);
     assert_eq!(visible["data"].as_array().unwrap().len(), 3);
     for row in visible["data"].as_array().unwrap() {
         assert_eq!(row["router_capabilities"].as_array().unwrap().len(), 2);
     }
-    let (_, inventory) = call(&server, Method::GET, "/v1/pools", "alice-key", Value::Null).await;
+    let (_, inventory) = catalog_fixture(&r,"pools","alice-key").await;
     for account in inventory["data"][0]["accounts"].as_array().unwrap() {
         assert_eq!(account["catalog"]["visible_models"], 3);
     }
@@ -185,7 +185,7 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
                     }
                     request.header("x-router-routing", rule.to_string())
                 };
-                let response = request.send().await.unwrap();
+                let response = request.signed_send().await.unwrap();
                 assert_eq!(response.status().is_success(), accepted, "{mode} {model}");
                 response.bytes().await.unwrap();
             }
@@ -205,8 +205,7 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         .await
         .unwrap();
     assert!(
-        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&r,"models","alice-key").await
             .1["data"]
             .as_array()
             .unwrap()
@@ -217,7 +216,7 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         .bearer_auth("alice-key")
         .header("x-router-pool", &qualified_pool)
         .json(&json!({"model":"chatgpt/model-00","messages":[]}))
-        .send()
+        .signed_send()
         .await
         .unwrap();
     assert!(!response.status().is_success());
@@ -235,8 +234,7 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         .await
         .unwrap();
     assert!(
-        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&r,"models","alice-key").await
             .1["data"]
             .as_array()
             .unwrap()
@@ -254,8 +252,7 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         .await
         .unwrap();
     assert_eq!(
-        call(&server, Method::GET, "/v1/models", "alice-key", Value::Null)
-            .await
+        catalog_fixture(&r,"models","alice-key").await
             .1["data"]
             .as_array()
             .unwrap()

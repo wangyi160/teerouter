@@ -51,9 +51,9 @@ cargo build --release --locked --features dstack-tdx
 
 ## 初始化
 
-读取 `/admin/checkpoint` 中的 `boot_id`，首次调用 `/admin/initialize` 并传入 `state: null`，再通过 `/admin/apply` 导入平台用户和 key。平台登记商户后，由商户验证 TEE、解锁并通过 `/merchant/config` 导入账号池和上游凭证。平台根配置禁止上游账号池和凭证；每次调用必须选择商户。重启时恢复平台快照中的商户密文，再由商户解锁。详见 [商户接入](docs/MERCHANTS.md)。
+首次通过 `POST /admin/checkpoint/diff` 获取 boot_id，再调用 `/admin/initialize`；平台通过 `/admin/apply` 同步用户权限。商户凭据只经直接商户通道上传，管理平台只读公开快照。用户模型请求必须同时携带平台授权和 teeproxy 本地 Ed25519 签名。接口清单见 [API](docs/API.md)，签名协议见 [用户认证](docs/USER-AUTH.md)。
 
-`provision*.example.json` 和 `config*.example.toml` 展示内部上游引擎结构，用于协议测试；含账号池的示例不能作为平台初始化配置。商户使用上述文档的 `/merchant/config` 格式。Claude 消费者 token 刷新仍由商户外部管理，不声称已实现完整登录流程。
+`provision*.example.json` 和 `config*.example.toml` 展示内部上游引擎结构，用于协议测试；含账号池的示例不能作为平台初始化配置。商户秘密使用直接账号同步协议；公开配置采用上述文档中的平台配置命令格式。Claude 消费者 token 刷新仍由商户外部管理，不声称已实现完整登录流程。
 
 ## 文档与验证
 

@@ -77,7 +77,7 @@ async fn encrypted_container_secret_can_boot_an_empty_router() {
     let dir = tempfile::tempdir().unwrap();
     let running = start_with_source(dir.path(), true).await;
     assert_eq!(
-        get(&running, "/admin/checkpoint").await["initialized"],
+        checkpoint(&running).await["initialized"],
         false
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -118,6 +118,9 @@ async fn get(r: &Running, path: &str) -> Value {
         .await
         .unwrap()
 }
+async fn checkpoint(r:&Running)->Value {
+    post(r,"/admin/checkpoint/diff",json!({})).await.json().await.unwrap()
+}
 async fn post(r: &Running, path: &str, body: Value) -> reqwest::Response {
     reqwest::Client::new()
         .post(format!("{}{path}", r.url))
@@ -135,7 +138,7 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
         .await
         .unwrap();
     assert_eq!(response.status(), 503);
-    let c = get(&first, "/admin/checkpoint").await;
+    let c = checkpoint(&first).await;
     assert_eq!(c["initialized"], false);
     assert_eq!(
         post(
@@ -164,13 +167,10 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
             .status(),
         401
     );
-    let mut saved = get(&first, "/admin/checkpoint").await;
-    assert_eq!(post(&first,"/admin/checkpoint/ack",json!({"boot_id":saved["boot_id"],"generation":saved["state"]["generation"],"sequence":saved["state"]["sequence"],"balances":{}})).await.status(),200);
     let key = "sk-fixture-user";
     assert_eq!(post(&first,"/admin/apply",json!({"config":{"users":[{"id":"test-user"}],"keys":[{"name":"client","user_id":"test-user","key_ref":"client","enabled":true}]},"secrets":{"client":key}})).await.status(),200);
-    saved = get(&first, "/admin/checkpoint").await;
-    // No manager contact for longer than the former lease. Catalog access and
-    // the initialized platform remain available without another ACK.
+    let saved = checkpoint(&first).await;
+    // No manager contact for longer than the former lease; initialization remains valid.
     tokio::time::sleep(Duration::from_secs(31)).await;
     assert_eq!(get(&first, "/admin/status").await["platform_ready"], true);
     assert_eq!(
@@ -181,7 +181,7 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
             .await
             .unwrap()
             .status(),
-        200
+        404
     );
     assert_eq!(post(&first, "/admin/quota", json!({})).await.status(), 404);
     drop(first);
@@ -196,7 +196,7 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
             .status(),
         503
     );
-    let c = get(&second, "/admin/checkpoint").await;
+    let c = checkpoint(&second).await;
     assert_ne!(c["boot_id"], saved["boot_id"]);
     let mut unowned = saved["state"].clone();
     unowned["bundle"]["config"]["models"] = json!([{"name":"unowned","provider":"openai","deployments":[{"id":"old","provider":"openai","api_key_ref":"unused","enabled":false}]}]);
@@ -221,8 +221,7 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
         .status(),
         200
     );
-    let c = get(&second, "/admin/checkpoint").await;
-    assert_eq!(post(&second,"/admin/checkpoint/ack",json!({"boot_id":c["boot_id"],"generation":c["state"]["generation"],"sequence":c["state"]["sequence"],"balances":{"test-user":1000000}})).await.status(),200);
+    let c = checkpoint(&second).await;
     // Refusal auditing needs no external scanner key after checkpoint restore.
     assert_eq!(
         reqwest::Client::new()
@@ -232,7 +231,7 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
             .await
             .unwrap()
             .status(),
-        200
+        404
     );
     let config = get(&second, "/admin/config").await;
     for path in [

@@ -10,7 +10,4 @@ Merchant availability therefore does not depend on a merchant client downloading
 or acknowledging receipts. The platform ledger's capacity and durability checks
 still apply to request admission.
 
-The legacy `/merchant/usage` and `/merchant/refusals` endpoints do not contain new
-request records. Merchant applications obtain ledger records and settlement updates
-from their management platform. Account configuration and access-token updates
-continue over the merchant's attested Router connection.
+Merchant applications obtain ledger records and settlement updates from their management platform. Legacy direct ledger query/ACK endpoints have been removed. Account and access-token uploads remain direct to the attested Router; public configuration is platform-mediated.

@@ -13,7 +13,7 @@ async fn admin(g: &Running, path: &str) -> Value {
         .unwrap()
 }
 async fn record(g: &Running) -> Value {
-    admin(g, "/admin/refusals").await
+    g.runtime.as_ref().unwrap().engine().vault.lock().unwrap().refusal_queue.page(0,1000)
 }
 fn refused(provider: Provider, native: bool) -> Value {
     if provider == Provider::Anthropic {
@@ -153,7 +153,7 @@ async fn native_refusal_is_forwarded_and_audited_once(
     }
     assert_eq!(usage(&g).await["output_tokens"], 5);
     assert_eq!(upstream.calls.lock().unwrap().len(), 1);
-    let state = admin(&g, "/admin/checkpoint").await.to_string();
+    let state = g.runtime.as_ref().unwrap().engine().vault.checkpoint().unwrap().to_string();
     assert!(!state.contains("REQUEST_BODY_MUST_NOT_BE_SAVED") && !state.contains("DO_NOT_RETAIN"));
     assert_eq!(
         client()
@@ -166,11 +166,7 @@ async fn native_refusal_is_forwarded_and_audited_once(
         401
     );
     assert_eq!(event["user_id"], "test-user");
-    assert!(
-        admin(&g, "/admin/users").await["data"][0]
-            .get("refusals")
-            .is_none()
-    );
+
 }
 
 #[tokio::test]
@@ -279,235 +275,6 @@ async fn codex_native_responses_audit_done_only_refusals(#[case] stream: bool) {
         r["data"][0]["result"]["parts"][0]["refusal"],
         "Provider declined this request."
     );
-}
-
-async fn write_admin(g: &Running, method: &str, path: &str, body: Value) -> reqwest::Response {
-    client()
-        .request(method.parse().unwrap(), format!("{}{path}", g.url))
-        .bearer_auth("admin-secret")
-        .json(&body)
-        .send()
-        .await
-        .unwrap()
-}
-
-#[tokio::test]
-async fn queue_pagination_deletion_and_checkpoint_ack_have_independent_cursors() {
-    let upstream = mock(vec![Reply::json(refused(Provider::OpenAI, false)); 27]).await;
-    let config = configuration(&upstream);
-    let g = gateway(config.clone()).await;
-    for _ in 0..25 {
-        assert_eq!(
-            post(&g, "/v1/chat/completions", input(false))
-                .await
-                .status(),
-            200
-        );
-    }
-    let first = admin(&g, "/admin/refusals?after_id=0&limit=10").await;
-    assert_eq!(first["pending"], 25);
-    assert_eq!(first["data"].as_array().unwrap().len(), 10);
-    assert_eq!(first["data"][0]["id"], 1);
-    assert_eq!(first["next_after_id"], 10);
-    assert_eq!(first["last_id"], 25);
-    assert_eq!(first["has_more"], true);
-    let second = admin(&g, "/admin/refusals?after_id=10&limit=10").await;
-    assert_eq!(second["data"][0]["id"], 11);
-    assert_eq!(second["next_after_id"], 20);
-    let third = admin(&g, "/admin/refusals?after_id=20&limit=10").await;
-    assert_eq!(third["data"].as_array().unwrap().len(), 5);
-    assert_eq!(third["next_after_id"], 25);
-    assert_eq!(third["has_more"], false);
-    assert_eq!(record(&g).await["pending"], 25); // Reads do not consume events.
-    let checkpoint = admin(&g, "/admin/checkpoint").await;
-    assert!(checkpoint["state"].get("refusals").is_none());
-    assert_eq!(
-        checkpoint["state"]["refusal_queue"]["events"]
-            .as_array()
-            .unwrap()
-            .len(),
-        25
-    );
-    assert!(
-        checkpoint["state"]["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|e| e["event"].get("refusal").is_none() && e["event"]["refusal_id"].is_u64())
-    );
-    assert_eq!(write_admin(&g,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"],"balances":{"test-user":1000000}})).await.status(),200);
-    assert_eq!(record(&g).await["pending"], 25); // Usage ACK is unrelated.
-    let deleted = write_admin(&g, "DELETE", "/admin/refusals?through_id=10", Value::Null).await;
-    assert_eq!(deleted.status(), 200);
-    assert_eq!(deleted.headers()["cache-control"], "no-store");
-    let deleted: Value = deleted.json().await.unwrap();
-    assert_eq!(deleted["deleted"], 10);
-    assert_eq!(deleted["pending"], 15);
-    assert_eq!(record(&g).await["data"][0]["id"], 11);
-    // A refusal finishing after the administrator's read must survive the delete.
-    assert_eq!(
-        post(&g, "/v1/chat/completions", input(false))
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(
-        write_admin(&g, "DELETE", "/admin/refusals?through_id=25", Value::Null)
-            .await
-            .status(),
-        200
-    );
-    let remainder = record(&g).await;
-    assert_eq!(remainder["pending"], 1);
-    assert_eq!(remainder["data"][0]["id"], 26);
-    assert_eq!(remainder["deleted_through"], 25);
-    let repeat: Value = write_admin(&g, "DELETE", "/admin/refusals?through_id=10", Value::Null)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(repeat["deleted"], 0);
-    assert_eq!(repeat["deleted_through"], 25);
-    let mut saved = admin(&g, "/admin/checkpoint").await;
-    // Usage receipts are archived by management; the independent refusal queue
-    // remains in the recovery state, but historical usage must not be re-signed.
-    saved["state"]["events"] = json!([]);
-    saved["state"]["moderation"] = json!({"test-user":{"blocked_requests":7}});
-    let next = engine(config);
-    next.vault.require_manager();
-    let rebooted = run_fixture(next).await;
-    let empty = admin(&rebooted, "/admin/checkpoint").await;
-    assert_eq!(
-        write_admin(
-            &rebooted,
-            "POST",
-            "/admin/initialize",
-            json!({"boot_id":empty["boot_id"],"state":saved["state"]})
-        )
-        .await
-        .status(),
-        200
-    );
-    let checkpoint = admin(&rebooted, "/admin/checkpoint").await;
-    assert_eq!(write_admin(&rebooted,"POST","/admin/checkpoint/ack",json!({"boot_id":checkpoint["boot_id"],"generation":checkpoint["state"]["generation"],"sequence":checkpoint["state"]["sequence"],"balances":{"test-user":1000000}})).await.status(),200);
-    assert_eq!(record(&rebooted).await, remainder);
-    assert_eq!(
-        admin(&rebooted, "/admin/users/test-user").await["user"]["moderation"]["blocked_requests"],
-        7
-    );
-    assert_eq!(
-        post(&rebooted, "/v1/chat/completions", input(false))
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(record(&rebooted).await["data"][1]["id"], 27);
-    assert_eq!(
-        write_admin(
-            &rebooted,
-            "DELETE",
-            "/admin/refusals?through_id=27",
-            Value::Null
-        )
-        .await
-        .status(),
-        200
-    );
-    let empty = record(&rebooted).await;
-    assert_eq!(empty["pending"], 0);
-    assert_eq!(empty["last_id"], 27);
-    assert_eq!(empty["next_after_id"], 27);
-    assert_eq!(empty["has_more"], false);
-    let final_state = admin(&rebooted, "/admin/checkpoint").await;
-    assert!(
-        !final_state
-            .to_string()
-            .contains("Provider declined this request.")
-    );
-    assert!(
-        !admin(&rebooted, "/admin/logs")
-            .await
-            .to_string()
-            .contains("Provider declined this request.")
-    );
-    assert!(
-        !final_state["state"]["events"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    ); // Usage retained.
-}
-
-#[tokio::test]
-async fn refusal_queue_requires_admin_and_rejects_invalid_or_future_cursors() {
-    let upstream = mock(vec![Reply::json(refused(Provider::OpenAI, false))]).await;
-    let g = gateway(configuration(&upstream)).await;
-    for method in ["GET", "DELETE"] {
-        for key in ["", "client-secret"] {
-            assert_eq!(
-                client()
-                    .request(
-                        method.parse().unwrap(),
-                        format!("{}/admin/refusals?through_id=0", g.url)
-                    )
-                    .bearer_auth(key)
-                    .send()
-                    .await
-                    .unwrap()
-                    .status(),
-                401
-            );
-        }
-    }
-    for path in [
-        "/admin/refusals?limit=0",
-        "/admin/refusals?limit=501",
-        "/admin/refusals?after_id=-1",
-        "/admin/refusals?limit=bad",
-        "/admin/refusals?after=0",
-    ] {
-        assert_eq!(
-            write_admin(&g, "GET", path, Value::Null).await.status(),
-            400
-        );
-    }
-    for path in [
-        "/admin/refusals",
-        "/admin/refusals?through_id=-1",
-        "/admin/refusals?through_id=0&typo=1",
-    ] {
-        assert_eq!(
-            write_admin(&g, "DELETE", path, Value::Null).await.status(),
-            400
-        );
-    }
-    assert_eq!(
-        write_admin(&g, "GET", "/admin/refusals?after_id=1", Value::Null)
-            .await
-            .status(),
-        409
-    );
-    assert_eq!(
-        write_admin(&g, "DELETE", "/admin/refusals?through_id=1", Value::Null)
-            .await
-            .status(),
-        409
-    );
-    let empty = write_admin(&g, "GET", "/admin/refusals", Value::Null).await;
-    assert_eq!(empty.headers()["cache-control"], "no-store");
-    assert_eq!(
-        post(&g, "/v1/chat/completions", input(false))
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(
-        write_admin(&g, "DELETE", "/admin/refusals?through_id=2", Value::Null)
-            .await
-            .status(),
-        409
-    );
-    assert_eq!(record(&g).await["pending"], 1);
 }
 
 #[tokio::test]
@@ -620,69 +387,4 @@ async fn workbuddy_refusal_is_audited_with_the_same_user_permissions() {
         record(&g).await["data"][0]["result"]["provider"],
         "workbuddy"
     );
-}
-
-#[tokio::test]
-async fn global_queue_interleaves_users_and_survives_key_rotation() {
-    let upstream = mock(vec![Reply::json(refused(Provider::OpenAI, false)); 4]).await;
-    let g = gateway(configuration(&upstream)).await;
-    assert_eq!(write_admin(&g,"POST","/admin/users",json!({"id":"second","keys":[{"name":"second-a","key":"second-secret-a"},{"name":"second-b","key":"second-secret-b"}]})).await.status(),200);
-    let generate = |key: &str| {
-        client()
-            .post(format!("{}/v1/chat/completions", g.url))
-            .bearer_auth(key)
-            .json(&input(false))
-            .send()
-    };
-    assert_eq!(generate("second-secret-a").await.unwrap().status(), 200);
-    assert_eq!(
-        post(&g, "/v1/chat/completions", input(false))
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(generate("second-secret-b").await.unwrap().status(), 200);
-    let before = record(&g).await;
-    for (index, user) in ["second", "test-user", "second"].iter().enumerate() {
-        assert_eq!(before["data"][index]["id"], index + 1);
-        assert_eq!(before["data"][index]["user_id"], *user);
-    }
-    assert!(
-        admin(&g, "/admin/users/second").await["user"]
-            .get("refusals")
-            .is_none()
-    );
-    assert_eq!(
-        write_admin(
-            &g,
-            "PUT",
-            "/admin/users/second",
-            json!({"keys":[{"name":"second-a","key":"rotated-secret"}]})
-        )
-        .await
-        .status(),
-        200
-    );
-    assert_eq!(record(&g).await, before);
-    assert_eq!(generate("second-secret-a").await.unwrap().status(), 401);
-    assert_eq!(generate("rotated-secret").await.unwrap().status(), 200);
-    assert_eq!(record(&g).await["data"][3]["key"], "second-a");
-    assert_eq!(
-        write_admin(&g, "DELETE", "/admin/users/second", Value::Null)
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(record(&g).await["pending"], 4); // User lifecycle never discards unarchived evidence.
-    assert_eq!(upstream.calls.lock().unwrap().len(), 4);
-    assert_eq!(
-        write_admin(&g, "DELETE", "/admin/refusals?through_id=2", Value::Null)
-            .await
-            .status(),
-        200
-    );
-    let remaining = record(&g).await;
-    assert_eq!(remaining["pending"], 2);
-    assert_eq!(remaining["data"][0]["id"], 3);
-    assert_eq!(remaining["data"][1]["id"], 4);
 }

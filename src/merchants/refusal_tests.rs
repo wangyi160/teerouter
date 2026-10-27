@@ -14,7 +14,7 @@ async fn routed(server: &Server, token: &str, pool: Option<&str>) -> (u16, Value
         .bearer_auth(token)
         .header("x-router-routing", policy.to_string())
         .json(&json!({"model":"chatgpt/model-test","messages":[{"role":"user","content":"test"}]}))
-        .send()
+        .signed_send()
         .await
         .unwrap();
     (response.status().as_u16(), response.json().await.unwrap())
@@ -81,7 +81,7 @@ async fn refusal_limit_is_per_user_across_keys_and_scoped_to_one_merchant() {
     .unwrap();
     assert_eq!(call(&server,Method::POST,"/v1/chat/completions","alice-regenerated",
         json!({"model":format!("{}/model-test",crypto::identity(&a)),"messages":[{"role":"user","content":"test"}]})).await.0,403);
-    let (_, models) = call(&server, Method::GET, "/v1/models", "alice-key", Value::Null).await;
+    let (_, models) = catalog_fixture(&r,"models","alice-key").await;
     assert!(!models.to_string().contains(&pa));
     assert!(models.to_string().contains(&pb));
     // Reset only the enforcement baseline, preserving the lifetime total.

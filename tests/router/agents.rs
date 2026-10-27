@@ -70,7 +70,7 @@ async fn inference_requires_matching_agent_before_forwarding_or_admission(
         mock.calls.lock().unwrap()[0].headers["user-agent"],
         agent_ua(provider)
     );
-    // Metadata remains accessible to teeproxy and other management clients.
+    // Router no longer exposes a user catalog endpoint.
     assert_eq!(
         reqwest::Client::new()
             .get(format!("{}/v1/models", gateway.url))
@@ -79,7 +79,7 @@ async fn inference_requires_matching_agent_before_forwarding_or_admission(
             .await
             .unwrap()
             .status(),
-        200
+        404
     );
 }
 

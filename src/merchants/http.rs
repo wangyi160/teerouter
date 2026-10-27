@@ -41,18 +41,6 @@ pub(crate) async fn dispatch(
             .into_response());
     }
     let item = authenticate(&runtime, &token)?;
-    let query: BTreeMap<String, String> =
-        reqwest::Url::parse(&format!("http://local{}", request.uri()))
-            .map_err(|_| invalid())?
-            .query_pairs()
-            .into_owned()
-            .collect();
-    let number = |name: &str, default: u64| -> Result<u64, ApiError> {
-        query
-            .get(name)
-            .map(|s| s.parse().map_err(|_| invalid()))
-            .unwrap_or(Ok(default))
-    };
     let result = match (method.as_str(), path.as_str()) {
         ("POST", "/merchant/unlock") => {
             #[derive(Deserialize)]
@@ -69,10 +57,6 @@ pub(crate) async fn dispatch(
             let (_, body) = crate::server::admin::input(&runtime, request).await?;
             account_sync::sync(&runtime, &token, body).await?
         }
-        ("PUT", "/merchant/accounts/prepare") => {
-            let (_, body) = crate::server::admin::input(&runtime, request).await?;
-            control::prepare(&runtime, &token, body).await?
-        }
         ("PUT", "/merchant/accounts/access") => {
             let (_, body) = crate::server::admin::input(&runtime, request).await?;
             access::replace(&runtime, &token, body).await?
@@ -80,90 +64,6 @@ pub(crate) async fn dispatch(
         ("POST", "/merchant/accounts/test") => {
             let (_, body) = crate::server::admin::input(&runtime, request).await?;
             probe::test(&runtime, &item, body).await?
-        }
-        ("GET", "/merchant/usage") => {
-            let live = live(&runtime, &item.id)?;
-            let engine = live.runtime.engine();
-            let data = engine.vault.lock().map_err(storage)?;
-            let after = number("after_seq", 0)?;
-            let limit = number("limit", 100)?.clamp(1, 1000) as usize;
-            let rows: Vec<_> = data
-                .events
-                .iter()
-                .filter(|v| v["seq"].as_u64().is_some_and(|seq| seq > after))
-                .filter(|v| {
-                    v["event"]["user_id"]
-                        .as_str()
-                        .is_some_and(|id| data.upstream_users.contains(id))
-                })
-                .take(limit)
-                .collect();
-            let through = if rows.len() == limit {
-                rows.last().and_then(|r| r["seq"].as_u64()).unwrap_or(0)
-            } else if data
-                .events
-                .iter()
-                .any(|v| v["seq"].as_u64().is_some_and(|s| s > after))
-            {
-                data.sequence
-            } else {
-                0
-            };
-            let usage: BTreeMap<_, _> = data
-                .usage
-                .iter()
-                .filter(|(key, _)| data.upstream_users.contains(*key))
-                .collect();
-            json!({"data":rows,"ack_through_seq":through,"last_seq":data.sequence,"instance_id":data.instance,"merchant_id":item.id,"usage":usage})
-        }
-        ("POST", "/merchant/usage/ack") => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Ack {
-                instance_id: String,
-                through_seq: u64,
-            }
-            let (_, body) = crate::server::admin::input(&runtime, request).await?;
-            let input: Ack = serde_json::from_value(body).map_err(|_| invalid())?;
-            let _write = runtime.merchants.write.lock().await;
-            let live = live(&runtime, &item.id)?;
-            let engine = live.runtime.engine();
-            {
-                let mut data = engine.vault.lock().map_err(storage)?;
-                if data.instance != input.instance_id || input.through_seq > data.sequence {
-                    return Err(invalid());
-                }
-                data.events
-                    .retain(|v| v["seq"].as_u64().is_some_and(|seq| seq > input.through_seq));
-                data.pending_event_bytes = data
-                    .events
-                    .iter()
-                    .map(|e| serde_json::to_vec(e).map_or(0, |v| v.len()))
-                    .sum();
-                data.changed();
-            }
-            json!({"acknowledged":input.through_seq})
-        }
-        ("GET", "/merchant/refusals") => {
-            let live = live(&runtime, &item.id)?;
-            let engine = live.runtime.engine();
-            let data = engine.vault.lock().map_err(storage)?;
-            let mut page = data.refusal_queue.page(
-                number("after_id", 0)?,
-                number("limit", 100)?.clamp(1, 1000) as usize,
-            );
-            page["instance_id"] = data.instance.clone().into();
-            page["merchant_id"] = item.id.clone().into();
-            page
-        }
-        ("DELETE", "/merchant/refusals") => {
-            let _write = runtime.merchants.write.lock().await;
-            let live = live(&runtime, &item.id)?;
-            let result = live
-                .runtime
-                .delete_refusals(number("through_id", 0)?, &live.admin)
-                .await?;
-            result
         }
         _ => {
             return Err(ApiError::new(

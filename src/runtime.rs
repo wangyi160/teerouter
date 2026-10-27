@@ -7,8 +7,9 @@ use std::sync::{
 
 // Shared by the platform and every merchant, including newly unlocked ones.
 // This is an explicit, process-local shutdown barrier, never a manager lease.
-struct Lifecycle {
+pub(crate) struct Lifecycle {
     quiescing: AtomicBool,
+    pub user_auth: crate::user_auth::Replay,
     background: Arc<Gate>,
     catalogs: crate::discovery::providers::Registry,
     catalog_authority: String,
@@ -17,6 +18,7 @@ impl Lifecycle {
     fn new(engine: &Engine) -> Arc<Self> {
         Arc::new(Self {
             quiescing: AtomicBool::new(false),
+            user_auth: Default::default(),
             background: Arc::default(),
             catalogs: crate::discovery::providers::Registry::new(
                 &engine.config.discovery,
@@ -35,7 +37,7 @@ pub(crate) struct Runtime {
     pub pricing_sync: Arc<tokio::sync::Mutex<()>>,
     write: tokio::sync::Mutex<()>,
     maintenance: RwLock<serde_json::Value>,
-    lifecycle: Arc<Lifecycle>,
+    pub(crate) lifecycle: Arc<Lifecycle>,
     catalogs_enabled: Arc<AtomicBool>,
     catalog_owner: String,
 }

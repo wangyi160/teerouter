@@ -89,12 +89,14 @@ pub(super) fn configure(
     existing_secrets: &BTreeMap<String, String>,
     secrets: &mut BTreeMap<String, String>,
 ) -> Result<(), ApiError> {
+    let aliases:BTreeMap<_,_>=config.users.iter().filter_map(|u|u.customer_id.clone().map(|c|(u.id.clone(),c))).collect();
     config.users.clear();
     config.keys.clear();
     for id in ids {
-        let c = settings.customer(&id);
+        let c = settings.customer(aliases.get(&id).map_or(id.as_str(),String::as_str));
         config.users.push(User {
             id: id.clone(),
+            customer_id: aliases.get(&id).cloned(),
             name: String::new(),
             note: String::new(),
             enabled: c.enabled,
@@ -129,11 +131,13 @@ pub(super) fn configure(
 // Called only after platform authorization, under the registry write lock.
 // An internal key supports normal per-user admission without exposing the user
 // in merchant state. Listing models alone never makes a customer visible.
-pub(super) async fn ensure(live: &Live, user: &str) -> Result<(), ApiError> {
+#[cfg(test)]
+pub(super) async fn ensure(live: &Live, user: &str) -> Result<(), ApiError> {ensure_identity(live,user,user).await}
+pub(super) async fn ensure_identity(live: &Live, user: &str, customer: &str) -> Result<(), ApiError> {
     let settings = live.settings.lock().unwrap().clone();
-    let c = settings.customer(user);
+    let c = settings.customer(customer);
     let engine = live.runtime.engine();
-    if engine.config.keys.iter().any(|k| {
+    if engine.config.customer_id(user)==customer && engine.config.keys.iter().any(|k| {
         k.user_id == user
             && k.enabled == c.enabled
             && k.models == c.models
@@ -145,6 +149,10 @@ pub(super) async fn ensure(live: &Live, user: &str) -> Result<(), ApiError> {
     }
     let snapshot = engine.vault.snapshot().map_err(storage)?;
     let mut config = snapshot.bundle.config.clone();
+    if user!=customer {
+        if let Some(entry)=config.users.iter_mut().find(|u|u.id==user) {entry.customer_id=Some(customer.into());}
+        else {config.users.push(User {id:user.into(),customer_id:Some(customer.into()),name:String::new(),note:String::new(),enabled:c.enabled,max_concurrent:c.max_concurrent});}
+    }
     let mut ids: BTreeSet<_> = config.keys.iter().map(|k| k.user_id.clone()).collect();
     ids.insert(user.into());
     if ids.len() > 100_000 {
