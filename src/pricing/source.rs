@@ -1,4 +1,4 @@
-//! Platform-owned daily GitHub price sync, persisted with encrypted checkpoints.
+//! Platform-owned five-hour GitHub price sync, persisted with encrypted checkpoints.
 use super::*;
 use axum::{
     Json,
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 pub const DEFAULT_URL: &str =
     "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json";
-pub const INTERVAL: u64 = 86400;
+pub const INTERVAL: u64 = 5 * 60 * 60;
 const LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]

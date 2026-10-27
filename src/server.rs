@@ -55,7 +55,6 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
         )
         .route("/health/ready", get(ready))
         .route("/v1/models", get(models))
-        .route("/v1/pricing", get(crate::pricing::public_get))
         .route("/v1/pools", get(pools))
         .route("/v1/usage", get(usage))
         .route("/v1/identity", get(user_identity))

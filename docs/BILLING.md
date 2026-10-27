@@ -1,6 +1,6 @@
 # 按模型提供商计算费用（billing v2）
 
-`/admin/status` 的 `provider_billing_version: 2` 表示 Router 在进程内生成逐请求计费结果，逐次上游尝试分别保留 v1 计算明细，再汇总并只舍入一次。`/v1/pricing` 的 `billing_policy.version: 3` 声明按实际发送进度处理异常请求。生产 TEE 构建中，计算代码和计费事件与 Router 一起受镜像度量约束。外部管理平台保存余额、归档事件并入账。计费规则由模型提供商决定，与提供账号的商户无关。
+`/admin/status` 的 `provider_billing_version: 2` 表示 Router 在进程内生成逐请求计费结果，逐次上游尝试分别保留 v1 计算明细，再汇总并只舍入一次。异常请求按实际发送进度处理。生产 TEE 构建中，计算代码和计费事件与 Router 一起受镜像度量约束。外部管理平台保存余额、归档事件并入账。计费规则由模型提供商决定，与提供账号的商户无关。
 
 ## 计费基准与精度
 
@@ -23,7 +23,7 @@ Token 单价仍为整数 micro-USD / 百万 Token。内部用 `u128` 按 10^-12 
 
 ## 报价扩展
 
-用户通过 `GET /v1/pricing` 读取全部已发布官方价格，不要求存在上游账号或商户授权。响应包含 `revision`、`currency: USD`、`unit: micro_usd_per_million_tokens` 和 `providers`（提供商、版本、官方来源、核对时间、模型及全部计价档位）。此接口仅允许读取，保持用户认证，不返回商户倍率或测试服务价格。它表示 Router 已发布的价格簿，不表示网页实时抓取结果；有报价不代表用户可调用该模型。
+用户价格页由管理平台提供。管理平台通过已有差量检查点接收 `official_pricing` 和 `pricing_source`，缓存 Router 实际计费使用的版本，并按当前可用账号池的开放模型筛选；页面查询不会再调用 Router。Router 保留计费价格更新、管理员控制和检查点同步，不再提供 `/v1/pricing` 用户查询接口。
 
 `/admin/pricing` 的模型行新增可选 `billing_rules`；旧价格簿仍可加载。它随报价进入 `merchant_pricing` 和模型目录，修改时必须提升官方价格版本。
 

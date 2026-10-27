@@ -99,7 +99,7 @@ fn chatgpt_catalog_controls_scope_and_cannot_use_reseller_or_image_prices() {
     );
 }
 #[test]
-fn safe_github_resolution_and_daily_schedule() {
+fn safe_github_resolution_and_five_hour_schedule() {
     assert_eq!(
         source::github(source::DEFAULT_URL).unwrap().as_str(),
         "https://api.github.com/repos/BerriAI/litellm/contents/model_prices_and_context_window.json?ref=main"
@@ -120,8 +120,8 @@ fn safe_github_resolution_and_daily_schedule() {
     s.enabled = true;
     assert!(source::due(&s, 100));
     s.last_attempt = 100;
-    assert!(!source::due(&s, 86499));
-    assert!(source::due(&s, 86500));
+    assert!(!source::due(&s, 18099));
+    assert!(source::due(&s, 18100));
     let restored: source::State =
         serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
     assert_eq!(restored.last_attempt, 100);

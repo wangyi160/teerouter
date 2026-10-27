@@ -17,7 +17,6 @@
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/v1/models` | 按当前 API key 的权限返回已发现模型及思考能力；模型目录与账号池分别读取。 |
-| GET | `/v1/pricing` | 已登录用户读取完整官方价格簿，独立于账号池、账号和可调用模型权限；不含商户倍率或 Workbuddy 测试价。 |
 | GET | `/v1/pools` | 返回当前 API key 可访问的池、供应商类型和账号运行状态；不返回账号凭证。 |
 | GET | `/v1/usage` | 当前 API key 的调用和 token 统计；逐请求金额由 Router 计算，历史账单和余额由管理平台保存。 |
 | POST | `/v1/chat/completions` | messages 请求格式，可使用 stream；思考强度字段为 reasoning_effort。 |

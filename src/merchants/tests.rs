@@ -421,44 +421,15 @@ async fn price_source_is_platform_admin_only_and_blocks_static_overwrites() {
 }
 
 #[tokio::test]
-async fn public_price_book_is_read_only_and_independent_of_account_inventory() {
+async fn price_book_is_only_available_to_management_and_checkpoints() {
     let r = root();
-    #[cfg(feature = "workbuddy-lab")]
-    r.engine()
-        .vault
-        .lock()
-        .unwrap()
-        .official_pricing
-        .providers
-        .push(
-            serde_json::from_value(
-                json!({"provider":"workbuddy","version":1,"source":"local-test:workbuddy",
-            "checked_at":1,"models":[{"model":"test-only","rates":{"input":0,"output":0}}]}),
-            )
-            .unwrap(),
-        );
     let s = serve(crate::server::app_runtime(r)).await;
     for key in ["alice-key", "bob-key"] {
-        let (status, prices) = call(&s, Method::GET, "/v1/pricing", key, Value::Null).await;
-        assert_eq!(status, 200);
-        assert_eq!(prices["currency"], "USD");
-        assert_eq!(prices["unit"], "micro_usd_per_million_tokens");
-        assert_eq!(prices["revision"], 1);
-        assert_eq!(prices["providers"].as_array().unwrap().len(), 1);
-        assert_eq!(prices["providers"][0]["models"][0]["model"], "model-test");
         assert_eq!(
-            prices["providers"][0]["models"][0]["rates"]["input"],
-            1000000
-        );
-        assert_eq!(
-            call(&s, Method::GET, "/v1/models", key, Value::Null)
+            call(&s, Method::GET, "/v1/pricing", key, Value::Null)
                 .await
-                .1["data"],
-            json!([])
-        );
-        assert_eq!(
-            call(&s, Method::PUT, "/v1/pricing", key, json!({})).await.0,
-            405
+                .0,
+            404
         );
         assert_eq!(
             call(&s, Method::GET, "/admin/pricing", key, Value::Null)
@@ -467,12 +438,10 @@ async fn public_price_book_is_read_only_and_independent_of_account_inventory() {
             401
         );
     }
-    assert_eq!(
-        call(&s, Method::GET, "/v1/pricing", "invalid", Value::Null)
-            .await
-            .0,
-        401
-    );
+    let (status, prices) = call(&s, Method::GET, "/admin/pricing", ADMIN, Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(prices["revision"], 1);
+    assert_eq!(prices["providers"][0]["models"][0]["model"], "model-test");
 }
 
 #[tokio::test]

@@ -318,27 +318,6 @@ pub(crate) async fn get(
     book(&runtime).map(axum::Json)
 }
 
-/// Public list prices are independent of merchant inventory and model ACLs.
-/// Authentication still requires an enabled platform user/key. Never expose
-/// merchant multipliers, accounts or credentials through this endpoint.
-pub(crate) async fn public_get(
-    axum::extract::State(runtime): axum::extract::State<std::sync::Arc<Runtime>>,
-) -> Result<axum::Json<Value>, ApiError> {
-    let mut book = book(&runtime)?;
-    book.providers.retain(|p| !p.provider.is_local_test());
-    Ok(axum::Json(
-        json!({"object":"price_book", "revision":book.revision,
-        "currency":"USD", "unit":"micro_usd_per_million_tokens", "providers":book.providers,
-        "billing_policy":{"version":3,"error_usage_chargeable":true,"attempts_billed_separately":true,
-            "missing_usage":"estimate_failed_model_attempt_after_request_flush_or_processing_evidence",
-            "incomplete_transmission_without_usage":"zero_charge",
-            "upstream_rejection_without_usage":"zero_charge",
-            "client_disconnect":"cancel_upstream_and_settle_observed_progress",
-            "successful_missing_usage":"pending_no_estimate","estimator":"o200k_json_text_v1",
-            "unknown_cache":"ordinary_input","hidden_output_estimated":false,
-            "rounding":"ceil_once_per_request_to_micro_usd"}}),
-    ))
-}
 pub(crate) async fn put(
     axum::extract::State(runtime): axum::extract::State<std::sync::Arc<Runtime>>,
     request: axum::extract::Request,
