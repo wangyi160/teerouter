@@ -15,6 +15,7 @@ impl Replay {
         &self,
         boot: &str,
         uid: &str,
+        registered_public: &str,
         method: &Method,
         uri: &Uri,
         headers: &HeaderMap,
@@ -48,7 +49,8 @@ impl Replay {
         }) {
             return Err(denied());
         }
-        let public = unhex(field("x-router-user-public-key")?, 32).map_err(|_| denied())?;
+        if headers.contains_key("x-router-user-public-key") || field("x-router-user-id")? != uid { return Err(denied()); }
+        let public = unhex(registered_public, 32).map_err(|_| denied())?;
         if wire::user_id(&public) != uid {
             return Err(denied());
         }
@@ -120,8 +122,8 @@ mod tests {
         ));
         for (name, value) in [
             (
-                "x-router-user-public-key",
-                wire::hex(key.public_key().as_ref()),
+                "x-router-user-id",
+                uid.clone(),
             ),
             ("x-router-user-timestamp", time),
             ("x-router-user-nonce", nonce.into()),
@@ -136,14 +138,15 @@ mod tests {
         let key = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
         let (uid, method, uri, headers) = proof(&key, "boot-1", b"{input}", &"a".repeat(64));
         let verifier = Replay::default();
+        let public=wire::hex(key.public_key().as_ref());
         assert!(
             verifier
-                .verify("boot-2", &uid, &method, &uri, &headers, b"{input}")
+                .verify("boot-2", &uid, &public, &method, &uri, &headers, b"{input}")
                 .is_err()
         );
         assert!(
             verifier
-                .verify("boot-1", &uid, &method, &uri, &headers, b"{changed}")
+                .verify("boot-1", &uid, &public, &method, &uri, &headers, b"{changed}")
                 .is_err()
         );
         assert!(
@@ -151,6 +154,7 @@ mod tests {
                 .verify(
                     "boot-1",
                     &uid,
+                    &public,
                     &method,
                     &"/v1/messages".parse().unwrap(),
                     &headers,
@@ -160,7 +164,7 @@ mod tests {
         );
         assert!(
             verifier
-                .verify("boot-1", "victim", &method, &uri, &headers, b"{input}")
+                .verify("boot-1", "victim", &public, &method, &uri, &headers, b"{input}")
                 .is_err()
         );
         for name in ["authorization", "x-router-routing", "user-agent"] {
@@ -168,7 +172,7 @@ mod tests {
             changed.insert(name, "modified".parse().unwrap());
             assert!(
                 verifier
-                    .verify("boot-1", &uid, &method, &uri, &changed, b"{input}")
+                    .verify("boot-1", &uid, &public, &method, &uri, &changed, b"{input}")
                     .is_err()
             );
         }
@@ -176,24 +180,24 @@ mod tests {
         duplicate.append("x-router-user-nonce", "a".repeat(64).parse().unwrap());
         assert!(
             verifier
-                .verify("boot-1", &uid, &method, &uri, &duplicate, b"{input}")
+                .verify("boot-1", &uid, &public, &method, &uri, &duplicate, b"{input}")
                 .is_err()
         );
         assert!(
             verifier
-                .verify("boot-1", &uid, &method, &uri, &headers, b"{input}")
+                .verify("boot-1", &uid, &public, &method, &uri, &headers, b"{input}")
                 .is_ok()
         );
         assert!(
             verifier
-                .verify("boot-1", &uid, &method, &uri, &headers, b"{input}")
+                .verify("boot-1", &uid, &public, &method, &uri, &headers, b"{input}")
                 .is_err()
         );
         let other = Ed25519KeyPair::from_seed_unchecked(&[8; 32]).unwrap();
         let (_, m, u, h) = proof(&other, "boot-1", b"{input}", &"b".repeat(64));
         assert!(
             verifier
-                .verify("boot-1", &uid, &m, &u, &h, b"{input}")
+                .verify("boot-1", &uid, &public, &m, &u, &h, b"{input}")
                 .is_err()
         );
     }

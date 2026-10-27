@@ -47,7 +47,7 @@ async fn unpublished_pool_probe_is_disposable_and_cannot_override_published_poli
         call(&server, Method::POST, path, &token, test_provider)
             .await
             .0,
-        403
+        if cfg!(feature="workbuddy-lab") {403} else {400}
     );
     assert_eq!(state(&r, &registration(&token)).unwrap(), before);
 }

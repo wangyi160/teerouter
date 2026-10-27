@@ -157,6 +157,8 @@ pub struct User {
     /// Stable merchant customer reference during migration to a signing identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub customer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -334,6 +336,13 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), String> {
         crate::policy::validate(&self.restrictions)?;
+        for user in &self.users {
+            if let Some(key) = &user.public_key {
+                let public = crate::request_proof::unhex(key, 32).map_err(|_| "invalid user public key")?;
+                if crate::request_proof::user_id(&public) != user.id { return Err("user ID does not match public key".into()); }
+            }
+        }
+
         if self.users.iter().any(|u|u.customer_id.as_ref().is_some_and(|id| !valid_name(id))) {return Err("invalid customer reference".into());}
         if self.server.router_access_key_ref.as_ref().is_some_and(|v| !valid_name(v)) {
             return Err("invalid Router access signing key reference".into());

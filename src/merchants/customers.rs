@@ -94,7 +94,7 @@ pub(super) fn configure(
     config.keys.clear();
     for id in ids {
         let c = settings.customer(aliases.get(&id).map_or(id.as_str(),String::as_str));
-        config.users.push(User {
+        config.users.push(User {public_key:None,
             id: id.clone(),
             customer_id: aliases.get(&id).cloned(),
             name: String::new(),
@@ -151,7 +151,7 @@ pub(super) async fn ensure_identity(live: &Live, user: &str, customer: &str) -> 
     let mut config = snapshot.bundle.config.clone();
     if user!=customer {
         if let Some(entry)=config.users.iter_mut().find(|u|u.id==user) {entry.customer_id=Some(customer.into());}
-        else {config.users.push(User {id:user.into(),customer_id:Some(customer.into()),name:String::new(),note:String::new(),enabled:c.enabled,max_concurrent:c.max_concurrent});}
+        else {config.users.push(User {public_key:None,id:user.into(),customer_id:Some(customer.into()),name:String::new(),note:String::new(),enabled:c.enabled,max_concurrent:c.max_concurrent});}
     }
     let mut ids: BTreeSet<_> = config.keys.iter().map(|k| k.user_id.clone()).collect();
     ids.insert(user.into());

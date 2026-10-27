@@ -41,7 +41,7 @@ pub(crate) fn app_runtime(runtime: Arc<crate::runtime::Runtime>) -> Router {
     Router::new()
         .route(
             "/health/live",
-            get(|State(runtime): State<Arc<crate::runtime::Runtime>>| async move { Json(json!({"user_auth_version":1,"boot_id":runtime.engine().vault.boot_id,"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache","speed_routing":"proxy_https_latency","proxy_probe_interval_secs":300})) }),
+            get(|State(runtime): State<Arc<crate::runtime::Runtime>>| async move { Json(json!({"user_auth_version":2,"boot_id":runtime.engine().vault.boot_id,"status":"ok", "routing_protocol_versions":[1],"cache_affinity_version":1,"price_routing":"estimated_total_tokens_with_cache","speed_routing":"proxy_https_latency","proxy_probe_interval_secs":300})) }),
         )
         .route("/health/ready", get(ready))
         .route(
@@ -330,8 +330,10 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
         )
     })?;
     if identity.runtime.is_platform() {
+        let uid=&engine.config.keys[identity.account.unwrap()].user_id;
+        let public=engine.config.users.iter().find(|u| &u.id==uid).and_then(|u|u.public_key.as_deref()).ok_or_else(||ApiError::new(401,"user_key_not_registered","Client public key has not been registered"))?;
         identity.runtime.lifecycle.user_auth.verify(
-            &engine.vault.boot_id, &engine.config.keys[identity.account.unwrap()].user_id,
+            &engine.vault.boot_id, uid, public,
             &parts.method, &parts.uri, &parts.headers, &bytes,
         )?;
     }

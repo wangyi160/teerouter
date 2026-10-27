@@ -20,7 +20,7 @@ See [user request signatures](USER-AUTH.md). Router checks agent/provider compat
 | GET | `/health/live` | Handshake JWT or admin Bearer |
 | GET | `/health/ready` | Handshake JWT or admin Bearer |
 
-`/health/live` advertises `user_auth_version: 1`, the current `boot_id` and routing capabilities. The handshake JWT cannot authorize model or administrative operations.
+`/health/live` advertises `user_auth_version: 2`, the current `boot_id` and routing capabilities. The handshake JWT cannot authorize model or administrative operations.
 
 ## Merchant direct channel
 

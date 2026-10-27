@@ -1,12 +1,12 @@
-# Client-owned user request signatures v1
+# Client-owned user request signatures v2
 
-A management-issued Bearer grants permissions but is insufficient for model requests. teeproxy generates its own Ed25519 key; the management platform receives only the public key and an enrollment proof. The Router identity is `u_sig_` followed by lowercase hex SHA-256 of the 32-byte public key. Router checks this derivation against the authenticated key's `user_id`, so replacing a public key also changes the identity. No administrator-supplied replaceable public-key binding is trusted for this proof.
+A management-issued Bearer grants permissions but is insufficient for model requests. teeproxy generates its own Ed25519 key; the management platform receives only the public key and an enrollment proof. The Router identity is `u_sig_` followed by lowercase hex SHA-256 of the 32-byte public key. Management synchronizes `User.id` and `User.public_key` once during registration/configuration. Router validates the ID-to-public-key derivation on configuration writes, then looks up the registered public key for each signed request. Replacing the key for the same ID fails validation.
 
 ## Wire format
 
 Required single-valued headers:
 
-- `x-router-user-public-key`: 32-byte public key, lowercase hex.
+- `x-router-user-id`: registered `u_sig_` identity. Public keys are not sent in model requests; the old public-key header is rejected.
 - `x-router-user-timestamp`: canonical decimal Unix seconds.
 - `x-router-user-nonce`: fresh 32-byte random value, lowercase hex.
 - `x-router-user-signature`: 64-byte Ed25519 signature, lowercase hex.
@@ -14,7 +14,7 @@ Required single-valued headers:
 Sign the UTF-8 compact JSON array:
 
 ```text
-["teerouter-user-request-v1", boot_id, user_id, method, path_and_query,
+["teerouter-user-request-v2", boot_id, user_id, method, path_and_query,
  timestamp_string, nonce_hex, sha256_body_hex, [[header_name, value_bytes_hex], ...]]
 ```
 
@@ -24,7 +24,7 @@ The boot identity is read on the same independently attested TLS session. Proofs
 
 ## Enrollment and migration
 
-The management connection API accepts a public key plus an Ed25519 proof over compact JSON `["teerouter-user-enrollment-v1", platform_account_id, device_id, public_key_hex]`. Existing bindings cannot be silently overwritten. Private seeds stay in the client's portable encrypted data directory. Password reset alone does not recover a missing signing key.
+The management connection API accepts a public key plus an Ed25519 proof over compact JSON `["teerouter-user-enrollment-v1", platform_account_id, device_id, public_key_hex]`. Existing bindings cannot be silently overwritten. Private seeds stay in the client's portable encrypted data directory. Registration and login use a one-time Ed25519 challenge, with no user password. The challenge binds the platform origin, purpose, role, public key, nonce and expiry. User/merchant IDs and their private keys are retained locally across logout; losing the private key loses access to that identity.
 
 Management maps its stable financial user to the self-certifying Router identity. `User.customer_id` preserves the merchant's existing customer restrictions/refusal history during migration; it is not the signing identity and is never used as the provider session/cache identity. Billing receipts use the signing identity and are resolved to the existing wallet during ingestion. Old and new receipt pseudonyms remain decodable.
 

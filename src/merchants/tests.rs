@@ -548,7 +548,8 @@ async fn catalog_fixture(r:&Runtime,kind:&str,key:&str)->(u16,Value) {
     (200,json!({"data":rows}))
 }
 fn root() -> Arc<Runtime> {
-    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":test_user("alice"),"customer_id":"alice"},{"id":test_user("bob"),"customer_id":"bob"}],"keys":[{"name":"alice-key","user_id":test_user("alice"),"key_ref":"ALICE"},{"name":"bob-key","user_id":test_user("bob"),"key_ref":"BOB"}],"models":[]})).unwrap();
+    use ring::signature::KeyPair;
+    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":test_user("alice"),"customer_id":"alice","public_key":crate::request_proof::hex(signing_key("alice").public_key().as_ref())},{"id":test_user("bob"),"customer_id":"bob","public_key":crate::request_proof::hex(signing_key("bob").public_key().as_ref())}],"keys":[{"name":"alice-key","user_id":test_user("alice"),"key_ref":"ALICE"},{"name":"bob-key","user_id":test_user("bob"),"key_ref":"BOB"}],"models":[]})).unwrap();
     let runtime = Runtime::new(
         Engine::new(config, |k| {
             Some(
@@ -622,7 +623,7 @@ impl SignedRequest for reqwest::RequestBuilder {
             let time=crate::anthropic::unix_now().to_string();let nonce=crypto::digest(&crate::vault::random_id().unwrap());
             let uid=crate::request_proof::user_id(key.public_key().as_ref());
             let sig=key.sign(&crate::request_proof::message(boot,&uid,request.method(),&uri,request.headers(),request.body().and_then(|b|b.as_bytes()).unwrap_or_default(),&time,&nonce));
-            for (name,value) in [("x-router-user-public-key",crate::request_proof::hex(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(sig.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
+            for (name,value) in [("x-router-user-id",crate::request_proof::user_id(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(sig.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
         }
         client.execute(request).await
     }
@@ -640,7 +641,7 @@ async fn call(s: &Server, method: Method, path: &str, token: &str, body: Value) 
         let time=crate::anthropic::unix_now().to_string();
         let nonce=crypto::digest(&crate::vault::random_id().unwrap());
         let signature=key.sign(&crate::request_proof::message(boot,&uid,request.method(),&path.parse().unwrap(),request.headers(),request.body().unwrap().as_bytes().unwrap(),&time,&nonce));
-        for (name,value) in [("x-router-user-public-key",crate::request_proof::hex(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(signature.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
+        for (name,value) in [("x-router-user-id",crate::request_proof::user_id(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(signature.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
     }
     let r=client.execute(request).await.unwrap();
     let status = r.status().as_u16();

@@ -1,8 +1,8 @@
-//! Ed25519 request proof v1. Shared byte format with teeproxy; no platform secret.
+//! Ed25519 request proof v2. Shared byte format with teeproxy; no platform secret.
 use axum::http::{HeaderMap, Method, Uri};
 use sha2::{Digest, Sha256};
 
-pub(crate) const DOMAIN: &str = "teerouter-user-request-v1";
+pub(crate) const DOMAIN: &str = "teerouter-user-request-v2";
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
