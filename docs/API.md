@@ -207,3 +207,13 @@ LockLLM 不再调用，不需要其密钥；旧 `config.moderation` 仅兼容读
 # 自动价格数据源
 
 平台管理接口：`GET/PUT /admin/pricing/source`、`POST /admin/pricing/refresh`。详见 [配置、状态及导入规则](PRICE_SOURCE.md)。能力标识为 `/admin/status` 的 `pricing_source_sync_version: 1`。
+
+## 登录接入凭据
+
+Router 不提供匿名 HTTP 接口。用户及商户登录管理平台后，客户端获取独立的 `router_access.token`，通过 `X-Router-Access` 请求 `POST /.well-known/teellm/attestation`、`GET /health/live` 和 `GET /health/ready`。缺失、伪造、过期或对应身份已停用时返回 HTTP 401 / `router_access_required`，不会生成 TEE 报告。健康检查也接受现有管理员认证，供启动诊断使用。
+
+接入凭据是 HS256 JWT：`iss=teerouter-management`、`aud=teerouter-handshake-v1`、`scope=handshake`，`sub` 为内部用户或商户 ID，`role=user|merchant`，并含整数秒 `iat`、`exp`。最长有效期 30 天，允许签发时钟超前至多 60 秒。管理员发布验证可领取 `role=operator,sub=operator` 的同用途凭据，最长 10 分钟。它没有任何模型、配置、账号或账务权限；原业务接口仍验证各自凭据。
+
+管理平台通过初始化／配置同步设置 `server.router_access_key_ref` 及独立的 32 字节十六进制签名密钥；HMAC 使用该十六进制字符串的 UTF-8 字节。密钥不能与管理员或模型调用凭据共用。Router 在内存中独立验签并检查已同步的身份启用状态，不回查管理平台。未初始化签名密钥时不放行。`/admin/status` 和 checkpoint 元数据以 `router_access_version: 1` 标示支持。
+
+客户端本地加密保存并提前续领接入凭据。在管理平台短暂失联时，未过期凭据仍可用；身份停用在配置同步到 Router 后生效。只有在验证硬件证明、独立发布策略、随机挑战和当前 TLS 证书绑定之后，才可在同一 TLS 连接发送业务认证及账号 token。接入凭据不能替代这些 TEE 验证。

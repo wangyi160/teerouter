@@ -505,6 +505,7 @@ async fn request_admission_happens_before_reading_slow_bodies() {
     assert_eq!(
         client()
             .get(format!("{}/health/live", gateway.url))
+            .bearer_auth("admin-secret")
             .send()
             .await
             .unwrap()

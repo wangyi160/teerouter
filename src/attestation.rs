@@ -2,7 +2,8 @@
 //! measured guest's fixed Unix socket; no remote attester or simulator fallback.
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Request, State},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -21,9 +22,10 @@ pub struct Attestation {
     tls: Arc<rustls::ServerConfig>,
     sample: bool,
     reports: Arc<Semaphore>,
+    vault: Arc<crate::vault::Vault>,
 }
 impl Attestation {
-    pub fn new(sample: bool) -> Result<Arc<Self>, String> {
+    pub fn new(sample: bool, vault: Arc<crate::vault::Vault>) -> Result<Arc<Self>, String> {
         if sample && !cfg!(feature = "sample-demo") {
             return Err("sample evidence requires a development build".into());
         }
@@ -47,6 +49,7 @@ impl Attestation {
             tls: Arc::new(tls),
             sample,
             reports: Arc::new(Semaphore::new(4)),
+            vault,
         }))
     }
     pub fn app(self: &Arc<Self>, router: Router) -> Router {
@@ -54,6 +57,7 @@ impl Attestation {
             Router::new()
                 .route("/.well-known/teellm/attestation", post(attest))
                 .layer(DefaultBodyLimit::max(1024))
+                .layer(middleware::from_fn_with_state(self.clone(), authorize))
                 .with_state(self.clone()),
         )
     }
@@ -80,6 +84,16 @@ impl Attestation {
                     .await;
             });
         }
+    }
+}
+async fn authorize(
+    State(state): State<Arc<Attestation>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match crate::admission::authorize(&state.vault, request.headers()) {
+        Ok(()) => next.run(request).await,
+        Err(error) => error.into_response(),
     }
 }
 #[derive(Deserialize)]

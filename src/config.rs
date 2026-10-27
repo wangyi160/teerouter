@@ -38,6 +38,7 @@ pub struct Server {
     pub bind: SocketAddr,
     #[serde(rename = "admin_key_ref", alias = "admin_key_env")]
     pub admin_key_env: Option<String>,
+    pub router_access_key_ref: Option<String>,
     pub proxy: Option<String>,
     pub no_proxy: Option<String>,
     pub max_concurrent: usize,
@@ -112,6 +113,7 @@ impl Default for Server {
         Self {
             bind: "127.0.0.1:4000".parse().expect("constant address"),
             admin_key_env: None,
+            router_access_key_ref: None,
             proxy: None,
             no_proxy: None,
             max_concurrent: 256,
@@ -325,6 +327,9 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), String> {
         crate::policy::validate(&self.restrictions)?;
+        if self.server.router_access_key_ref.as_ref().is_some_and(|v| !valid_name(v)) {
+            return Err("invalid Router access signing key reference".into());
+        }
         let ops = &self.operations;
         if !(1..=3600).contains(&ops.maintenance_secs)
             || !(1..=3650).contains(&ops.log_retention_days)

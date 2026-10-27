@@ -152,7 +152,11 @@ async fn authenticate(
     let path = request.uri().path();
     let health_request = matches!(path, "/health/live" | "/health/ready");
     let mut result = if health_request {
-        Ok(None)
+        if credential(request.headers()).is_some_and(|key| engine.authenticate_admin(key)) {
+            Ok(None)
+        } else {
+            crate::admission::authorize(&engine.vault, request.headers()).map(|_| None)
+        }
     } else if path.starts_with("/merchant/") {
         credential(request.headers())
             .ok_or_else(|| {
@@ -384,6 +388,7 @@ async fn usage(request: Request) -> Result<Json<Value>, ApiError> {
 async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Value> {
     let engine = runtime.engine();
     let mut status = engine.status();
+    status["router_access_version"] = 1.into();
     status["agent_provider_policy"] = json!({
         "version": 1,
         "codex": "openai",

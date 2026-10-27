@@ -116,11 +116,11 @@ pub async fn run() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     vault.provision(&bundle).map_err(|e| e.to_string())?;
     vault.require_manager();
-    let engine = Engine::from_vault(vault).map_err(|_| "invalid bootstrap engine")?;
+    let engine = Engine::from_vault(vault.clone()).map_err(|_| "invalid bootstrap engine")?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|_| "cannot bind listener")?;
-    let attestation = teellm::attestation::Attestation::new(sample)?;
+    let attestation = teellm::attestation::Attestation::new(sample, vault)?;
     let tls = tokio::net::TcpListener::bind(tls_bind)
         .await
         .map_err(|_| "cannot bind TLS listener")?;

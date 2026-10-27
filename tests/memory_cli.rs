@@ -61,6 +61,7 @@ async fn start_with_source(dir: &std::path::Path, from_env: bool) -> Running {
     for _ in 0..100 {
         if client
             .get(format!("{}/health/live", running.url))
+            .bearer_auth(ADMIN)
             .send()
             .await
             .is_ok()

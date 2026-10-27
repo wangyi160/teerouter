@@ -490,6 +490,7 @@ async fn authentication_allowlists_and_admin_isolation() {
     let http = client();
     assert_eq!(
         http.get(format!("{}/health/live", gateway.url))
+            .bearer_auth("admin-secret")
             .send()
             .await
             .unwrap()
@@ -982,6 +983,7 @@ async fn circuit_allows_only_one_probe_and_recovers_after_success() {
     assert_eq!(
         client()
             .get(format!("{}/health/ready", gateway.url))
+            .bearer_auth("admin-secret")
             .send()
             .await
             .unwrap()
@@ -1022,6 +1024,7 @@ async fn circuit_allows_only_one_probe_and_recovers_after_success() {
     assert_eq!(
         client()
             .get(format!("{}/health/ready", gateway.url))
+            .bearer_auth("admin-secret")
             .send()
             .await
             .unwrap()

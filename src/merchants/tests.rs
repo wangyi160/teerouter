@@ -255,7 +255,7 @@ async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
         assert_eq!(error["error"]["code"], "router_draining");
     }
     assert_eq!(
-        call(&server, Method::GET, "/health/live", "", Value::Null)
+        call(&server, Method::GET, "/health/live", ADMIN, Value::Null)
             .await
             .0,
         200

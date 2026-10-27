@@ -279,7 +279,7 @@ impl Vault {
             state["generation"].as_u64().unwrap(),
             state["sequence"].as_u64().unwrap(),
         );
-        let mut result = json!({"version":1,"balance_sync_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":state});
+        let mut result = json!({"version":1,"balance_sync_version":1,"router_access_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":state});
         result["receipt_relay_version"] = 1.into();
         result["receipt_public_key"] = self.receipt_signer.public_key().into();
         if let Some(export) = &sync.receipt_export {
@@ -603,6 +603,15 @@ impl Vault {
                 return Err(VaultError("admin key must differ from client keys"));
             }
         }
+        if let Some(name) = &config.server.router_access_key_ref {
+            required(name)?;
+            let value = &bundle.secrets[name];
+            if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit())
+                || client_keys.contains(value)
+                || config.server.admin_key_env.as_ref().is_some_and(|k| bundle.secrets[k] == *value) {
+                return Err(VaultError("Router access signing key must be independent and 32-byte hex"));
+            }
+        }
         for deployment in config.models.iter().flat_map(|m| &m.deployments) {
             if deployment.oauth_file.is_some()
                 || (deployment.enabled && deployment.model.starts_with("env:"))
@@ -717,6 +726,9 @@ impl Provision {
             import(&key.key_env)?;
         }
         if let Some(name) = &config.server.admin_key_env {
+            import(name)?;
+        }
+        if let Some(name) = &config.server.router_access_key_ref {
             import(name)?;
         }
         for d in config.models.iter_mut().flat_map(|m| &mut m.deployments) {

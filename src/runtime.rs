@@ -356,6 +356,7 @@ impl Runtime {
             .iter()
             .map(|key| &key.key_env)
             .chain(bundle.config.server.admin_key_env.iter())
+            .chain(bundle.config.server.router_access_key_ref.iter())
             .collect();
         if !bundle.config.models.is_empty()
             || !bundle.accounts.is_empty()
