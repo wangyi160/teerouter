@@ -407,28 +407,6 @@ impl Config {
                     return Err("pool allowed_models must contain at most 4096 unique, valid native model IDs".into());
                 }
             }
-            let has_test = group.deployments.iter().any(|d| d.provider.is_local_test());
-            if has_test
-                && group
-                    .deployments
-                    .iter()
-                    .any(|d| !d.provider.is_local_test())
-            {
-                return Err("test and official deployments cannot share a pool".into());
-            }
-            for fallback in &group.fallbacks {
-                if let Some(target) = self.models.iter().find(|g| &g.name == fallback) {
-                    let target_test = target
-                        .deployments
-                        .iter()
-                        .any(|d| d.provider.is_local_test())
-                        || target.provider.is_some_and(|p| p.is_local_test());
-                    let source_test = has_test || group.provider.is_some_and(|p| p.is_local_test());
-                    if source_test != target_test {
-                        return Err("test services cannot be an official pool fallback".into());
-                    }
-                }
-            }
             if !valid_name(&group.name) || !names.insert(group.name.as_str()) {
                 return Err("model aliases must be unique and contain only letters, digits, dot, underscore or hyphen".into());
             }

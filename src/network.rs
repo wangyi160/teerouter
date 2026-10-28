@@ -26,20 +26,12 @@ pub(crate) fn proxy(value: &str) -> Result<reqwest::Proxy, Error> {
         .map_err(|_| invalid())
 }
 
-fn outbound_proxy(provider: Provider, value: &str) -> Result<Option<reqwest::Proxy>, Error> {
-    #[cfg(feature = "workbuddy-lab")]
-    if provider == Provider::Workbuddy && value == "direct://" {
-        return Ok(None);
-    }
-    let _ = provider;
-    proxy(value).map(Some)
-}
-
 pub(crate) fn validate_proxy(provider: Provider, value: &str) -> Result<(), Error> {
     if value.starts_with("vless://") {
         return vless::Node::parse(value).map(|_| ());
     }
-    outbound_proxy(provider, value).map(|_| ())
+    let _ = provider;
+    proxy(value).map(|_| ())
 }
 
 pub(crate) fn http_client(
@@ -47,14 +39,15 @@ pub(crate) fn http_client(
     proxy_url: &str,
     timeout_secs: u64,
 ) -> Result<reqwest::Client, Error> {
+    let _ = provider;
     let mut builder = reqwest::Client::builder().no_proxy();
     if proxy_url.starts_with("vless://") {
         let node = vless::bind(vless::Node::parse(proxy_url)?)?;
         builder = builder
             .proxy(node.proxy()?)
             .connector_layer(vless::LeaseLayer(node));
-    } else if let Some(proxy) = outbound_proxy(provider, proxy_url)? {
-        builder = builder.proxy(proxy);
+    } else {
+        builder = builder.proxy(proxy(proxy_url)?);
     }
     builder
         .timeout(Duration::from_secs(timeout_secs))
@@ -74,8 +67,13 @@ mod tests {
 
     #[test]
     fn invalid_proxy_inputs_are_rejected_without_echoing_credentials() {
+        for provider in [Provider::OpenAI, Provider::Anthropic, Provider::XAI] {
+            assert!(validate_proxy(provider, "direct://").is_err());
+            assert!(http_client(provider, "direct://", 3).is_err());
+        }
         for url in [
             "",
+            "direct://",
             "localhost:8080",
             "ftp://user:PRIVATE_PASSWORD@host",
             "socks5://host:1080",
@@ -96,47 +94,6 @@ mod tests {
         ] {
             assert!(proxy(url).is_ok());
         }
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "workbuddy-lab")]
-    async fn only_workbuddy_can_explicitly_connect_directly() {
-        for provider in [Provider::OpenAI, Provider::Anthropic, Provider::XAI] {
-            assert!(http_client(provider, "direct://", 3).is_err());
-        }
-        assert!(http_client(Provider::Workbuddy, "direct://other", 3).is_err());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_headers(&mut socket).await;
-            assert!(request.starts_with("GET /direct HTTP/1.1"));
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-                .await
-                .unwrap();
-        });
-        let response = http_client(Provider::Workbuddy, "direct://", 3)
-            .unwrap()
-            .get(format!("http://{address}/direct"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.text().await.unwrap(), "ok");
-        server.await.unwrap();
-        let vault = crate::vault::Vault::memory().unwrap();
-        assert!(
-            vault
-                .set_account_proxy("official", Provider::OpenAI, "direct://")
-                .is_err()
-        );
-        vault
-            .set_account_proxy("test", Provider::Workbuddy, "direct://")
-            .unwrap();
-        assert_eq!(
-            vault.account_proxy("test", Provider::Workbuddy).unwrap(),
-            "direct://"
-        );
     }
 
     #[tokio::test]

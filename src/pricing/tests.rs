@@ -215,15 +215,3 @@ fn failure_preserves_active_prices_and_reconfiguration_discards_inflight_downloa
         before
     );
 }
-
-#[cfg(feature = "workbuddy-lab")]
-#[test]
-fn local_test_book_survives_import() {
-    let old:Book=serde_json::from_value(json!({"revision":9,"providers":[{"provider":"workbuddy","version":3,"source":"local-test:workbuddy","checked_at":1,"models":[]}]})).unwrap();
-    let next = source::replace(&old, parse(fixture()).unwrap()).unwrap();
-    assert_eq!(next.revision, 10);
-    assert_eq!(
-        serde_json::to_value(&next.providers[3]).unwrap(),
-        serde_json::to_value(&old.providers[0]).unwrap()
-    );
-}

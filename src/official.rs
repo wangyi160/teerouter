@@ -24,16 +24,6 @@ pub(crate) fn validate(value: &str, provider: Option<Provider>) -> Result<(), Er
 }
 
 fn strict(url: &reqwest::Url, provider: Option<Provider>) -> Result<(), Error> {
-    #[cfg(feature = "workbuddy-lab")]
-    if provider.is_none_or(|p| p == Provider::Workbuddy)
-        && workbuddy_origin_matches(url)
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.fragment().is_none()
-        && (url.path() == "/v1" || url.path().starts_with("/v1/"))
-    {
-        return Ok(());
-    }
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
@@ -51,24 +41,8 @@ fn strict(url: &reqwest::Url, provider: Option<Provider>) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(feature = "workbuddy-lab")]
-fn workbuddy_origin_matches(url: &reqwest::Url) -> bool {
-    let Ok(base) = reqwest::Url::parse(Provider::Workbuddy.base_url()) else {
-        return false;
-    };
-    matches!(base.scheme(), "http" | "https")
-        && base.host_str().is_some()
-        && base.username().is_empty()
-        && base.password().is_none()
-        && base.query().is_none()
-        && base.fragment().is_none()
-        && base.path() == "/v1"
-        && url.origin() == base.origin()
-}
-
 // Only the Rust test harness can reach plain HTTP fixtures. Never compiled into
-// either the debug or release executable. The lab feature above admits only its
-// one fixed Workbuddy test service, never these arbitrary fixture hosts.
+// either the debug or release executable.
 #[cfg(test)]
 fn fixture(url: &reqwest::Url) -> bool {
     url.scheme() == "http"
@@ -86,48 +60,6 @@ fn fixture(url: &reqwest::Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn test_endpoint_requires_lab_build_and_cannot_replace_official_providers() {
-        #[cfg(feature = "workbuddy-lab")]
-        let base = Provider::Workbuddy.base_url();
-        #[cfg(not(feature = "workbuddy-lab"))]
-        let base = "http://127.0.0.1:8001/v1";
-        let url = reqwest::Url::parse(&format!("{base}/models")).unwrap();
-        assert_eq!(strict(&url, None).is_ok(), cfg!(feature = "workbuddy-lab"));
-        for (provider, _) in HOSTS {
-            assert!(strict(&url, Some(*provider)).is_err());
-        }
-        #[cfg(feature = "workbuddy-lab")]
-        {
-            assert!(strict(&url, Some(Provider::Workbuddy)).is_ok());
-            let mut altered = url.clone();
-            altered
-                .set_port(Some(url.port_or_known_default().unwrap() + 1))
-                .unwrap();
-            assert!(strict(&altered, Some(Provider::Workbuddy)).is_err());
-            altered = url.clone();
-            altered.set_path("/admin");
-            assert!(strict(&altered, Some(Provider::Workbuddy)).is_err());
-            altered = url.clone();
-            altered.set_username("user").unwrap();
-            assert!(strict(&altered, Some(Provider::Workbuddy)).is_err());
-            for value in [
-                "http://192.168.1.6:8001/v1/models",
-                "http://127.0.0.1:8002/v1/models",
-                "http://127.0.0.1:8001/admin",
-                "http://user:pass@127.0.0.1:8001/v1/models",
-                "https://api.openai.com/v1/models",
-            ] {
-                assert!(
-                    strict(
-                        &reqwest::Url::parse(value).unwrap(),
-                        Some(Provider::Workbuddy)
-                    )
-                    .is_err()
-                );
-            }
-        }
-    }
     #[test]
     fn official_hosts_are_exact_https_and_provider_bound() {
         for (provider, hosts) in HOSTS {

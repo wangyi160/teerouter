@@ -23,7 +23,7 @@ published. Include the normal `pool`, `proxy`, and access-only `credential` (or
 allow none. The draft is accepted only if the named pool is absent from this
 merchant's runtime. Published pools use their existing provider and model policy
 and reject a draft override. The same official endpoints, proxy validation,
-merchant authorization, Workbuddy test permission, and probe limits apply.
+merchant authorization and probe limits apply.
 Testing does not publish the pool, persist credentials, refresh tokens, or create
 user charges. Save the account locally, then publish the nonempty pool after a
 successful test.

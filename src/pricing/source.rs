@@ -294,12 +294,6 @@ pub(super) fn replace(old: &Book, mut incoming: Vec<ProviderBook>) -> Result<Boo
         }
         changed = true;
     }
-    incoming.extend(
-        old.providers
-            .iter()
-            .filter(|p| p.provider.is_local_test())
-            .cloned(),
-    );
     let book = Book {
         revision: if changed {
             old.revision.checked_add(1).ok_or_else(invalid)?

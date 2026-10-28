@@ -170,7 +170,6 @@ fn record(row: &Value, state: &State, nonce: &[u8]) -> Result<Value> {
         Some("openai") => Some("chatgpt"),
         Some("anthropic") => Some("claude"),
         Some("xai") => Some("grok"),
-        Some("workbuddy") => Some("workbuddy"),
         _ => None,
     };
     Ok(json!({

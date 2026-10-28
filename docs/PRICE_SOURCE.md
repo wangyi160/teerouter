@@ -36,12 +36,12 @@ Router 使用 GitHub Contents / Git Blobs API 读取配置文件，完整 TLS �
 
 ChatGPT 先取 `chatgpt/` 前缀、`litellm_provider: chatgpt` 的文本目录，再按完全相同的模型 ID 关联 `litellm_provider: openai` 的直接 API 标价；不导入 OpenAI API 全集。没有同名官方报价时列入管理状态的 `unpriced_models`，不猜测相近型号价格、不取第三方转售价格，也不填零。缺失整个 ChatGPT 目录时拒绝本次更新。
 
-Claude 和 Grok 只取 `litellm_provider: anthropic` / `xai` 的对应 `claude-` / `grok-` 模型。三家都要求 `mode` 为 `chat` / `responses`；Azure、Bedrock、OpenRouter 等中转条目、通用微调模板、容器、专用音频、视频与生图条目不导入。原 Workbuddy 测试价格保持不变。文本模型可以具有理解图片的能力，这不代表开放生图功能。目录中的旧型号按数据源保留；价格目录不代表账号拥有该模型的调用权限。
+Claude 和 Grok 只取 `litellm_provider: anthropic` / `xai` 的对应 `claude-` / `grok-` 模型。三家都要求 `mode` 为 `chat` / `responses`；Azure、Bedrock、OpenRouter 等中转条目、通用微调模板、容器、专用音频、视频与生图条目不导入。文本模型可以具有理解图片的能力，这不代表开放生图功能。目录中的旧型号按数据源保留；价格目录不代表账号拥有该模型的调用权限。
 
 导入输入、输出、缓存读取、缓存写入、Claude 一小时缓存、长上下文和完整的 priority/flex 报价。Claude 明确提供的 US / fast 倍率应用到 token 价格及其组合，遵循 [LiteLLM Anthropic 计算器](https://github.com/BerriAI/litellm/blob/main/litellm/llms/anthropic/cost_calculation.py)。xAI 长上下文边界保持包含阈值；其他提供商使用大于阈值。
 
 源单位 USD/token，转换到 micro-USD/百万 token 时乘 10^12，全程十进制整数运算；不能精确表示或负价格导致整次更新失败。缺失缓存单价保持缺失，不当成免费。可选服务档位缺少输入、输出或必要长上下文价格时不开放该档位，避免套用普通档低收费用。Batch、ultrafast、decisions、托管工具、音频等当前未开放的收费维度不映射成普通档；请求按现有计费能力校验。
 
-三家基础价格必须同时有效才能整体提交。模型价格和来源相同不增加价格版本，最近成功检查时间仍更新。更新只影响后续请求；正在执行的请求继续使用原报价。启用源管理后，`PUT /admin/pricing` 不能覆盖三家价格，但仍允许保留这些价格的 Workbuddy 更新。
+三家基础价格必须同时有效才能整体提交。模型价格和来源相同不增加价格版本，最近成功检查时间仍更新。更新只影响后续请求；正在执行的请求继续使用原报价。启用源管理后，`PUT /admin/pricing` 不能覆盖三家价格，只允许价格源整体更新。
 
 teeproxy 价格页从管理平台读取缓存的已生效价格，只展示当前可用账号池已开放的模型。Router 不提供用户价格查询；每 5 小时更新及管理员手动更新的价格通过已有检查点同步给管理平台，未变化的价格不因流水同步反复重写。提供商的 `source` 明确记录配置的 GitHub 数据源；LiteLLM 是第三方维护的价格汇总，自动同步保证与所选数据源一致，并不独立保证其与服务商官网没有更新延迟。源文件与计费实现的角色不同：更换数据源地址不会替换 Router 计算器。

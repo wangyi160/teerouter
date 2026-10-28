@@ -6,8 +6,6 @@ pub enum Provider {
     Anthropic,
     #[serde(alias = "grok")]
     XAI,
-    #[cfg(feature = "workbuddy-lab")]
-    Workbuddy,
 }
 
 impl Provider {
@@ -17,8 +15,6 @@ impl Provider {
             Self::OpenAI => "chatgpt",
             Self::Anthropic => "claude",
             Self::XAI => "grok",
-            #[cfg(feature = "workbuddy-lab")]
-            Self::Workbuddy => "workbuddy",
         }
     }
 
@@ -30,8 +26,6 @@ impl Provider {
             "chatgpt" => Self::OpenAI,
             "claude" => Self::Anthropic,
             "grok" => Self::XAI,
-            #[cfg(feature = "workbuddy-lab")]
-            "workbuddy" => Self::Workbuddy,
             _ => return (None, id),
         };
         (Some(provider), model)
@@ -42,8 +36,6 @@ impl Provider {
             Self::OpenAI => "OPENAI_API_KEY",
             Self::Anthropic => "ANTHROPIC_API_KEY",
             Self::XAI => "XAI_API_KEY",
-            #[cfg(feature = "workbuddy-lab")]
-            Self::Workbuddy => "WORKBUDDY_API_KEY",
         }
     }
 
@@ -52,26 +44,20 @@ impl Provider {
             Self::OpenAI => "https://api.openai.com/v1",
             Self::Anthropic => "https://api.anthropic.com/v1",
             Self::XAI => "https://api.x.ai/v1",
-            #[cfg(feature = "workbuddy-lab")]
-            Self::Workbuddy => match option_env!("TEEROUTER_WORKBUDDY_BASE_URL") {
-                Some(url) => url,
-                None => "http://127.0.0.1:8001/v1",
-            },
         }
     }
 
-    pub fn is_local_test(self) -> bool {
-        match self {
-            #[cfg(feature = "workbuddy-lab")]
-            Self::Workbuddy => true,
-            _ => false,
-        }
-    }
 }
 
 #[cfg(test)]
 mod model_namespace_tests {
     use super::*;
+    #[test]
+    fn retired_and_unknown_providers_cannot_be_configured() {
+        for provider in ["workbuddy", "Workbuddy", "test", "gemini"] {
+            assert!(serde_json::from_value::<Provider>(serde_json::json!(provider)).is_err());
+        }
+    }
     #[test]
     fn namespaces_preserve_official_model_ids_and_unqualified_compatibility() {
         for (id, provider, raw) in [

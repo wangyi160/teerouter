@@ -8,11 +8,11 @@
 
 ## 能力
 
-官方模型目录按 OpenAI、Claude、Grok 共享，每个提供商默认每 300 秒刷新一份，候选来源覆盖所有启用商户的启用账号池。通过一个可用账号的代理拉取，失败时换其他账号；本轮没有成功来源（含全部失效、网络失败或超时）则清空该提供商目录，下个周期再获取。手动刷新使用同一份目录。Workbuddy 测试池独立刷新。各池开放模型名单、账号健康状态和调用权限仍独立；目录不含跨商户的账号身份、代理或凭证。
+官方模型目录按 OpenAI、Claude、Grok 共享，每个提供商默认每 300 秒刷新一份，候选来源覆盖所有启用商户的启用账号池。通过一个可用账号的代理拉取，失败时换其他账号；本轮没有成功来源（含全部失效、网络失败或超时）则清空该提供商目录，下个周期再获取。手动刷新使用同一份目录。各池开放模型名单、账号健康状态和调用权限仍独立；目录不含跨商户的账号身份、代理或凭证。
 
 账号同步只校验配置、凭证结构与权限，不对每个账号发起官方连通性测试。`POST /merchant/accounts/test` 是独立测试接口；共享目录就绪不等于所有账号都已通过实测。失败清空目录不会删除商户保存的开放模型名单。
 
-- OpenAI / ChatGPT、Claude / Anthropic、Grok / xAI 三类正式上游，另保留可选的 Workbuddy 测试上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
+- OpenAI / ChatGPT、Claude / Anthropic、Grok / xAI 三类正式上游；外部导入凭证、多账号池、每账号代理、自动模型发现。
 - Chat Completions、Responses、Messages 原生接口；保留 Agent 请求参数，不补参、删参或转换生成协议。
 - 统一平台 API key、商户授权与用户并发控制；低余额按可配置阶梯降至 1 并发，余额耗尽停止新请求。全部上游账号归属商户，平台没有自营池；商户发布费率，外部管理服务结算。
 - 请求路由规则 v1：客户端提交固定池或自动匹配、倍率上限及费率/低延迟优先规则，router 统一选路、检查并返回实际池与倍率。费率比较含缓存读写的预计费用；链路延迟由 router 每 5 分钟通过账号代理轻量探测官方入口，不产生模型 Token 用量，选路保留会话粘性。协议见 [API 文档](docs/API.md#请求路由规则-v1)。
@@ -47,7 +47,7 @@ cargo build --release --locked --features dstack-tdx
 
 冷启动等待管理 API 初始化。外部管理平台主动同步、持久化并确认快照；初始化后的服务准入与待确认队列容量见 [运行协议](OPERATIONS.md)。
 
-真实硬件取证接口、审核后的 OS / 启动链及客户端信任策略属于 TEE 信任边界，普通主机不能产生有效硬件证明。`sample-demo` 和 `workbuddy-lab` 均为默认关闭的开发特性。Workbuddy 默认固定为 `http://127.0.0.1:8001/v1`；兼容测试服务时，可以在启用 `workbuddy-lab` 的构建中设置 `TEEROUTER_WORKBUDDY_BASE_URL`。该地址编译进二进制，只允许同源 `/v1` 路径，运行时不能修改，也不能替换其他供应商的官方地址。HTTP 测试上游没有传输加密。Workbuddy 如返回兼容协议中的明确拒答信号，也会写入统一拒答队列。
+真实硬件取证接口、审核后的 OS / 启动链及客户端信任策略属于 TEE 信任边界，普通主机不能产生有效硬件证明。`sample-demo` 为默认关闭的开发特性。上游地址固定为三家官方 HTTPS 域名，不能通过配置或编译特性添加测试服务。
 
 ## 初始化
 
@@ -63,7 +63,7 @@ cargo build --release --locked --features dstack-tdx
 - 客户端需要独立实现或集成符合安全文档的证明验证与 TLS 绑定。
 
 ```sh
-cargo test --locked --features workbuddy-lab,sample-demo
+cargo test --locked --features sample-demo
 cargo test --locked --no-default-features --features dstack-tdx
 ```
 

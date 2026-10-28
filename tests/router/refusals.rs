@@ -365,26 +365,3 @@ async fn stream_refusal_before_first_client_frame_still_prevents_failover() {
     assert_eq!(record(&g).await["pending"], 1);
     assert_eq!(upstream.calls.lock().unwrap().len(), 1);
 }
-
-#[cfg(feature = "workbuddy-lab")]
-#[tokio::test]
-async fn workbuddy_refusal_is_audited_with_the_same_user_permissions() {
-    let upstream = mock(vec![Reply::json(refused(Provider::Workbuddy, false))]).await;
-    let mut bundle = discovery::bundle(Provider::Workbuddy, &[&upstream]);
-    bundle.accounts.get_mut("account-0").unwrap().credential =
-        json!({"api_key":"workbuddy-test-secret"});
-    bundle.config.models[0].deployments[0].api_base = None;
-    let vault = Vault::memory().unwrap();
-    vault.provision(&bundle).unwrap();
-    let g = run_fixture(Engine::from_vault(vault).unwrap()).await;
-    assert_eq!(
-        post(&g, "/v1/chat/completions", input(false))
-            .await
-            .status(),
-        200
-    );
-    assert_eq!(
-        record(&g).await["data"][0]["result"]["provider"],
-        "workbuddy"
-    );
-}

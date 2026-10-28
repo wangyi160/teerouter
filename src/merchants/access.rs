@@ -38,9 +38,6 @@ pub(super) async fn replace(
     let mut updates = BTreeMap::new();
     for (name, replacement) in input.accounts {
         let account = snapshot.bundle.accounts.get(&name).ok_or_else(invalid)?;
-        if account.provider.is_local_test() {
-            return Err(invalid());
-        }
         // Validate even an idempotent retry; never accept a refresh field hidden
         // alongside an otherwise unchanged access token.
         let preview = Vault::memory().map_err(storage)?;

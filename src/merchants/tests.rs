@@ -860,38 +860,6 @@ async fn namespaced_model_acl_accepts_only_its_merchant() {
     }
 }
 
-#[cfg(feature = "workbuddy-lab")]
-#[tokio::test]
-async fn workbuddy_needs_merchant_permission_and_cannot_be_an_official_fallback() {
-    let r = root();
-    let a = control("a");
-    add(&r, &a).await;
-    let mut v = update(2);
-    v["pools"][0]["provider"] = "workbuddy".into();
-    v["pools"][0]["deployments"][0]["provider"] = "workbuddy".into();
-    assert!(
-        apply(&r, &a, serde_json::from_value(v.clone()).unwrap())
-            .await
-            .is_err()
-    );
-    let mut reg = registration(&a);
-    reg.allow_test = true;
-    register(&r, reg, ADMIN).await.unwrap();
-    apply(&r, &a, serde_json::from_value(v).unwrap())
-        .await
-        .unwrap();
-    let l = live(&r, &crypto::identity(&a)).unwrap();
-    let mut config = l.runtime.engine().config.clone();
-    let mut official = config.models[0].clone();
-    official.name = "other".into();
-    official.provider = Some(crate::Provider::OpenAI);
-    official.deployments[0].id = "other".into();
-    official.deployments[0].provider = crate::Provider::OpenAI;
-    official.fallbacks = vec!["official".into()];
-    config.models.push(official);
-    assert!(config.validate().is_err());
-}
-
 #[tokio::test]
 async fn merchant_credentials_are_separate_and_root_backups_are_opaque() {
     let r = root();
@@ -1353,4 +1321,13 @@ async fn retired_endpoints_are_absent_and_platform_bearer_cannot_generate() {
         assert_eq!(reply.json::<Value>().await.unwrap()["error"]["code"],"user_signature_invalid");
     }
     assert!(r.engine().vault.lock().unwrap().events.is_empty());
+}
+
+#[test]
+fn retired_test_permission_is_not_a_registration_option() {
+    let mut value = serde_json::to_value(registration("fixture")).unwrap();
+    for allowed in [false, true] {
+        value["allow_test"] = json!(allowed);
+        assert!(serde_json::from_value::<Registration>(value.clone()).is_err());
+    }
 }

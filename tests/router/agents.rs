@@ -108,21 +108,3 @@ async fn fallback_cannot_switch_agent_provider() {
     assert!(!response.status().is_success());
     assert!(other.calls.lock().unwrap().is_empty());
 }
-
-#[cfg(feature = "workbuddy-lab")]
-#[tokio::test]
-async fn workbuddy_keeps_explicit_test_exception() {
-    let mock = mock(vec![Reply::json(completion())]).await;
-    let mut config = configuration(&mock);
-    config.models[0].deployments[0].provider = Provider::Workbuddy;
-    let gateway = gateway(config).await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/v1/chat/completions", gateway.url))
-        .bearer_auth("client-secret")
-        .header("user-agent", "GitHubCopilotChat/1.0")
-        .json(&request())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-}

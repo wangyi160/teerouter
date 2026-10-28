@@ -14,7 +14,7 @@ TLS 终止、证明接口和模型转发在同一个 Rust 进程中。TLS 私钥
 
 客户端随机挑战与当前 TLS 证书通过 `SHA512("teellm:attested-channel:v1\0" || nonce32 || SHA256(certDER))` 绑定到 REPORT_DATA。Phala 构建使用前述 dstack TDX 路径。默认构建仍保留 SNP 路径：Linux 直接调用 `/dev/sev-guest`，不需要 attestation-agent 网络接口；证据用已有 CoCo SNP 结构返回，Rust 客户端独立验证 AMD 链、硬件报告签名、新鲜度绑定、版本/TCB/DEBUG/VMPL 及本机批准策略。
 
-生产构建在指定硬件取证接口不可用时返回 attestation_unavailable，不回退到软件声明。`sample-demo` 编译特性加 `--sample` 仅用于本地测试，输出明确标记 sample，严格客户端拒绝。`workbuddy-lab` 是独立开发特性，仅放行编译固定的本机测试服务；生产不得启用。
+生产构建在指定硬件取证接口不可用时返回 attestation_unavailable，不回退到软件声明。`sample-demo` 编译特性加 `--sample` 仅用于本地测试，输出明确标记 sample，严格客户端拒绝。
 
 **硬件报告的签名不自动证明任意磁盘上的 OS/router。** 生产还需要一条受硬件测量约束、强制校验内核/根文件系统/router/安全配置的启动链，以及客户端独立批准的参考策略。SNP 路径须在所选平台完成启动链与实际硬件报告验收；本地软件测试不构成生产证明。
 

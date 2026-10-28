@@ -12,10 +12,6 @@ use super::*;
 #[case(Provider::XAI, "/v1/chat/completions", true)]
 #[case(Provider::XAI, "/v1/responses", false)]
 #[case(Provider::XAI, "/v1/responses", true)]
-#[cfg_attr(
-    feature = "workbuddy-lab",
-    case(Provider::Workbuddy, "/v1/chat/completions", false)
-)]
 #[tokio::test]
 async fn native_requests_preserve_all_agent_parameters(
     #[case] provider: Provider,

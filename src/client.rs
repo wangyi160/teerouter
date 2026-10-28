@@ -237,7 +237,7 @@ impl Client {
                 }
             }
             body["stream"] = streaming.into();
-            if self.provider == Provider::OpenAI || self.provider.is_local_test() {
+            if self.provider == Provider::OpenAI {
                 body["store"] = false.into();
             }
             body

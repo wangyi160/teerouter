@@ -39,9 +39,9 @@ router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8
 
 OAuth 采用 access-token-only-v1 协议，商户服务负责续期。Router 拒绝任何 refresh token 字段，不发起续期请求；尚未过期的 access token 保持可用。到期时间取 `expires_at`（Unix 秒）、Claude `expiresAt`（毫秒）或 JWT 的 `exp`；未提供且令牌不可解析时无法预告过期，只能在官方拒绝凭证后要求更新。
 
-已过期账号在状态 API 中返回 `health.state: "expired"`、`health.last_error: "access_token_expired"` 和 `refresh_mode: "external"`，停止转发新请求；到期前被官方拒绝的凭证显示 `reauthorization_required`。重新导入完整的新凭证后恢复。refresh token 不得上传到 Router；Workbuddy API key 行为不变。
+已过期账号在状态 API 中返回 `health.state: "expired"`、`health.last_error: "access_token_expired"` 和 `refresh_mode: "external"`，停止转发新请求；到期前被官方拒绝的凭证显示 `reauthorization_required`。重新导入完整的新凭证后恢复。refresh token 不得上传到 Router。
 
-当前只接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`），以及启用 `workbuddy-lab` 构建时的 `workbuddy`。Gemini / Gemini CLI 已移除，旧的 `/v1beta/models/*` 接口返回 404。
+当前只接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`）。Gemini / Gemini CLI 已移除，旧的 `/v1beta/models/*` 接口返回 404。
 
 升级前应由管理服务保存旧版加密快照，移除 Gemini 账号、部署、空池及其关联的池权限、fallback、restrictions、compatibility 和专用密钥，再保存并恢复新快照。禁用但仍存在的 Gemini 账号或部署也会被拒绝；不要用空初始化覆盖用户及用量。其余提供商的旧快照允许 `gemini_project: null` 和 `client_secret_ref: null`，新版导出时省略；非空值会被拒绝。管理端的供应商选项也应同步移除 Gemini。
 
@@ -71,4 +71,4 @@ checkpoint 的 `state.refusal_queue` 保存队列、`last_id` 与 `deleted_throu
 
 此方式是在模型上游处理请求之后记录明确拒答，不执行输入预审核，不用文字关键词猜测拒答，也不保证发现所有不当请求。未标明 refusal 的普通自然语言拒答不会统计。上游类别和原因原样记录，不视作已证实的用户违规；用户的长上下文只发给所选模型上游，不再额外发送给 LockLLM。
 
-本地回归使用受控 HTTP/SSE 服务，覆盖三家正式上游及 Workbuddy 的协议形状；不代表真实账号的拒答触发率验证。旧版本升级还需要更新镜像与客户端认可的 TEE 发布策略。router 仍为内存状态，断电可能丢失尚未同步的拒答事件。
+旧版本升级还需要更新镜像与客户端认可的 TEE 发布策略。router 仍为内存状态，断电可能丢失尚未同步的拒答事件。

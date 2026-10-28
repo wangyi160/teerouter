@@ -281,7 +281,6 @@ async fn status(State(runtime): State<Arc<crate::runtime::Runtime>>) -> Json<Val
         "codex": "openai",
         "claude_code": "anthropic",
         "grok_build": "xai",
-        "workbuddy_test_exception": cfg!(feature = "workbuddy-lab"),
         "identification": "client_headers_not_attestation"
     });
     status["lifecycle"] = runtime.lifecycle_status();

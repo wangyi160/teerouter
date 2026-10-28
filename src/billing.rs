@@ -289,12 +289,6 @@ fn calculate(
         Provider::OpenAI => openai::calculate(quote, usage, dimensions),
         Provider::Anthropic => anthropic::calculate(quote, usage, dimensions),
         Provider::XAI => xai::calculate(quote, usage, dimensions),
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => normalized_cost(
-            usage,
-            &rates(quote, dimensions, usage.input.ok_or("input_usage_missing")?)?,
-            true,
-        ),
     }
 }
 

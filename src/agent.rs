@@ -60,10 +60,7 @@ impl Agent {
     }
 
     pub fn allows(self, provider: Provider) -> bool {
-        // Workbuddy is a separately enabled laboratory backend, never an
-        // official provider fallback. It intentionally remains usable by test clients.
-        provider.is_local_test()
-            || matches!(
+        matches!(
                 (self, provider),
                 (Self::Codex, Provider::OpenAI)
                     | (Self::ClaudeCode, Provider::Anthropic)

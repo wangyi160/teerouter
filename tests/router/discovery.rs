@@ -38,10 +38,6 @@ fn catalog(provider: Provider, names: &[&str]) -> Reply {
         Provider::XAI => {
             json!({"models":names.iter().map(|id| json!({"id":id})).collect::<Vec<_>>()})
         }
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => {
-            json!({"data":names.iter().map(|id| json!({"id":id})).collect::<Vec<_>>()})
-        }
     })
 }
 
@@ -117,8 +113,6 @@ async fn discovers_through_account_proxy_and_routes_an_unconfigured_future_model
             assert!(calls[0].headers.contains_key("anthropic-beta"));
         }
         Provider::XAI => assert_eq!(calls[0].path, "/v1/language-models"),
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => assert_eq!(calls[0].path, "/v1/models"),
     }
 }
 

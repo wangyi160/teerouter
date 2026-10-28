@@ -62,8 +62,7 @@ impl Engine {
                 .health(&name, revision)
                 .map_err(crate::runtime::storage)?;
             let expiry = crate::oauth::tokens::access_expiry(&account.credential);
-            if !account.provider.is_local_test()
-                && expiry.is_some_and(|t| t <= crate::oauth::tokens::now())
+            if expiry.is_some_and(|t| t <= crate::oauth::tokens::now())
             {
                 health["state"] = "expired".into();
                 health["last_error"] = "access_token_expired".into();
@@ -72,7 +71,7 @@ impl Engine {
             data.push(json!({"name":name,"provider":account.provider,"enabled":account.enabled,"revision":revision,
                 "proxy_configured":account.proxy.is_some(),"expires_at":expiry,"health":health,
                 "access_sha256":crate::oauth::tokens::access_fingerprint(&account.credential),
-                "refresh_mode":if account.provider.is_local_test() {"none"} else {"external"}}));
+                "refresh_mode":"external"}));
         }
         Ok(json!({"revision":snapshot.revision,"data":data}))
     }

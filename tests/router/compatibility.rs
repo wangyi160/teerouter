@@ -15,8 +15,6 @@ fn provider_name(provider: Provider) -> &'static str {
         Provider::OpenAI => "openai",
         Provider::Anthropic => "anthropic",
         Provider::XAI => "xai",
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => "workbuddy",
     }
 }
 async fn generate(gateway: &Running, provider: Provider) -> reqwest::Response {

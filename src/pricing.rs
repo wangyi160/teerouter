@@ -77,14 +77,12 @@ pub(crate) fn book(runtime: &Runtime) -> Result<Book, ApiError> {
 }
 pub(crate) fn validate(book: &Book) -> Result<(), ApiError> {
     let mut providers = BTreeSet::new();
-    if book.providers.len() > 4 {
+    if book.providers.len() > 3 {
         return Err(invalid());
     }
     for p in &book.providers {
         let source = reqwest::Url::parse(&p.source).ok();
-        let source_ok = if p.provider.is_local_test() {
-            p.source == "local-test:workbuddy"
-        } else {
+        let source_ok = {
             self::source::github(&p.source).is_ok()
                 || source.is_some_and(|u| {
                     u.scheme() == "https"
@@ -350,7 +348,6 @@ pub(crate) async fn put(
             let mut providers: Vec<_> = b
                 .providers
                 .iter()
-                .filter(|p| !p.provider.is_local_test())
                 .collect();
             providers.sort_by_key(|p| p.provider.api_key_env());
             serde_json::to_value(providers).unwrap()

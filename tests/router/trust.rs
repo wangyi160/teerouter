@@ -150,8 +150,6 @@ async fn caller_model_and_future_effort_reach_native_and_chat_upstreams_unchange
         Provider::Anthropic => &call.body["output_config"]["effort"],
         Provider::XAI if chat => &call.body["reasoning_effort"],
         Provider::XAI => &call.body["reasoning"]["effort"],
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => &call.body["reasoning_effort"],
     };
     assert_eq!(effort, EFFORT);
     if !chat && provider == Provider::Anthropic {

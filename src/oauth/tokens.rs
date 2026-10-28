@@ -40,7 +40,7 @@ impl TokenStore {
                 .unwrap_or_default();
         }
         let data = store.read()?;
-        if !provider.is_local_test() && token(&data).is_none() {
+        if token(&data).is_none() {
             return Err(Error::OAuth("stored account contains no access token"));
         }
         Ok(store)
@@ -124,16 +124,6 @@ impl TokenStore {
             .map_err(|_| Error::OAuth("cannot read account health"))?;
         if health["state"] == "reauthorization_required" {
             return Err(Error::OAuth("account requires renewed authorization"));
-        }
-        if self.provider.is_local_test() {
-            return Ok(Credential {
-                access_token: data["api_key"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .ok_or(Error::OAuth("local API key missing"))?
-                    .to_owned(),
-                account_id: None,
-            });
         }
         if access_expiry(&data).is_some_and(|t| t <= now()) {
             let _ = self.vault.record_health(

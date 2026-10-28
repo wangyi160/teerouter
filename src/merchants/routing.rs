@@ -317,9 +317,6 @@ pub(crate) async fn execute(
     {
         return Err(forbidden());
     }
-    if group.deployments.iter().any(|d| d.provider.is_local_test()) && !selection.item.allow_test {
-        return Err(forbidden());
-    }
     let price = quotes
         .iter()
         .find(|q| q.price.pool == pool && q.price.model == model)

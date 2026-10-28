@@ -360,7 +360,7 @@ impl Engine {
                     .collect();
                     visible.entry(model).or_default().push(json!({"pool":group.config.name,
                         "deployment":backend.config.id,"canonical_id":info.canonical_id,
-                        "provider":backend.config.provider,"local_test":backend.config.provider.is_local_test(),
+                        "provider":backend.config.provider,
                         "protocols":protocols,
                         "capabilities":info.capabilities,"available_capabilities":policy.available(&info.capabilities)}));
                 }

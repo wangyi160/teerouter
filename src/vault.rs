@@ -802,8 +802,6 @@ fn provider_id(provider: Provider) -> &'static str {
         Provider::OpenAI => "openai",
         Provider::Anthropic => "anthropic",
         Provider::XAI => "xai",
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => "workbuddy",
     }
 }
 fn validate_account(name: &str, record: &Value) -> Result<()> {
@@ -820,21 +818,6 @@ fn validate_account(name: &str, record: &Value) -> Result<()> {
 }
 
 fn validate_credential(provider: Provider, record: &Value) -> Result<()> {
-    if provider.is_local_test() {
-        let key = record["api_key"]
-            .as_str()
-            .ok_or(VaultError("local account requires api_key"))?;
-        if key.is_empty()
-            || key.len() > 65536
-            || reqwest::header::HeaderValue::from_str(key).is_err()
-            || record.as_object().is_none_or(|fields| fields.len() != 1)
-        {
-            return Err(VaultError(
-                "local credential must contain only a valid api_key",
-            ));
-        }
-        return Ok(());
-    }
     let fields = record
         .as_object()
         .ok_or(VaultError("credential must be an object"))?;

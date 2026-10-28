@@ -122,24 +122,3 @@ async fn claude_access_only_legacy_wrapper_and_jwt_expiry_work() {
     );
     assert_eq!(access_expiry(&json!({"access_token":jwt})), Some(123.0));
 }
-
-#[cfg(feature = "workbuddy-lab")]
-#[tokio::test]
-async fn workbuddy_keys_remain_static() {
-    let vault = crate::vault::Vault::memory().unwrap();
-    vault
-        .import_account("test", Provider::Workbuddy, &json!({"api_key":"key"}))
-        .unwrap();
-    vault
-        .set_account_proxy("test", Provider::Workbuddy, "direct://")
-        .unwrap();
-    assert_eq!(
-        TokenStore::open(Provider::Workbuddy, vault, "test")
-            .unwrap()
-            .credential()
-            .await
-            .unwrap()
-            .access_token,
-        "key"
-    );
-}

@@ -93,9 +93,6 @@ pub(super) async fn test(
                 "Provide the local draft pool when testing its first account",
             ));
         };
-    if provider.is_local_test() && !item.allow_test {
-        return Err(forbidden());
-    }
     if input.proxy.len() > 8192 || crate::network::validate_proxy(provider, &input.proxy).is_err() {
         return Err(ApiError::new(
             400,
@@ -199,11 +196,7 @@ async fn run(
             &p.model,
         )
     });
-    let candidates: Vec<&str> = if client.provider.is_local_test() {
-        catalog.keys().map(String::as_str).collect()
-    } else {
-        eligible.iter().map(|p| p.model.as_str()).collect()
-    };
+    let candidates: Vec<&str> = eligible.iter().map(|p| p.model.as_str()).collect();
     let model = candidates.into_iter().find(|m| {
         allowed.is_none_or(|list| list.iter().any(|v| v == m)) && requested.is_none_or(|r| r == *m)
     });

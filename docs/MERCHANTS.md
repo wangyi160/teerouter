@@ -10,7 +10,7 @@
 接入凭证为 32 字节随机数的 64 字符小写十六进制编码，可由 Portal 签发。`credential_hash` 为接入凭证文本的 SHA-256，商户 ID 为 `m_sig_` 加商户 32 字节公钥的 SHA-256（64 字符小写十六进制）；同一 ID 用于登录、账号池、收入和 Router 登记，接入凭据不参与 ID 计算。平台通过 `PUT /admin/merchants` 登记：
 
 ```json
-{"id":"m_sig_<公钥SHA256>","public_key":"<32字节公钥的十六进制>","credential_hash":"<64字符摘要>","name":"商户名称","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"allow_test":false,"users":["平台用户ID"]}
+{"id":"m_sig_<公钥SHA256>","public_key":"<32字节公钥的十六进制>","credential_hash":"<64字符摘要>","name":"商户名称","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["平台用户ID"]}
 ```
 
 商户端另外生成独立的 32 字节控制密钥并在本机加密保存。商户通道的 Bearer 为 `<接入凭证>.<控制密钥>`；首次 `POST /merchant/bind` 将控制密钥摘要 `owner_hash` 绑定到此商户，后续请求必须同时验证两者。平台只保存摘要，不接收控制密钥；平台登记更新不能设置或替换已经绑定的摘要。接入凭证可在管理平台操作公开配置，但不能调用凭据私有通道。
@@ -39,9 +39,9 @@
 | `PUT /merchant/accounts/sync` | 直接校验、激活账号及池关联，返回成功状态；不依赖管理平台 |
 | `POST /merchant/accounts/test` | 测试尚未保存的凭证与代理；不修改账号或配置 |
 
-账号测试输入为 `{"pool":"已同步的本商户账号池","proxy":"socks5h://proxy.example:1080","credential":{"access_token":"…"}}`，也可用 `api_key` 替代 `credential`。Router 从账号池确定服务商，使用正式转发的官方客户端和代理访问模型目录，再选择一个已开放、有文本报价的模型发送最多 32 输出 token 的短请求；Workbuddy 测试池可使用目录中的文本模型。可选 `model` 指定待测模型。成功返回 `ok:true`、`model`、`model_count`、`provider` 和 `latency_ms`；失败返回 `ok:false`、`stage`、脱敏错误 `code` 及可用的上游状态码。列出模型成功不代表测试成功，模型生成也必须成功。
+账号测试输入为 `{"pool":"已同步的本商户账号池","proxy":"socks5h://proxy.example:1080","credential":{"access_token":"…"}}`，也可用 `api_key` 替代 `credential`。Router 从账号池确定服务商，使用正式转发的官方客户端和代理访问模型目录，再选择一个已开放、有文本报价的模型发送最多 32 输出 token 的短请求；可选 `model` 指定待测模型。成功返回 `ok:true`、`model`、`model_count`、`provider` 和 `latency_ms`；失败返回 `ok:false`、`stage`、脱敏错误 `code` 及可用的上游状态码。列出模型成功不代表测试成功，模型生成也必须成功。
 
-测试总超时 75 秒，每商户同时最多一次、全局最多八次，凭证只进入临时内存，不保存、不刷新 refresh token，不记入用户消费或商户收入。上游可能收取这条短请求的实际费用。正式账号必须填写独立代理，不允许 `direct://`，只有授权且编译启用的 Workbuddy 测试池例外。测试结果仅证明所测模型当时可用。
+测试总超时 75 秒，每商户同时最多一次、全局最多八次，凭证只进入临时内存，不保存、不刷新 refresh token，不记入用户消费或商户收入。上游可能收取这条短请求的实际费用。测试结果仅证明所测模型当时可用。
 
 公开 config 包含 `pools`、`pool_pricing`、`max_concurrent`、`rpm`、`tpm`，可用 `customer_defaults` 配置默认客户的 `enabled`、`models`、`max_concurrent`、`rpm`、`tpm`。默认允许本商户全部模型、并发 16、RPM/TPM 不限，仍受平台和商户总限额约束。`customers` 是已使用客户的权限更新列表，只接受已建立可见关系的用户；空列表或省略某个客户不删除已有权限，停用须显式提交 `enabled:false`。不能靠猜测用户 ID 预先添加未使用客户。账号通道单独提交新增或轮换的 `accounts`（OAuth 账号）和 `secrets`（API key），以及 `delete_accounts`、`delete_secrets`。账号导入格式与现有 router `Provision` 相同。`merchant_internal_` 为保留密钥前缀。
 
@@ -57,11 +57,11 @@
 
 商户只设置**每个账号池的倍率**：`multiplier_millionths: 1000000` 表示 1×，`200000` 表示 0.2×。支持 0 至 1,000,000,000×，精确到 6 位小数。输入、输出、缓存、长上下文阶梯统一乘以此倍率，账务在汇总用量后只做一次整数向上取整。非空旧 `prices` 更新将被拒绝。
 
-平台管理员通过 `GET/PUT /admin/pricing` 维护官方基准价格。PUT 包含 `expected_revision` 和 `providers`；每项包含 `provider`、递增 `version`、官方 `source`、`checked_at` 和 `models`。模型包含 `model`、`rates`（整数 micro-USD / 百万 tokens）、可选 `long_context` 和 `valid_until`。价格内容有变化必须提升版本；不能回退版本或删除整个供应商价格簿。Workbuddy 的 source 必须为 `local-test:workbuddy`，仅为测试基准。平台需跟随官方调价更新价格簿。
+平台管理员通过 `GET/PUT /admin/pricing` 维护官方基准价格。PUT 包含 `expected_revision` 和 `providers`；每项包含 `provider`、递增 `version`、官方 `source`、`checked_at` 和 `models`。模型包含 `model`、`rates`（整数 micro-USD / 百万 tokens）、可选 `long_context` 和 `valid_until`。价格内容有变化必须提升版本；不能回退版本或删除整个供应商价格簿。平台需跟随官方调价更新价格簿。
 
 调用事件的 `merchant_pricing` 包含 `basis: official_pool_multiplier`、**未经倍率乘算的基准费率**、`multiplier_millionths`、`official_price_revision`、`official_version`、`official_source`、`official_checked_at` 和 `billing_rules`。Router 按提供商分别计算，将结果与分项写入事件的 `billing`；管理平台校验后入账，不重新套用通用 Token 公式。报价和规则在请求开始时冻结。缺少池倍率、模型基准价或基准价过期时拒绝模型调用；缺少实际使用的缓存类别费率时保留待结算记录。重启恢复时，平台先加载官方价格簿，商户再从本机同步账号池倍率。详细字段、支持范围与拒绝策略见 [计费协议](BILLING.md)。
 
-每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 部署的代理通过私有 `material.proxies` 提交；OAuth 账号在私有 `material.accounts` 内配置 `proxy`。公开配置只保留 `[redacted]` 代理占位。代理仅提供网络出口，模型请求目标仍固定为官方服务。仅获授权的 Workbuddy 测试账号允许 `direct://`。
+每个启用的账号须指定网络出口代理（`http://`、`https://` 或 `socks5h://`）。API key 部署的代理通过私有 `material.proxies` 提交；OAuth 账号在私有 `material.accounts` 内配置 `proxy`。公开配置只保留 `[redacted]` 代理占位。代理仅提供网络出口，模型请求目标仍固定为官方服务。
 
 ## 账号池对外模型名单
 
@@ -71,19 +71,19 @@
 
 管理平台商户状态快照返回该名单和未经过名单过滤的官方模型目录，供商户勾选。管理平台的模型目录、账号池模型计数，以及 Router 的自动选池和指定池请求都执行这项限制，并继续执行官方能力、用户授权和调用时的计费校验；写入一个不存在的模型不会使其可用。公开策略由管理平台下发，按配置版本更新，由商户本机保存恢复资料。修改应用于之后受理的请求，已经受理的请求继续使用受理时的配置。
 
-正式上游的模型目录按提供商共享：OpenAI、Claude、Grok 各一份，覆盖所有启用商户的所有账号池。池内账号仍须属于同一提供商，并由商户保证提供相同的模型服务。Router 通过一个启用且未判定失效账号的凭证和代理查询官方目录，成功即停止；优先使用上次成功的来源，失败时可切换其他池、其他商户的账号。不逐账号拉取，不合并不同来源的结果。共享的仅是官方模型及能力，账号凭证、代理、健康、限额及各池开放名单保持独立。Workbuddy 测试池仍按池隔离。
+正式上游的模型目录按提供商共享：OpenAI、Claude、Grok 各一份，覆盖所有启用商户的所有账号池。池内账号仍须属于同一提供商，并由商户保证提供相同的模型服务。Router 通过一个启用且未判定失效账号的凭证和代理查询官方目录，成功即停止；优先使用上次成功的来源，失败时可切换其他池、其他商户的账号。不逐账号拉取，不合并不同来源的结果。共享的仅是官方模型及能力，账号凭证、代理、健康、限额及各池开放名单保持独立。
 
 平台的 `discovery.refresh_secs` 默认 300，即每 5 分钟到期刷新。后台最多每 30 秒检查一次，无需用户查询模型列表；商户「更新目录」只读取管理平台已保存的快照，不强制访问 Router 或官方。一次刷新使用 `discovery.timeout_secs` 的总时间预算（默认 15 秒），存在备用账号时单次尝试最多使用一半预算；未尝试完的来源在下一轮继续轮换。并发刷新合并为同一任务。若全部候选失败、没有候选或时间预算内未取得完整成功结果，立即清空该提供商目录，返回 `complete_catalog:false`，下一周期再尝试。没有有效目录时不得以旧目录接收请求。商户客户端应保留本地开放名单，不能把失败导致的空目录当成官方已下架全部模型。
 
-正式上游目录状态为 `scope:"provider"`，`provider` 为 `openai`、`anthropic` 或 `xai`，并带 `refresh_secs`；不返回来源商户或 `source_deployment`。Workbuddy 保留 `scope:"pool"`。`catalog.data` 仍按本商户账号返回条目，但同提供商条目引用相同目录和刷新状态。同步账号仅验证权限、配置及凭证格式，不自动逐账号请求官方；真实连通性测试使用独立的 `/merchant/accounts/test`。共享目录就绪不表示该条目对应的账号已经通过生成测试。
+正式上游目录状态为 `scope:"provider"`，`provider` 为 `openai`、`anthropic` 或 `xai`，并带 `refresh_secs`；不返回来源商户或 `source_deployment`。`catalog.data` 仍按本商户账号返回条目，但同提供商条目引用相同目录和刷新状态。同步账号仅验证权限、配置及凭证格式，不自动逐账号请求官方；真实连通性测试使用独立的 `/merchant/accounts/test`。共享目录就绪不表示该条目对应的账号已经通过生成测试。
 
 ## 用户选路
 
 推荐使用 [请求路由规则 v1](API.md#请求路由规则-v1)：客户端发送固定池或自动匹配规则、倍率上限与费率/低延迟优先策略，由 Router 在 TEE 内跨授权商户匹配并检查。Router 每 5 分钟通过各账号的代理探测官方入口，相同代理与入口共用结果，不提交模型生成请求。原始模型 ID 可配合自动规则使用，客户端无需逐次读取报价或自行测速。响应头返回实际商户、账号池、倍率和报价版本。
 
-teeproxy 本地的 `GET /v1/models` 从管理平台读取并返回 `chatgpt/官方模型ID`、`claude/官方模型ID`、`grok/官方模型ID`；测试服务使用 `workbuddy/官方模型ID`。前缀标识模型提供商。同一提供商的同一模型跨商户合并为一项，不同提供商的同名模型分别展示。
+teeproxy 本地的 `GET /v1/models` 从管理平台读取并返回 `chatgpt/官方模型ID`、`claude/官方模型ID`、`grok/官方模型ID`；前缀标识模型提供商。同一提供商的同一模型跨商户合并为一项，不同提供商的同名模型分别展示。
 
-模型项的 `router_provider` 是内部提供商类型（`openai` / `anthropic` / `xai` / `workbuddy`），`router_model` 是完整官方模型 ID。`router_pools`、`router_capabilities[].pool` 以及 `router_pricing.rates[].pool` 使用 `m_sig_<公钥SHA256>.账号池`；每项费率带 `merchant_id` 和 `price_version`，`router_merchants` 列出对应商户及其 `pools`。多商户模型没有统一的商户报价版本。
+模型项的 `router_provider` 是内部提供商类型（`openai` / `anthropic` / `xai`），`router_model` 是完整官方模型 ID。`router_pools`、`router_capabilities[].pool` 以及 `router_pricing.rates[].pool` 使用 `m_sig_<公钥SHA256>.账号池`；每项费率带 `merchant_id` 和 `price_version`，`router_merchants` 列出对应商户及其 `pools`。多商户模型没有统一的商户报价版本。
 
 将目录返回的模型 ID 直接交给 agent，配合 `X-Router-Routing` 自动匹配或固定账号池。Router 在 TEE 内先限定模型提供商，再检查池、授权和倍率；固定池的提供商不匹配时也拒绝请求。转发上游时只移除提供商前缀，上游响应保留官方模型 ID。旧的原始模型 ID 和 `m_sig_<公钥SHA256>/官方模型ID` 继续兼容；没有路由规则时仍需 `x-router-pool: m_sig_<公钥SHA256>.账号池` 或旧商户前缀来确定商户。
 
@@ -91,7 +91,7 @@ teeproxy 本地的 `GET /v1/models` 从管理平台读取并返回 `chatgpt/官�
 
 未提供路由规则且不带商户标识的模型调用返回 `400 merchant_required`，不会走平台直连或隐式兜底。`/admin/accounts*` 和 `/admin/models*` 已关闭；账号操作与发现只在商户通道执行。商户配置可提交 `compatibility` 和 `restrictions`，沿用相同的官方域名、请求内容保护及只能收紧权限的校验。
 
-商户不能设定自定义上游 URL、读取服务器 OAuth 文件或配置池间 fallback。正常服务仅允许编译固定的 OpenAI、Anthropic、xAI 官方域名。Workbuddy 同时需要构建特性和平台 `allow_test`，使用编译固定的测试地址；不会作为官方池的自动 fallback。
+商户不能设定自定义上游 URL、读取服务器 OAuth 文件或配置池间 fallback。正常服务仅允许编译固定的 OpenAI、Anthropic、xAI 官方域名。
 
 ## 恢复、归档与边界
 
@@ -117,7 +117,7 @@ teeproxy 本地的 `GET /v1/models` 从管理平台读取并返回 `chatgpt/官�
 
 ## Access-token-only v1
 
-`merchant.credential_protocol` 为 `access-token-only-v1`。Router 不实现 OAuth 授权或续期，不接受或保存 refresh token。官方账号凭据仅支持 `access_token`、`expires_at`（Unix 秒）和可选 `account_id` 等明确的 access 元数据；`refresh_token`、`refreshToken`、空 refresh 字段、嵌套 refresh 字段与未识别字段均拒绝。规则覆盖初始化、账号导入、配置更新、停用账号和临时测试。兼容 Claude access-only 包装，但包装内不得含 refreshToken。Workbuddy 静态 API key 不变。
+`merchant.credential_protocol` 为 `access-token-only-v1`。Router 不实现 OAuth 授权或续期，不接受或保存 refresh token。官方账号凭据仅支持 `access_token`、`expires_at`（Unix 秒）和可选 `account_id` 等明确的 access 元数据；`refresh_token`、`refreshToken`、空 refresh 字段、嵌套 refresh 字段与未识别字段均拒绝。规则覆盖初始化、账号导入、配置更新、停用账号和临时测试。兼容 Claude access-only 包装，但包装内不得含 refreshToken。
 
 商户自行保存、续期完整凭据，经独立所有者密钥认证的 TEE 通道仅同步 access token。平台管理员不接触该通道。旧的凭据取回接口与 `/admin/accounts/{name}/refresh` 已删除，`operations.refresh_ahead_secs`、`oauth_refresh`、`oauth_discovery` 请求配置不再支持。
 

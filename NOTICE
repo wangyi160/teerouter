@@ -13,8 +13,7 @@ Compatible-provider parameter mapping follows litellm-rust/crates/llms/src/
 openai_like/chat/transformation.rs.
 
 Modifications remove the surrounding workspace and platform dependencies,
-restrict official providers to OpenAI, Claude and Grok, retain an optional Workbuddy
-test provider, introduce a standalone HTTP client, and implement
+restrict providers to OpenAI, Claude and Grok, introduce a standalone HTTP client, and implement
 tool, image and streaming support missing from the upstream Rust chat path.
 
 The standalone HTTP server, authentication, configuration, multi-deployment

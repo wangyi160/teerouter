@@ -170,7 +170,7 @@
       "src/reasoning.rs",
       "tests/router/trust.rs"
     ],
-    "behavior": "Official providers use compiled HTTPS hosts with redirects disabled. Raw model and effort values are preserved. A separate disabled-by-default workbuddy-lab feature allows only the compiled localhost HTTP test endpoint."
+    "behavior": "Only official OpenAI, Anthropic and xAI HTTPS hosts are permitted, with redirects disabled. Raw model and effort values are preserved."
   },
   "wire_configuration_adaptation": {
     "implementation": "New teellm Rust code; no added runtime dependencies or script engine.",

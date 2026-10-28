@@ -53,8 +53,6 @@ pub(crate) struct Registration {
     pub rpm: u64,
     pub tpm: u64,
     #[serde(default)]
-    pub allow_test: bool,
-    #[serde(default)]
     pub users: BTreeSet<String>,
     // Read legacy checkpoints for migration, but never export or restore their capsules.
     #[serde(default, skip_serializing)]
@@ -79,7 +77,7 @@ impl Registration {
     }
     pub fn public(&self, unlocked: bool) -> Value {
         json!({"id":self.id,"name":self.name,"credential_hash":self.credential_hash,"public_key":self.public_key,"enabled":self.enabled,
-            "max_concurrent":self.max_concurrent,"rpm":self.rpm,"tpm":self.tpm,"allow_test":self.allow_test,
+            "max_concurrent":self.max_concurrent,"rpm":self.rpm,"tpm":self.tpm,
             "users":self.users,"unlocked":unlocked,"has_backup":false,
             "owner_hash":self.owner_hash,"merchant_control_version":1})
     }
@@ -540,7 +538,6 @@ fn validate_bundle(
             if d.oauth_file.is_some()
                 || d.api_key_env.starts_with("merchant_internal_")
                 || d.api_base.is_some()
-                || d.provider.is_local_test() && !item.allow_test
             {
                 return Err(forbidden());
             }

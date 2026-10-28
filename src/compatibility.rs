@@ -108,14 +108,11 @@ pub(crate) fn name(provider: Provider) -> &'static str {
         Provider::OpenAI => "openai",
         Provider::Anthropic => "anthropic",
         Provider::XAI => "xai",
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => "workbuddy",
     }
 }
 impl Profile {
     pub fn validate(&self, provider: &str) -> Result<(), String> {
         if !matches!(provider, "openai" | "anthropic" | "xai")
-            && !(cfg!(feature = "workbuddy-lab") && provider == "workbuddy")
         {
             return Err("unknown compatibility provider".into());
         }

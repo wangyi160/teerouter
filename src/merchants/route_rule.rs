@@ -227,15 +227,7 @@ pub(super) async fn choose(
                     .valid_until
                     .is_some_and(|t| t <= crate::oauth::tokens::now() as u64)
                 || !candidates.iter().any(|c| c.0 == *pool)
-                || (!selection.item.allow_test
-                    && selection
-                        .engine
-                        .config
-                        .models
-                        .iter()
-                        .filter(|p| p.name == *pool)
-                        .flat_map(|p| &p.deployments)
-                        .any(|d| d.provider.is_local_test()))
+
             {
                 continue;
             }

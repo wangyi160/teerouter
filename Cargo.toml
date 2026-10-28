@@ -14,9 +14,6 @@ include = ["/src/**", "/tests/**", "/docs/**", "/config.example.toml", "/config.
 [features]
 # Intel TDX evidence from the measured dstack guest over its local Unix socket.
 dstack-tdx = []
-# Explicit Workbuddy test upstream; independent of real TDX vs sample evidence.
-# Builds without this feature cannot deserialize the non-official provider.
-workbuddy-lab = []
 # Explicitly non-TEE development evidence; never enabled by production builds.
 sample-demo = []
 

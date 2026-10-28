@@ -141,23 +141,6 @@ async fn removed_source_cannot_publish_in_flight_catalog_and_is_not_retained() {
     assert!(weak.upgrade().is_none());
 }
 
-#[cfg(feature = "workbuddy-lab")]
-#[tokio::test]
-async fn workbuddy_test_catalogs_are_never_shared() {
-    let up = upstream().await;
-    let registry = Registry::new(&Discovery::default(), &BTreeMap::new());
-    let enabled = Arc::new(AtomicBool::new(true));
-    let a = catalog(&up.url, Provider::Workbuddy);
-    let b = catalog(&up.url, Provider::Workbuddy);
-    registry.replace("a", &enabled, vec![a.clone()]);
-    registry.replace("b", &enabled, vec![b.clone()]);
-    a.refresh(true).await;
-    assert!(a.models().contains("model-test"));
-    assert!(b.models().is_empty());
-    assert_eq!(a.status()["scope"], "pool");
-    assert!(a.shared.read().unwrap().is_none());
-}
-
 #[tokio::test]
 async fn equivalent_committed_source_keeps_inflight_evidence_through_unrelated_config_update() {
     let up = upstream().await;

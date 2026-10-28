@@ -50,9 +50,6 @@ mod restrictions;
 mod trust;
 #[path = "router/users.rs"]
 mod users;
-#[cfg(feature = "workbuddy-lab")]
-#[path = "router/workbuddy.rs"]
-mod workbuddy;
 
 struct Running {
     url: String,
@@ -323,8 +320,6 @@ fn agent_ua(provider: Provider) -> &'static str {
         Provider::OpenAI => "codex_cli_rs/1.0 (router fixture)",
         Provider::Anthropic => "claude-cli/2.1.0 (external, cli)",
         Provider::XAI => "grok-shell/1.0 (router fixture)",
-        #[cfg(feature = "workbuddy-lab")]
-        Provider::Workbuddy => "router-test/1.0",
     }
 }
 fn completion() -> Value {
