@@ -8,9 +8,13 @@ pub(super) fn digest(secret: &str) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+pub(super) fn public_identity(public: &str) -> Option<String> {
+    let key = crate::request_proof::unhex(public, 32).ok()?;
+    Some(format!("m_sig_{}", crate::request_proof::hex(&Sha256::digest(key))))
+}
+#[cfg(test)]
 pub(crate) fn identity(token: &str) -> String {
-    let enrollment = token.split('.').next().unwrap_or(token);
-    format!("m_{}", &digest(enrollment)[..32])
+    public_identity(&digest(token.split('.').next().unwrap_or(token))).unwrap()
 }
 pub(super) fn valid_secret(secret: &str) -> bool {
     secret.len() == 64

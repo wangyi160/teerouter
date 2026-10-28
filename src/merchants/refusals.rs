@@ -38,8 +38,7 @@ pub(super) fn blocked(
     user: &str,
     settings: &Settings,
 ) -> Result<bool, ApiError> {
-    let root = runtime.engine();
-    Ok(status(runtime, merchant, &settings.customer(root.config.customer_id(user)), settings)?["blocked"] == true)
+    Ok(status(runtime, merchant, &settings.customer(user), settings)?["blocked"] == true)
 }
 
 pub(super) fn check(

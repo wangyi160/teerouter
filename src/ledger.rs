@@ -31,7 +31,6 @@ impl Activity {
 }
 impl Ledger {
     pub fn activity(self: &Arc<Self>, user: &str) -> Activity {
-        let user=self.vault.lock().ok().and_then(|d|d.bundle.as_ref().map(|b|b.config.customer_id(user).to_owned())).unwrap_or_else(||user.to_owned());
         Activity {
             ledger: self.clone(),
             user: user.into(),
@@ -40,7 +39,7 @@ impl Ledger {
     pub fn has_upstream_user(&self, user: &str) -> bool {
         self.vault
             .lock()
-            .is_ok_and(|data| data.upstream_users.contains(data.bundle.as_ref().map(|b|b.config.customer_id(user)).unwrap_or(user)))
+            .is_ok_and(|data| data.upstream_users.contains(user))
     }
     pub fn new(vault: Arc<Vault>) -> Self {
         Self { vault }
@@ -98,7 +97,6 @@ impl Ledger {
             if let (Some(merchant), Some(user)) =
                 (audit["merchant_id"].as_str(), audit["user_id"].as_str())
             {
-                let user = data.bundle.as_ref().map(|b|b.config.customer_id(user)).unwrap_or(user).to_owned();
                 let count = data
                     .merchant_refusal_counts
                     .entry(merchant.into())

@@ -17,19 +17,17 @@ pub(crate) struct Selection {
 }
 
 pub(crate) async fn selections(runtime: &Runtime, user: &str) -> Result<Vec<Selection>, ApiError> {
-    let root = runtime.engine();
-    let customer = root.config.customer_id(user);
     let _read = runtime.merchants.write.lock().await;
     let mut selected = Vec::new();
     let price_book = Arc::new(crate::pricing::book(runtime)?);
     for item in records(runtime)? {
-        if !item.enabled || !item.users.contains(customer) {
+        if !item.enabled || !item.users.contains(user) {
             continue;
         }
         let Ok(live) = live(runtime, &item.id) else {
             continue;
         };
-        customers::ensure_identity(&live, user, customer).await?;
+        customers::ensure(&live, user).await?;
         let engine = live.runtime.engine();
         let Some(account) = engine
             .config

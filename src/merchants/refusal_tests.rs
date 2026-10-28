@@ -43,7 +43,7 @@ async fn refusal_limit_is_per_user_across_keys_and_scoped_to_one_merchant() {
     let first = add(&r, &a).await;
     let second = add(&r, &b).await;
     let mut registered = registration(&a);
-    registered.users.insert("bob".into());
+    registered.users.insert(test_user("bob"));
     register(&r, registered, ADMIN).await.unwrap();
     let mut limits = update(2);
     limits["customer_defaults"] = json!({"refusal_limit":1});
@@ -64,8 +64,8 @@ async fn refusal_limit_is_per_user_across_keys_and_scoped_to_one_merchant() {
         assert_eq!(error["error"]["code"], "merchant_refusal_limit_exceeded");
     }
     let state = state(&r, &registration(&a)).unwrap();
-    assert_eq!(state["customer_refusals"]["alice"]["count"], 2);
-    assert_eq!(state["customer_refusals"]["alice"]["blocked"], true);
+    assert_eq!(state["customer_refusals"][test_user("alice")]["count"], 2);
+    assert_eq!(state["customer_refusals"][test_user("alice")]["blocked"], true);
     assert_eq!(routed(&server, "bob-key", Some(&pa)).await.0, 200);
     assert_eq!(routed(&server, "alice-key", Some(&pb)).await.0, 200);
     assert_eq!(routed(&server, "alice-key", None).await.0, 200); // another merchant remains usable
@@ -92,15 +92,15 @@ async fn refusal_limit_is_per_user_across_keys_and_scoped_to_one_merchant() {
     let result = apply(&r, &a, serde_json::from_value(clear).unwrap())
         .await
         .unwrap();
-    assert_eq!(result["customer_refusals"]["alice"]["count"], 0);
-    assert_eq!(result["customer_refusals"]["alice"]["total"], 2);
-    assert_eq!(result["customer_refusals"]["alice"]["blocked"], false);
+    assert_eq!(result["customer_refusals"][test_user("alice")]["count"], 0);
+    assert_eq!(result["customer_refusals"][test_user("alice")]["total"], 2);
+    assert_eq!(result["customer_refusals"][test_user("alice")]["blocked"], false);
     let mut stale = update(4);
     stale["customers"] = state["settings"]["customers"].clone();
     let result = apply(&r, &a, serde_json::from_value(stale).unwrap())
         .await
         .unwrap();
-    assert_eq!(result["customer_refusals"]["alice"]["count"], 0); // stale form cannot undo reset
+    assert_eq!(result["customer_refusals"][test_user("alice")]["count"], 0); // stale form cannot undo reset
     let _again = fixture(&first, completion()).await;
     assert_eq!(routed(&server, "alice-regenerated", Some(&pa)).await.0, 200);
     // History proves previous use, so restart cannot hide a blocked customer.
@@ -110,13 +110,13 @@ async fn refusal_limit_is_per_user_across_keys_and_scoped_to_one_merchant() {
         .unwrap()
         .remove(&crypto::identity(&a));
     let restored = unlock(&r, &a, 0).await.unwrap();
-    assert_eq!(restored["customer_refusals"]["alice"]["total"], 3);
+    assert_eq!(restored["customer_refusals"][test_user("alice")]["total"], 3);
     assert!(
         restored["settings"]["customers"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["user_id"] == "alice")
+            .any(|c| c["user_id"] == test_user("alice"))
     );
 }
 
@@ -131,7 +131,7 @@ async fn single_merchant_auto_rule_returns_refusal_error_and_zero_disables_limit
         .lock()
         .unwrap()
         .merchant_refusal_counts
-        .insert(crypto::identity(&a), BTreeMap::from([("alice".into(), 4)]));
+        .insert(crypto::identity(&a), BTreeMap::from([(test_user("alice"), 4)]));
     live.settings
         .lock()
         .unwrap()
@@ -143,7 +143,7 @@ async fn single_merchant_auto_rule_returns_refusal_error_and_zero_disables_limit
     assert_eq!(error["error"]["code"], "merchant_refusal_limit_exceeded");
     live.settings.lock().unwrap().customers.push(
         serde_json::from_value(json!({
-            "user_id":"alice","enabled":true,"models":[],"max_concurrent":16,"refusal_limit":0
+            "user_id":test_user("alice"),"enabled":true,"models":[],"max_concurrent":16,"refusal_limit":0
         }))
         .unwrap(),
     );

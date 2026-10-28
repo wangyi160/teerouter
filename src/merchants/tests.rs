@@ -127,7 +127,7 @@ async fn private_merchant_changes_never_enter_platform_checkpoints() {
             .unwrap()
             .secrets
             .insert("upstream".into(), "ROTATED_PRIVATE_TOKEN".into());
-        data.upstream_users.insert("alice".into());
+        data.upstream_users.insert(test_user("alice"));
         data.changed();
     }
     let after = r.engine().vault.checkpoint().unwrap();
@@ -392,7 +392,7 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
         .await
         .unwrap();
     let _mock = fixture(&live, completion()).await;
-    let frozen = routing::selections(&r, "alice").await.unwrap().remove(0);
+    let frozen = routing::selections(&r, &test_user("alice")).await.unwrap().remove(0);
     let server = serve(crate::server::app_runtime(r.clone())).await;
     let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
     assert_eq!(pools["data"][0]["multiplier_millionths"], 200000);
@@ -549,7 +549,7 @@ async fn catalog_fixture(r:&Runtime,kind:&str,key:&str)->(u16,Value) {
 }
 fn root() -> Arc<Runtime> {
     use ring::signature::KeyPair;
-    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":test_user("alice"),"customer_id":"alice","public_key":crate::request_proof::hex(signing_key("alice").public_key().as_ref())},{"id":test_user("bob"),"customer_id":"bob","public_key":crate::request_proof::hex(signing_key("bob").public_key().as_ref())}],"keys":[{"name":"alice-key","user_id":test_user("alice"),"key_ref":"ALICE"},{"name":"bob-key","user_id":test_user("bob"),"key_ref":"BOB"}],"models":[]})).unwrap();
+    let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":test_user("alice"),"public_key":crate::request_proof::hex(signing_key("alice").public_key().as_ref())},{"id":test_user("bob"),"public_key":crate::request_proof::hex(signing_key("bob").public_key().as_ref())}],"keys":[{"name":"alice-key","user_id":test_user("alice"),"key_ref":"ALICE"},{"name":"bob-key","user_id":test_user("bob"),"key_ref":"BOB"}],"models":[]})).unwrap();
     let runtime = Runtime::new(
         Engine::new(config, |k| {
             Some(
@@ -574,7 +574,22 @@ fn control(character: &str) -> String {
     )
 }
 fn registration(token: &str) -> Registration {
-    serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token.split('.').next().unwrap()),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":["alice"]})).unwrap()
+    serde_json::from_value(json!({"id":crypto::identity(token),"credential_hash":crypto::digest(token.split('.').next().unwrap()),"public_key":crypto::digest(token.split('.').next().unwrap()),"name":"Shop","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"users":[test_user("alice")]})).unwrap()
+}
+#[tokio::test]
+async fn canonical_merchant_identity_rejects_key_mismatch_and_shared_credentials() {
+    let root = root();
+    let first = registration(&control("a"));
+    let mut wrong = first.clone();
+    wrong.public_key = "00".repeat(32);
+    assert!(register(&root, wrong, ADMIN).await.is_err());
+    register(&root, first.clone(), ADMIN).await.unwrap();
+    let mut shared = registration(&control("b"));
+    shared.credential_hash = first.credential_hash.clone();
+    assert!(register(&root, shared, ADMIN).await.is_err());
+    assert_eq!(records(&root).unwrap().len(), 1);
+    let user = json!({"id":test_user("alice"),"customer_id":"old-wallet"});
+    assert!(serde_json::from_value::<crate::config::User>(user).is_err());
 }
 fn update(revision: u64) -> Value {
     json!({"expected_revision":revision,"max_concurrent":16,"pools":[{"name":"official","provider":"openai","deployments":[{"id":"account","provider":"openai","api_key_ref":"upstream","enabled":false}]}],"customers":[],"pool_pricing":[{"pool":"official","multiplier_millionths":1000000}],"secrets":{"upstream":"MERCHANT_PRIVATE_UPSTREAM_CREDENTIAL"}})
@@ -914,7 +929,7 @@ async fn updates_cannot_select_foreign_users_internal_secrets_or_untrusted_endpo
     add(&r, &a).await;
     let mut cases = vec![];
     let mut v = update(2);
-    v["customers"] = json!([{"user_id":"bob","enabled":true,"models":[],"max_concurrent":16}]);
+    v["customers"] = json!([{"user_id":test_user("bob"),"enabled":true,"models":[],"max_concurrent":16}]);
     cases.push(v);
     let mut v = update(2);
     v["secrets"]["merchant_internal_admin"] = "overwrite".into();
@@ -1133,7 +1148,7 @@ async fn explicit_selection_prices_and_revocation_fail_closed() {
     let mut reg = registration(&a);
     reg.enabled = false;
     register(&r, reg, ADMIN).await.unwrap();
-    assert!(routing::selections(&r, "alice").await.unwrap().is_empty());
+    assert!(routing::selections(&r, &test_user("alice")).await.unwrap().is_empty());
     assert!(authenticate(&r, &a).is_err());
 }
 
@@ -1174,7 +1189,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
     let la = add(&r, &a).await;
     add(&r, &b).await;
     let mut reg = registration(&a);
-    reg.users.insert("bob".into());
+    reg.users.insert(test_user("bob"));
     register(&r, reg.clone(), ADMIN).await.unwrap();
     let mut config = update(2);
     config["customer_defaults"] = json!({"max_concurrent":3,"rpm":7});
@@ -1233,7 +1248,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         visible["settings"]["customers"].as_array().unwrap().len(),
         1
     );
-    assert_eq!(visible["settings"]["customers"][0]["user_id"], "alice");
+    assert_eq!(visible["settings"]["customers"][0]["user_id"], test_user("alice"));
     assert_eq!(visible["settings"]["customers"][0]["max_concurrent"], 3);
     assert_eq!(visible["settings"]["customers"][0]["rpm"], 7);
     assert_eq!(
@@ -1267,17 +1282,17 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         restored["settings"]["customers"].as_array().unwrap().len(),
         1
     );
-    assert_eq!(restored["settings"]["customers"][0]["user_id"], "alice");
+    assert_eq!(restored["settings"]["customers"][0]["user_id"], test_user("alice"));
     assert_eq!(restored["settings"]["customers"][0]["enabled"], false);
     // Revoking platform access does not erase the merchant's existing relationship.
     reg.users.clear();
     register(&r, reg.clone(), ADMIN).await.unwrap();
     assert_eq!(
         super::state(&r, &reg).unwrap()["settings"]["customers"][0]["user_id"],
-        "alice"
+        test_user("alice")
     );
     assert!(
-        routing::selections(&r, "alice")
+        routing::selections(&r, &test_user("alice"))
             .await
             .unwrap()
             .iter()
@@ -1291,11 +1306,11 @@ async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
     let token = control("a");
     let live = add(&r, &token).await;
     let engine = live.runtime.engine();
-    customers::ensure(&live, "alice").await.unwrap();
-    customers::ensure(&live, "bob").await.unwrap();
+    customers::ensure(&live, &test_user("alice")).await.unwrap();
+    customers::ensure(&live, &test_user("bob")).await.unwrap();
     let mut data = engine.vault.lock().unwrap();
     data.usage.insert(
-        "alice".into(),
+        test_user("alice"),
         crate::ledger::Usage {
             requests: 2,
             errors: 1,
@@ -1303,7 +1318,7 @@ async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
         },
     );
     data.usage.insert(
-        "bob".into(),
+        test_user("bob"),
         crate::ledger::Usage {
             requests: 1,
             errors: 1,
@@ -1312,7 +1327,7 @@ async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
     );
     assert!(data.upstream_users.is_empty());
     customers::restore(&mut data);
-    assert_eq!(data.upstream_users, BTreeSet::from(["alice".into()]));
+    assert_eq!(data.upstream_users, BTreeSet::from([test_user("alice")]));
 }
 
 #[tokio::test]

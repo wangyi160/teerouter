@@ -156,7 +156,7 @@ mod tests {
         merchant["sub"] = json!("m_fixture");
         let merchant_token = signed(merchant, KEY);
         assert!(authorize(&v, &headers(&merchant_token)).is_err());
-        v.lock().unwrap().merchants.insert("m_fixture".into(),serde_json::from_value(json!({"id":"m_fixture","credential_hash":"a".repeat(64),"name":"fixture","enabled":true,"max_concurrent":1,"rpm":0,"tpm":0})).unwrap());
+        v.lock().unwrap().merchants.insert("m_fixture".into(),serde_json::from_value(json!({"id":"m_fixture","credential_hash":"a".repeat(64),"public_key":"b".repeat(64),"name":"fixture","enabled":true,"max_concurrent":1,"rpm":0,"tpm":0})).unwrap());
         assert!(authorize(&v, &headers(&merchant_token)).is_ok());
         v.lock()
             .unwrap()

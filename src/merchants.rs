@@ -43,6 +43,7 @@ pub(crate) struct Capsule {
 pub(crate) struct Registration {
     pub id: String,
     pub credential_hash: String,
+    pub public_key: String,
     /// Independent merchant-local control secret. Only its digest may reach management.
     #[serde(default)]
     pub owner_hash: Option<String>,
@@ -66,7 +67,7 @@ impl Registration {
                 .credential_hash
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && self.id == format!("m_{}", &self.credential_hash[..32])
+            && crypto::public_identity(&self.public_key).as_deref() == Some(self.id.as_str())
             && self.owner_hash.as_deref().is_none_or(crypto::valid_secret)
             && !self.name.is_empty()
             && self.name.len() <= 128
@@ -77,7 +78,7 @@ impl Registration {
             && self.users.iter().all(|s| crate::config::valid_name(s))
     }
     pub fn public(&self, unlocked: bool) -> Value {
-        json!({"id":self.id,"name":self.name,"credential_hash":self.credential_hash,"enabled":self.enabled,
+        json!({"id":self.id,"name":self.name,"credential_hash":self.credential_hash,"public_key":self.public_key,"enabled":self.enabled,
             "max_concurrent":self.max_concurrent,"rpm":self.rpm,"tpm":self.tpm,"allow_test":self.allow_test,
             "users":self.users,"unlocked":unlocked,"has_backup":false,
             "owner_hash":self.owner_hash,"merchant_control_version":1})
@@ -227,13 +228,12 @@ fn authenticate_enrollment(runtime: &Runtime, token: &str) -> Result<Registratio
         return Err(forbidden());
     }
     let digest = crypto::digest(token);
-    let id = crypto::identity(token);
     let engine = runtime.engine();
     let data = engine.vault.lock().map_err(storage)?;
     let item = data
         .merchants
-        .get(&id)
-        .filter(|item| {
+        .values()
+        .find(|item| {
             item.enabled && bool::from(item.credential_hash.as_bytes().ct_eq(digest.as_bytes()))
         })
         .ok_or_else(forbidden)?;
@@ -321,9 +321,12 @@ pub(crate) async fn register(
     if item
         .users
         .iter()
-        .any(|id| !engine.config.users.iter().any(|u| &u.id == id || u.customer_id.as_ref() == Some(id)))
+        .any(|id| !engine.config.users.iter().any(|u| &u.id == id))
     {
         return Err(invalid());
+    }
+    if data.merchants.values().any(|old| old.id != item.id && old.credential_hash == item.credential_hash) {
+        return Err(forbidden());
     }
     if let Some(old) = data.merchants.get(&item.id) {
         if old.credential_hash != item.credential_hash {

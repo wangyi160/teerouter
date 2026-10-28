@@ -7,10 +7,10 @@
 
 ## 身份和验证
 
-接入凭证为 32 字节随机数的 64 字符小写十六进制编码，可由 Portal 签发。`credential_hash` 为接入凭证文本的 SHA-256，商户 ID 为 `m_` 加摘要前 32 个十六进制字符。平台通过 `PUT /admin/merchants` 登记：
+接入凭证为 32 字节随机数的 64 字符小写十六进制编码，可由 Portal 签发。`credential_hash` 为接入凭证文本的 SHA-256，商户 ID 为 `m_sig_` 加商户 32 字节公钥的 SHA-256（64 字符小写十六进制）；同一 ID 用于登录、账号池、收入和 Router 登记，接入凭据不参与 ID 计算。平台通过 `PUT /admin/merchants` 登记：
 
 ```json
-{"id":"m_<摘要前32字符>","credential_hash":"<64字符摘要>","name":"商户名称","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"allow_test":false,"users":["平台用户ID"]}
+{"id":"m_sig_<公钥SHA256>","public_key":"<32字节公钥的十六进制>","credential_hash":"<64字符摘要>","name":"商户名称","enabled":true,"max_concurrent":16,"rpm":0,"tpm":0,"allow_test":false,"users":["平台用户ID"]}
 ```
 
 商户端另外生成独立的 32 字节控制密钥并在本机加密保存。商户通道的 Bearer 为 `<接入凭证>.<控制密钥>`；首次 `POST /merchant/bind` 将控制密钥摘要 `owner_hash` 绑定到此商户，后续请求必须同时验证两者。平台只保存摘要，不接收控制密钥；平台登记更新不能设置或替换已经绑定的摘要。接入凭证可在管理平台操作公开配置，但不能调用凭据私有通道。
@@ -83,9 +83,9 @@
 
 teeproxy 本地的 `GET /v1/models` 从管理平台读取并返回 `chatgpt/官方模型ID`、`claude/官方模型ID`、`grok/官方模型ID`；测试服务使用 `workbuddy/官方模型ID`。前缀标识模型提供商。同一提供商的同一模型跨商户合并为一项，不同提供商的同名模型分别展示。
 
-模型项的 `router_provider` 是内部提供商类型（`openai` / `anthropic` / `xai` / `workbuddy`），`router_model` 是完整官方模型 ID。`router_pools`、`router_capabilities[].pool` 以及 `router_pricing.rates[].pool` 使用 `m_<id>.账号池`；每项费率带 `merchant_id` 和 `price_version`，`router_merchants` 列出对应商户及其 `pools`。多商户模型没有统一的商户报价版本。
+模型项的 `router_provider` 是内部提供商类型（`openai` / `anthropic` / `xai` / `workbuddy`），`router_model` 是完整官方模型 ID。`router_pools`、`router_capabilities[].pool` 以及 `router_pricing.rates[].pool` 使用 `m_sig_<公钥SHA256>.账号池`；每项费率带 `merchant_id` 和 `price_version`，`router_merchants` 列出对应商户及其 `pools`。多商户模型没有统一的商户报价版本。
 
-将目录返回的模型 ID 直接交给 agent，配合 `X-Router-Routing` 自动匹配或固定账号池。Router 在 TEE 内先限定模型提供商，再检查池、授权和倍率；固定池的提供商不匹配时也拒绝请求。转发上游时只移除提供商前缀，上游响应保留官方模型 ID。旧的原始模型 ID 和 `m_<id>/官方模型ID` 继续兼容；没有路由规则时仍需 `x-router-pool: m_<id>.账号池` 或旧商户前缀来确定商户。
+将目录返回的模型 ID 直接交给 agent，配合 `X-Router-Routing` 自动匹配或固定账号池。Router 在 TEE 内先限定模型提供商，再检查池、授权和倍率；固定池的提供商不匹配时也拒绝请求。转发上游时只移除提供商前缀，上游响应保留官方模型 ID。旧的原始模型 ID 和 `m_sig_<公钥SHA256>/官方模型ID` 继续兼容；没有路由规则时仍需 `x-router-pool: m_sig_<公钥SHA256>.账号池` 或旧商户前缀来确定商户。
 
 用户通过管理平台查询有权限的商户、账号池、倍率及价格；Router 不再提供这些用户查询接口。调用时的上限和路由选择仍由 Router 执行。
 
