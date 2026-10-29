@@ -1,6 +1,75 @@
 use super::*;
 use rstest::rstest;
 
+#[tokio::test]
+async fn late_rejection_must_not_disable_a_replacement_credential() {
+    let vault = crate::vault::Vault::memory().unwrap();
+    vault
+        .import_account("race", Provider::OpenAI, &json!({"access_token":"old"}))
+        .unwrap();
+    vault
+        .set_account_proxy("race", Provider::OpenAI, "http://127.0.0.1:1")
+        .unwrap();
+    let store = TokenStore::open(Provider::OpenAI, vault.clone(), "race").unwrap();
+    assert_eq!(store.credential().await.unwrap().access_token, "old");
+    let old_revision = store.request_revision().unwrap();
+    // The owner replaces credentials while the old request is in flight.
+    vault
+        .import_account("race", Provider::OpenAI, &json!({"access_token":"new"}))
+        .unwrap();
+    store.rejected(old_revision); // delayed 401 for the old token
+    assert!(
+        store.available(),
+        "an old response retired the new credential"
+    );
+    assert_eq!(store.credential().await.unwrap().access_token, "new");
+    store.rejected(store.request_revision().unwrap());
+    assert!(
+        !store.available(),
+        "a rejection of the current token must still apply"
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn late_rejection_survives_account_delete_recreate(#[case] changed_token: bool) {
+    let vault = crate::vault::Vault::memory().unwrap();
+    vault
+        .import_account("race", Provider::OpenAI, &json!({"access_token":"old"}))
+        .unwrap();
+    vault
+        .set_account_proxy("race", Provider::OpenAI, "http://127.0.0.1:1")
+        .unwrap();
+    let store = TokenStore::open(Provider::OpenAI, vault.clone(), "race").unwrap();
+    let sent = store.request_revision().unwrap();
+    let snapshot = vault.snapshot().unwrap();
+    let update = crate::vault::operations::Update {
+        delete_accounts: vec!["race".into()],
+        ..Default::default()
+    };
+    let candidate = snapshot.updated(&update).unwrap();
+    assert!(vault.commit_update(&snapshot, &candidate, &update).unwrap());
+    vault
+        .import_account(
+            "race",
+            Provider::OpenAI,
+            &json!({"access_token":if changed_token {"new"} else {"old"}}),
+        )
+        .unwrap();
+    vault
+        .set_account_proxy("race", Provider::OpenAI, "http://127.0.0.1:1")
+        .unwrap();
+    let current = store.request_revision().unwrap();
+    assert_eq!(sent.1, current.1, "exercise account-local revision reuse");
+    assert_ne!(sent.0, current.0);
+    store.rejected(sent);
+    assert!(store.available());
+    store.rejected(current);
+    assert!(!store.available());
+}
+
 #[rstest]
 #[case(Provider::OpenAI)]
 #[case(Provider::Anthropic)]
@@ -39,7 +108,7 @@ async fn externally_managed_tokens_expire_and_recover_without_network(#[case] pr
         .unwrap();
     assert!(store.available());
     assert_eq!(store.credential().await.unwrap().access_token, "renewed");
-    store.rejected();
+    store.rejected(store.request_revision().unwrap());
     assert!(!store.available());
     assert!(store.credential().await.is_err());
     vault

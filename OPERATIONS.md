@@ -1,74 +1,63 @@
-# 运行与恢复
+# Router 状态与同步协议
 
-## 错误、中断与估算计费（billing v2）
+本文描述 Router 接收控制请求后的状态变化。所有 `/admin/*` 接口需要管理员 Bearer；用户和商户凭据不能读取根检查点或初始化根 runtime。
 
-请求状态与计费状态独立。HTTP 错误、流中错误、超时或客户端断开，都不能抹去已经获取的官方用量。每次上游尝试独立采集、使用请求开始时冻结的价格；各次尝试的未舍入金额相加后乘账号池倍率，最后一次向上取整到 micro-USD。不要再按 HTTP 成功与否过滤 v2 账单，旧 v1 记录的规则保持不变，不追溯补扣。
+## 初始化
 
-只有实际发给模型的请求发生网络错误、上游错误或中断，并且缺少完整官方用量时，才允许根据已观察到的生成文本或正数官方计量数据估算。HTTP 200 内的明确上游错误同样属于失败；正常成功返回（包括正常结束的流）即使没有 usage，也只标记待核算，不估算扣费。模型列表、健康检查、管理请求不参与模型估算，只有请求正文或普通错误消息也不构成生成证据。
+每次进程启动生成新的 `boot_id`，业务在成功初始化前不可用。`POST /admin/checkpoint/diff` 无有效基线时返回当前完整 `state` 和启动标识。
 
-`o200k_json_text_v1` 对请求中的 messages/input/instructions/system/tools 的 JSON 表示和已观察到的输出文本使用固定的 o200k_base 分词器；它是三个提供商共用的估算方法，不宣称与 Claude、Grok 或任何模型的真实分词完全一致。分词仅在满足上述失败条件时执行，以固定 4096 字节 UTF-8 安全窗口限制计算开销；正常请求不计算本地估算。流式文本先按内容块拼接，终态快照替换相应内容块，避免按网络分块重复计数。官方已确认的输入与缓存数量优先；输出使用已报告累计数量与可见输出估算的较大值。若失败请求在结算前已收到完整官方用量，直接按官方用量结算，不产生估算费用；不存在先对每笔请求估算扣费、再等待官方替换的流程。
+`POST /admin/initialize` 接收：
 
-没有缓存数据的估算输入按普通输入价格收费，可能高于实际缓存折扣后的费用。无法观察的隐藏推理、未传回的输出和服务端历史上下文不推算；`previous_response_id`/conversation 隐含的上下文会标记不完整。多模态输入不按 base64 或 URL 文本猜算；估算文本超过 2 MiB、内容块超过 1024、价格维度缺失或官方数字不一致时仍待核算。估算只保存数字和算法标识，请求/回复正文不进入账单或公开流水。
+```json
+{"boot_id":"当前启动标识","state":null}
+```
 
-生成前的限流、鉴权/参数拒绝且无用量时为零费用；纯连接失败不按提交的请求文本扣费。尚未看到任何生成或计量证据的超时保留未知状态。`attempt_records` 保留各次尝试的状态、用量、计价项和估算依据；一个尝试未知不会抹掉其他已确认或可估算尝试的费用。`usage_source` 为 official/estimated/mixed/none，`coverage` 为 complete/partial/unknown，`unknown_attempts` 表示未能核算的尝试数；calculated 只说明记录中的金额已计算，并不表示用量一定完整。用户及商户账单必须展示估算或部分用量标识。
+`state:null` 表示空状态初始化；恢复使用完整且符合当前 schema 的 `state`。Router 校验启动标识、配置、身份、序号、余额与 relay 边界，每次启动只允许成功初始化一次。商户账号秘密不包含在根检查点中，商户 runtime 通过直接账号同步建立私有状态。
 
-`GET /v1/pricing` 的 `billing_policy` 公布上述规则。管理端和公开流水接收服务必须先支持 v2，再启用新版 Router；旧接收端应拒绝不理解的账单，不能默默按旧公式补算。估算金额直接进入内存消费、签名批次和管理端入账，沿用原有幂等与结算确认规则。
+恢复输入不得携带未结算的 relay 汇总：`retained` 必须为空，`uploaded` 与 `settled` 必须一致；边界还须符合用量序号。启用认证日志时，Router 再校验日志与恢复边界并恢复已提交的尾部。恢复失败不替换为新的空账本。
 
-## 运行与恢复流程
+## 差量检查点
 
-router：`teellm --admin-key-stdin [--bind 127.0.0.1:4000] [--tls-bind 0.0.0.0:8443] [--journal-dir PATH]`。标准输入是一行管理凭证。可选的本地流水日志使用 dstack TEE 派生密钥；不接受管理员提供的日志密钥。配置、账号与最终账务仍由独立管理服务持久化，流水恢复规则见 [本地流水日志](docs/ACCOUNTING-JOURNAL.md)。
+`POST /admin/checkpoint/diff` 只接受 `boot_id`、`base_id`，首次均可为 null。响应包含 `checkpoint_diff_version:1`、新的 `checkpoint_id`，并返回完整 `state` 或基于 `base_id` 的 `changes`：
 
-管理平台使用 `POST /admin/checkpoint/diff` 读取启动状态和配置增量；缺少基线时返回完整 state。流水经 receipt relay 上传并归档，归档完成后调用 `POST /admin/receipts/relay/settle`，不使用旧 checkpoint ACK。
-2. 管理端发送 `POST /admin/initialize`：`{"boot_id":"当前值","state":已保存的state或null}`。null 只用于首次空初始化；已有服务必须恢复管理数据库保存的快照。
-3. 初始化仅允许一次，验证全部配置、凭证、管理员身份与账号版本；失败不激活候选状态。拒答审计默认启用，无需下发独立审核服务的配置或密钥。
-管理平台使用 `POST /admin/checkpoint/diff` 读取启动状态和配置增量；缺少基线时返回完整 state。流水经 receipt relay 上传并归档，归档完成后调用 `POST /admin/receipts/relay/settle`，不使用旧 checkpoint ACK。
-5. ACK 原子更新余额并清除已同步消费；读取快照之后产生的新消费保留到下一轮。管理端的恢复快照使用结算后的余额、空 events 和空 consumption，重启时不会重复扣款。密码、token 和完整快照必须经经过验证的保密连接传输，不放在日志中。
+```json
+{"path":["对象键","子键"],"value":"新值"}
+```
 
-管理 API 沿用 Bearer 认证，快照响应禁止缓存；业务 API key 不能读取快照或初始化。充值和持久化账务由独立管理平台负责；Router 通过同步 ACK 接收余额，通过价格 API 管理报价。
+删除用 `{"path":["对象键"],"remove":true}` 表示。对象按字段比较；数组整体替换；值 null 与删除不同。进程重启、基线缺失或基线被另一读取替换时，返回完整状态。Router 只保留一份差分基线。
 
-管理平台每轮自动同步后等待 300 秒；管理员保存修改、充值或点击同步时立即下发。初始化完成后，Router 独立处理业务请求、模型目录查询、账号令牌维护及价格更新；管理平台断联不会触发停服。断联期间继续使用上次同步余额减去未同步消费检查余款，消费等待管理平台恢复连接后结算。达到待同步 usage 上限仍暂停新模型请求，避免占满内存。`storage.manager_connected` 仅表示最近 630 秒收到过 ACK（容纳两次定时同步和网络延迟），不参与请求准入。
+检查点读取不创建私有签名批次、不确认上传，也不结算消费。`sign_receipts` 是未知字段，返回 400；旧的完整检查点 GET/ACK 接口不存在。
 
-增量协议：`POST /admin/checkpoint/diff` 请求体为 `{"boot_id":"上次启动标识","base_id":"上次 checkpoint_id"}`，首次均可为 null。响应携带 `checkpoint_diff_version: 1` 和新的 `checkpoint_id`；有效基线响应包含 `base_id`、`changes`，每项为 `{"path":["对象键",...],"value":新值}` 或 `{"path":[...],"remove":true}`。对象按变化字段传送，数组作为一个字段整体替换；null 与删除不同。首次连接、管理进程重启、Router 重启或其他读取者替换基线时，返回完整 `state`。Router 只保留一份内存基线，管理端须保留原始基线用于差量合并，不能拿已清空消费的恢复快照作基线。合并和事务提交成功后才 ACK；丢失 ACK、重试或回退完整快照不重复结算。商户未变化时复用原加密恢复胶囊；只有变化商户才重新加密。
+`storage.manager_connected` 是保留的状态字段名：最近 630 秒有合法差分快照读取时为 true。它不参与业务准入，不是心跳租约。
 
-计划重启：管理平台暂停自己的同步任务，向 `/admin/quiesce` 提交当前 `boot_id` 和 `quiescing: true`，然后轮询 `/admin/metrics`，直到 `lifecycle.drained: true`。此时新业务、商户操作和配置写入返回 503 / `router_draining`，已经开始的请求以及所有商户的后台刷新完成后才视为排空。管理读取、checkpoint 与 ACK 仍可使用。保存最终 checkpoint 后停止 Router。停机前保存失败应提交 `quiescing: false` 恢复服务；云端停机结果不明时先确认状态，显式启动可以恢复仍在运行的暂停实例。暂停状态不写入快照；新进程必须重新初始化。不要用首次空初始化覆盖已有状态。
+## 结算与余额
 
-启用本地流水日志时，已提交的消费记录与待上传批次可以跨进程重启恢复；没有启用时仍有周期快照的崩溃丢失窗口。日志不包含账号凭证，refresh token 只保存在商户服务中；未生成或未提交的在途用量也不在恢复保证内。
+可用余额为最近同步余额减去未结算消费。模型请求只累加消费；上传确认只释放相应明细，不能更新余额或清除消费。
 
+`POST /admin/receipts/relay/settle` 接收当前 `boot_id`、递增 `revision`、已上传批次边界 `through`，以及 `balances` 或 `balances_patch` 两者之一。Router 原子更新同步余额并清除边界内消费，保留之后的新消费。完全相同的重试幂等；旧版本、内容冲突、未知边界和错误启动标识被拒绝。具体签名与批次格式见 [消费凭据](docs/CONSUMPTION-PROOFS.md)。
 
-## 供应商范围与升级
+用户及权限通过 `/admin/apply` 原子更新。合并补丁中的 null 表示删除字段；完整配置仍使用严格字段校验。配置更新和结算使用不同版本与状态边界。
 
-OAuth 采用 access-token-only-v1 协议，商户服务负责续期。Router 拒绝任何 refresh token 字段，不发起续期请求；尚未过期的 access token 保持可用。到期时间取 `expires_at`（Unix 秒）、Claude `expiresAt`（毫秒）或 JWT 的 `exp`；未提供且令牌不可解析时无法预告过期，只能在官方拒绝凭证后要求更新。
+## 排空状态
 
-已过期账号在状态 API 中返回 `health.state: "expired"`、`health.last_error: "access_token_expired"` 和 `refresh_mode: "external"`，停止转发新请求；到期前被官方拒绝的凭证显示 `reauthorization_required`。重新导入完整的新凭证后恢复。refresh token 不得上传到 Router。
+`POST /admin/quiesce` 接收 `{"boot_id":"当前值","quiescing":true}`。排空期间，新模型请求、商户操作和配置写入返回 `503 router_draining`；已有请求和已开始的后台任务继续结束。控制读取、检查点、relay flush 与结算仍可用。
 
-当前只接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`）。Gemini / Gemini CLI 已移除，旧的 `/v1beta/models/*` 接口返回 404。
+`/admin/metrics` 的 `lifecycle.drained:true` 表示根及商户 runtime 均无在途请求或后台任务。提交 `quiescing:false` 恢复准入。该状态只在当前进程有效，不写入恢复检查点。
 
-升级前应由管理服务保存旧版加密快照，移除 Gemini 账号、部署、空池及其关联的池权限、fallback、restrictions、compatibility 和专用密钥，再保存并恢复新快照。禁用但仍存在的 Gemini 账号或部署也会被拒绝；不要用空初始化覆盖用户及用量。其余提供商的旧快照允许 `gemini_project: null` 和 `client_secret_ref: null`，新版导出时省略；非空值会被拒绝。管理端的供应商选项也应同步移除 Gemini。
+## 凭据与拒绝边界
 
-## 用户权限与余额
+Router 使用 `access-token-only-v1`，不接受 refresh token，也不发起 OAuth 续期。到期时间取 `expires_at`（Unix 秒）、Claude `expiresAt`（毫秒）或 JWT `exp`；没有可解析到期时间时无法预告过期。
 
-用户和权限通过 `POST /admin/apply` 原子同步。模型请求必须具备 [独立用户签名](docs/USER-AUTH.md)。余额由管理平台持久化，Router 保留上次余额与未结算消费；通过 `/admin/receipts/relay/settle` 结算已归档批次并更新余额。
+到期账号显示 `health.state:"expired"`、`health.last_error:"access_token_expired"` 和 `refresh_mode:"external"`，停止接收新请求。提前被官方拒绝的凭据显示 `reauthorization_required`。新的 access 凭据须通过商户账号接口校验后生效。
+
+提供商仅接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`）。完整配置拒绝 `gemini_project`、`client_secret_ref`、`config.moderation` 和商户 `backup`，包括 null。旧快照中的空 `state.moderation:{}` 可读入但不再导出；非空历史明确拒绝，避免静默丢弃。旧 journal 中空 `receipt_head:null` 的读取规则见 [消费凭据](docs/CONSUMPTION-PROOFS.md)。
 
 ## 上游拒答审计
 
-拒答审计默认启用，无需额外密钥。`/admin/status` 返回 `moderation_mode: "upstream_refusal"`、`lockllm_enabled: false`、`refusal_audit_enabled: true`。模型可用性仍受账号、目录、权限、余额、限流和记录队列容量约束。缺少 LockLLM 配置不再阻止推理或目录查询；旧快照里的 `config.moderation` 仅在导入时兼容读取，新导出省略，既不会调用扫描服务，也不要求恢复它的密钥。
+拒答识别默认启用；状态为 `moderation_mode:"upstream_refusal"`、`refusal_audit_enabled:true`。普通自然语言拒答不做关键词推断。明确拒答保留原始响应状态且不换账号重试。
 
-`GET /admin/refusals?after_id=0&limit=100` 按 ID 升序读取所有用户的未归档拒答。记录包含 `user_id`、密钥名称和拒答详情；用户详情与列表不再提供 `refusals`。router 不维护按用户累计统计，完整历史与统计由管理端保存。原 `user.moderation` 仅兼容已有 LockLLM 历史，不再增长。接口与字段见 [API 文档](docs/API.md#上游拒答队列)。
+完成、失败、超时或取消时，拒答类别与用量一并记录。公开批次只含 `refusal_type`，不含拒答原文。商户计数独立于逐笔明细保存。历史拒答队列仍进行恢复校验，但不提供独立 HTTP 查询/删除接口。
 
-管理端将一页记录持久保存后，执行 `DELETE /admin/refusals?through_id=N`，N 是已完整归档的最大连续前缀 ID，删除 `id <= N` 的全部记录。可以每次从队列头读取、保存、删除一页，也可用 `next_after_id` 继续分页；不要用尚未全部读完的 `last_id` 来确认删除。重复删除幂等，未来 ID 返回 409，新产生的较大 ID 不受影响。删除不会重置编号。
+## 耐久性边界
 
-请求结束、失败、超时或客户端取消时，每个请求最多产生一条拒答记录。流式未完成也保存已收到的信号和原文，并标记 `complete: false`，事件 `status` 说明 router 最终处理结果。常见 HTTP 200 拒答不会因审计被改成错误；明确安全错误返回 403 / `upstream_refusal`，记录保留上游 HTTP 状态。确认拒答后不切换账号或模型重试。
-
-队列积压达到 4096 条或约 2 MiB 时暂停新模型请求（503 / `accounting_unavailable`），已经在途的请求继续结算，因此可暂时超过阈值。队列不会自动淘汰，管理员仍可拉取和删除；删除后还须满足正常的用量同步条件才能恢复接收请求。`/admin/metrics` 的 `storage` 提供 `pending_refusals`、`pending_refusal_bytes`、`last_refusal_id`、`refusals_deleted_through`。分页默认 100 条，最大 500 条，不会序列化所有用户历史。
-
-每条记录最多 16 个拒答片段，文本合计最多 8 KiB；Claude 可见文本、解释及安全错误说明分别最多 8 KiB，报告序列化后最多 16 KiB。触及限制时标记 `truncated: true`，不截断转发给客户端的回复。
-
-checkpoint 的 `state.refusal_queue` 保存队列、`last_id` 与 `deleted_through`，用于停机恢复。checkpoint ACK 仅清理用量事件，不能确认拒答归档；反过来删除拒答也不删除用量。用量事件和 `/admin/logs` 仅保存 `refusal_id` 引用，拒答正文不会另存于用户信息或用量记录。用户删除、密钥轮换和配置热更新不会清除待归档拒答。
-
-管理端以 `(instance_id, id)` 去重，并将归档与消费游标持久保存；删除后保存最新 checkpoint。正常恢复最新状态时 ID 继续递增。若只能恢复旧备份，管理端须结合已归档游标修正快照：将 `last_id` 至少推进到已归档最大 ID，按已确认前缀更新 `deleted_through` 并移除相应 events，避免重复编号或重新保留已归档记录。router 是内存服务，这不是独立持久化的恰好一次投递保证。
-
-导入旧 `state.refusals` 时，将仍存在的用户窗口和旧待同步用量中的拒答报告按旧 ID 合并去重，迁移到统一队列并删除旧副本；首次迁移可能重放已归档旧历史，由管理员按游标删除。旧版已经淘汰且未备份的明细无法恢复；旧用户累计数字不迁移为新记录。缺少新旧拒答数据的快照初始化为空队列。
-
-此方式是在模型上游处理请求之后记录明确拒答，不执行输入预审核，不用文字关键词猜测拒答，也不保证发现所有不当请求。未标明 refusal 的普通自然语言拒答不会统计。上游类别和原因原样记录，不视作已证实的用户违规；用户的长上下文只发给所选模型上游，不再额外发送给 LockLLM。
-
-旧版本升级还需要更新镜像与客户端认可的 TEE 发布策略。router 仍为内存状态，断电可能丢失尚未同步的拒答事件。
+无本地日志时，未同步的内存状态可能在进程异常退出后丢失。认证日志只能恢复成功提交的记录，不能补造未生成或未提交的在途用量；写入失败关闭新请求准入，但未提交尾部仍可能丢失。详见 [流水日志](docs/ACCOUNTING-JOURNAL.md) 和 [异常计费](docs/INTERRUPTED-BILLING.md)。

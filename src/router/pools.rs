@@ -62,6 +62,7 @@ impl Engine {
     // Pool-scoped ACLs apply even before an upstream catalog can be fetched.
     // An unscoped model permission can use that model in any pool; this does
     // not grant additional model permissions or expose another key's scopes.
+    #[cfg(test)]
     fn pool_visible(&self, account: usize, pool: &str) -> bool {
         let rules = &self.accounts[account].config.models;
         rules.is_empty()
@@ -73,6 +74,7 @@ impl Engine {
 
     /// Client inventory, deliberately independent of model discovery success.
     /// Read local state only: no refresh, secrets, proxy, or raw errors.
+    #[cfg(test)]
     pub(crate) fn pools(&self, account: usize, latency: &State) -> Value {
         let data: Vec<_> = self
             .config

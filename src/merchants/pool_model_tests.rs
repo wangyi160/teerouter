@@ -146,15 +146,10 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         .unwrap();
     let server = serve(crate::server::app_runtime(r.clone())).await;
     let qualified_pool = format!("{}.official", crypto::identity(&token));
-    let (status, visible) =
-        catalog_fixture(&r,"models","alice-key").await;
-    assert_eq!(status, 200);
-    assert_eq!(visible["data"].as_array().unwrap().len(), 3);
-    for row in visible["data"].as_array().unwrap() {
-        assert_eq!(row["router_capabilities"].as_array().unwrap().len(), 2);
-    }
-    let (_, inventory) = catalog_fixture(&r,"pools","alice-key").await;
-    for account in inventory["data"][0]["accounts"].as_array().unwrap() {
+    live.runtime.engine().refresh_models(true).await;
+    let visible = public_inventory(&r).await;
+    assert_eq!(visible["data"][0]["models"].as_array().unwrap().len(), 3);
+    for account in visible["data"][0]["client_accounts"].as_array().unwrap() {
         assert_eq!(account["catalog"]["visible_models"], 3);
     }
     // Merchants retain the full discovery evidence for their selection UI.
@@ -204,9 +199,9 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         )
         .await
         .unwrap();
+    live.runtime.engine().refresh_models(true).await;
     assert!(
-        catalog_fixture(&r,"models","alice-key").await
-            .1["data"]
+        public_inventory(&r).await["data"][0]["models"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -221,7 +216,7 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         .unwrap();
     assert!(!response.status().is_success());
     assert_eq!(calls.load(Ordering::SeqCst), 6);
-    // Allowing an unknown ID never invents upstream capability. None restores legacy discovery.
+    // An unknown ID never invents capability; None allows all officially discovered models.
     config.models[0].allowed_models = Some(vec!["not-in-catalog".into()]);
     live.runtime
         .apply(
@@ -233,9 +228,9 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         )
         .await
         .unwrap();
+    live.runtime.engine().refresh_models(true).await;
     assert!(
-        catalog_fixture(&r,"models","alice-key").await
-            .1["data"]
+        public_inventory(&r).await["data"][0]["models"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -251,9 +246,9 @@ async fn twenty_models_two_accounts_publish_three_and_block_all_route_bypasses()
         )
         .await
         .unwrap();
+    live.runtime.engine().refresh_models(true).await;
     assert_eq!(
-        catalog_fixture(&r,"models","alice-key").await
-            .1["data"]
+        public_inventory(&r).await["data"][0]["models"]
             .as_array()
             .unwrap()
             .len(),

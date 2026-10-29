@@ -65,7 +65,7 @@ pub(crate) fn authorize(vault: &Vault, headers: &HeaderMap) -> Result<(), ApiErr
     .map_err(|_| denied())?;
     let claims: Claims = serde_json::from_slice(&B64.decode(parts[1]).map_err(|_| denied())?)
         .map_err(|_| denied())?;
-    let now = crate::anthropic::unix_now();
+    let now = crate::time::unix_now();
     if claims.iss != "teerouter-management"
         || claims.aud != AUDIENCE
         || claims.scope != "handshake"
@@ -113,7 +113,7 @@ mod tests {
         )
     }
     fn claims() -> serde_json::Value {
-        let now = crate::anthropic::unix_now();
+        let now = crate::time::unix_now();
         json!({"iss":"teerouter-management","aud":AUDIENCE,"scope":"handshake","role":"user","sub":"alice","iat":now,"exp":now+3600})
     }
     fn fixture() -> std::sync::Arc<Vault> {
@@ -140,7 +140,7 @@ mod tests {
             ("role", json!("admin")),
             ("sub", json!("unknown")),
             ("exp", json!(1)),
-            ("iat", json!(crate::anthropic::unix_now() + 120)),
+            ("iat", json!(crate::time::unix_now() + 120)),
         ] {
             let mut bad = c.clone();
             bad[k] = x;

@@ -94,9 +94,6 @@ pub(crate) fn content_field(key: &str) -> bool {
 pub struct Profile {
     pub headers: BTreeMap<String, String>,
     pub client_id: Option<String>,
-    /// Legacy null-only field retained for checkpoints written before provider removal.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_secret_ref: Option<String>,
     pub scope: Option<String>,
     pub paths: BTreeMap<String, String>,
     pub chatgpt_extra_parameters: Vec<String>,
@@ -115,9 +112,6 @@ impl Profile {
         if !matches!(provider, "openai" | "anthropic" | "xai")
         {
             return Err("unknown compatibility provider".into());
-        }
-        if self.client_secret_ref.is_some() {
-            return Err("OAuth client secret references are no longer supported".into());
         }
         wire::validate_headers(&self.headers, &[])?;
         self.catalog_capabilities.validate()?;

@@ -3,6 +3,10 @@ mod protocol;
 mod publisher;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod review_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use crate::{
     receipts::Head,

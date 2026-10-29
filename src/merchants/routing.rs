@@ -73,66 +73,6 @@ pub(crate) fn platform_allows(
                 || r == &format!("{pool}/*")
         })
 }
-#[cfg(test)]
-pub(crate) async fn pools(
-    runtime: &Runtime,
-    root: &Engine,
-    account: usize,
-) -> Result<Vec<Value>, ApiError> {
-    let mut rows = vec![];
-    for s in selections(runtime, &root.config.keys[account].user_id).await? {
-        if refusals::blocked(
-            runtime,
-            &s.item.id,
-            &root.config.keys[account].user_id,
-            &s.settings,
-        )? {
-            continue;
-        }
-        let mut pools = s.engine.pools(s.account, &runtime.merchants.latency);
-        for pool in pools["data"].as_array_mut().into_iter().flatten() {
-            let name = pool["id"]
-                .as_str()
-                .or_else(|| pool["name"].as_str())
-                .unwrap_or("")
-                .to_owned();
-            let qualified = format!("{}.{}", s.item.id, name);
-            let rules = &root.config.keys[account].models;
-            if !rules.is_empty()
-                && !rules.iter().any(|r| {
-                    r == &qualified
-                        || r.starts_with(&format!("{qualified}/"))
-                        || r.starts_with(&format!("{}/", s.item.id))
-                        || crate::provider::Provider::split_model(r)
-                            .0
-                            .is_some_and(|provider| {
-                                pool["provider"] == serde_json::to_value(provider).unwrap()
-                            })
-                        || (!r.contains('/')
-                            && !r.starts_with("m_")
-                            && !root.config.models.iter().any(|p| p.name == *r))
-                })
-            {
-                continue;
-            }
-            pool["id"] = qualified.into();
-            pool["merchant_id"] = s.item.id.clone().into();
-            pool["merchant_name"] = s.item.name.clone().into();
-            pool["pool_name"] = name.clone().into();
-            pool["multiplier_millionths"] = json!(
-                s.settings
-                    .pool_pricing
-                    .iter()
-                    .find(|p| p.pool == name)
-                    .map(|p| p.multiplier_millionths)
-            );
-            pool["price_version"] = s.settings.revision.into();
-            pool["official_price_revision"] = s.price_book.revision.into();
-            rows.push(pool.clone());
-        }
-    }
-    Ok(rows)
-}
 fn tighter(a: u64, b: u64) -> u64 {
     if a == 0 {
         b

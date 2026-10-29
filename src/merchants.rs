@@ -1,6 +1,4 @@
 //! Merchant secrets exist only in merchant-owned storage and the live TEE runtime.
-#[cfg(test)]
-use crate::vault::Data;
 use crate::{
     config::{ApiKey, Config, Model, User},
     error::ApiError,
@@ -21,22 +19,12 @@ pub(crate) mod control;
 mod crypto;
 mod customers;
 pub(crate) mod http;
-#[cfg(test)]
-mod model_catalog;
 mod probe;
 pub(crate) mod public_catalog;
 pub(crate) mod refusals;
 pub(crate) mod route_metrics;
 pub(crate) mod route_rule;
 pub(crate) mod routing;
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Capsule {
-    version: u32,
-    nonce: String,
-    ciphertext: String,
-}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -54,9 +42,6 @@ pub(crate) struct Registration {
     pub tpm: u64,
     #[serde(default)]
     pub users: BTreeSet<String>,
-    // Read legacy checkpoints for migration, but never export or restore their capsules.
-    #[serde(default, skip_serializing)]
-    pub backup: Option<Capsule>,
 }
 impl Registration {
     pub fn validate(&self) -> bool {
@@ -78,7 +63,7 @@ impl Registration {
     pub fn public(&self, unlocked: bool) -> Value {
         json!({"id":self.id,"name":self.name,"credential_hash":self.credential_hash,"public_key":self.public_key,"enabled":self.enabled,
             "max_concurrent":self.max_concurrent,"rpm":self.rpm,"tpm":self.tpm,
-            "users":self.users,"unlocked":unlocked,"has_backup":false,
+            "users":self.users,"unlocked":unlocked,
             "owner_hash":self.owner_hash,"merchant_control_version":1})
     }
 }
@@ -312,7 +297,7 @@ pub(crate) async fn register(
     if !engine.authenticate_admin(secret) {
         return Err(forbidden());
     }
-    if !item.validate() || item.backup.is_some() || item.owner_hash.is_some() {
+    if !item.validate() || item.owner_hash.is_some() {
         return Err(invalid());
     }
     let mut data = engine.vault.lock().map_err(storage)?;
@@ -441,7 +426,6 @@ pub(crate) async fn unlock(
 
 fn validate_bundle(
     bundle: &Provision,
-    item: &Registration,
     settings: &Settings,
 ) -> Result<(), ApiError> {
     crate::pricing::validate_pools(settings, &bundle.config)?;
@@ -710,7 +694,7 @@ async fn apply_for(
         ..Update::default()
     };
     let candidate = snapshot.updated(&update).map_err(|_| invalid())?;
-    validate_bundle(&candidate, &item, &settings)?;
+    validate_bundle(&candidate, &settings)?;
     live.runtime.apply(update, &live.admin).await?;
     *live.settings.lock().unwrap() = settings;
     live.configured

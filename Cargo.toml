@@ -27,7 +27,6 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
 zeroize = "1.8"
 subtle = "2"
 ring = "0.17"
@@ -52,6 +51,7 @@ libc = "0.2"
 sev = { version = "=8.0.0", default-features = false, features = ["snp", "serde"] }
 
 [dev-dependencies]
+toml = "0.9"
 tempfile = "3"
 rstest = "0.26"
 

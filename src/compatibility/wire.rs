@@ -13,8 +13,6 @@ use std::collections::{BTreeMap, HashSet};
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RequestProfile {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_secret_ref: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub remove_headers: Vec<String>,
     pub query: BTreeMap<String, String>,
@@ -154,9 +152,6 @@ impl RequestProfile {
         if !supported {
             return Err("unsupported provider request operation".into());
         }
-        if self.client_secret_ref.is_some() {
-            return Err("OAuth client secret references are no longer supported".into());
-        }
         validate_headers(&self.headers, &self.remove_headers)?;
         if self.query.len() + self.remove_query.len() > 64 {
             return Err("too many query parameters".into());
@@ -211,7 +206,6 @@ impl Profile {
         operation: &str,
         url: &mut Url,
         headers: &mut HeaderMap,
-        _body: Option<&Value>,
     ) -> Result<(), Error> {
         crate::official::validate(url.as_str(), None)?;
         let Some(rule) = self.requests.get(operation) else {
@@ -254,7 +248,7 @@ impl Profile {
     ) -> Result<RequestBuilder, Error> {
         let mut url =
             Url::parse(url.as_ref()).map_err(|_| Error::InvalidRequest("invalid request URL"))?;
-        self.prepare(operation, &mut url, &mut headers, None)?;
+        self.prepare(operation, &mut url, &mut headers)?;
         Ok(http.get(url).headers(headers))
     }
     pub(crate) fn json(
@@ -267,7 +261,7 @@ impl Profile {
     ) -> Result<RequestBuilder, Error> {
         let mut url =
             Url::parse(url.as_ref()).map_err(|_| Error::InvalidRequest("invalid request URL"))?;
-        self.prepare(operation, &mut url, &mut headers, Some(&body))?;
+        self.prepare(operation, &mut url, &mut headers)?;
         Ok(http.post(url).headers(headers).json(&body))
     }
 }

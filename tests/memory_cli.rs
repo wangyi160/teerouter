@@ -221,7 +221,7 @@ async fn empty_boot_requires_initialization_but_serving_does_not_require_ack() {
         .status(),
         200
     );
-    let c = checkpoint(&second).await;
+    let _c = checkpoint(&second).await;
     // Refusal auditing needs no external scanner key after checkpoint restore.
     assert_eq!(
         reqwest::Client::new()

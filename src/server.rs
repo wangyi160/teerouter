@@ -321,12 +321,18 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
     )
     .await
     .map_err(|_| ApiError::new(408, "body_timeout", "Request body timed out"))?
-    .map_err(|_| {
-        ApiError::new(
-            413,
-            "body_too_large",
-            "Cannot read request body within configured limit",
-        )
+    .map_err(|error| {
+        if std::error::Error::source(&error)
+            .is_some_and(|source| source.is::<http_body_util::LengthLimitError>())
+        {
+            ApiError::new(
+                413,
+                "body_too_large",
+                "Request body exceeds Router's configured max_body_bytes",
+            )
+        } else {
+            ApiError::new(400, "body_read_error", "Cannot read request body")
+        }
     })?;
     if identity.runtime.is_platform() {
         let uid=&engine.config.keys[identity.account.unwrap()].user_id;
@@ -338,6 +344,7 @@ async fn generate(request: Request) -> Result<Response, ApiError> {
     }
     let body: Value = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::new(400, "invalid_json", "Request body must be valid JSON"))?;
+    drop(bytes);
     if !body.is_object() {
         return Err(ApiError::new(
             400,

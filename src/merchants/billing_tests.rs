@@ -219,14 +219,10 @@ async fn normal_json_and_sse_without_usage_remain_unpriced() {
 }
 
 #[tokio::test]
-async fn model_listing_never_creates_model_charges() {
-    let (r, _, _upstream, router) = setup(vec![], 1).await;
+async fn public_inventory_never_creates_model_charges() {
+    let (r, _, _upstream, _router) = setup(vec![], 1).await;
     let before = r.engine().vault.lock().unwrap().events.len();
-    assert_eq!(
-        catalog_fixture(&r,"models","alice-key").await
-            .0,
-        200
-    );
+    assert!(public_inventory(&r).await["data"].is_array());
     assert_eq!(r.engine().vault.lock().unwrap().events.len(), before);
 }
 

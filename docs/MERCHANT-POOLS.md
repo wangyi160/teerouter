@@ -1,29 +1,25 @@
-# Merchant pool publication
+# Merchant pool state
 
-The platform command `PUT /admin/merchants/{id}/config` replaces the merchant's published pool set. Pools with no
-deployments are omitted, together with their `pool_pricing` entries. Removing the
-last account withdraws the pool; a disabled account still counts as an account.
-Other merchants are unaffected. Clients retain empty drafts and their settings
-locally instead of replacing their complete local account book with this response.
+The owner-authenticated `PUT /merchant/accounts/sync` creates or updates account
+bindings. A new nonempty pool can include initial `new_pool_pricing`. Existing
+pool policy and multipliers are preserved; public policy updates use
+`PUT /admin/merchants/{mid}/config` with admin authentication.
 
-`POST /merchant/accounts/test` can test the first account before its pool is
-published. Include the normal `pool`, `proxy`, and access-only `credential` (or
-`api_key`), plus:
+Pools with no accounts are omitted, together with their `pool_pricing` entries.
+Removing the last account withdraws a pool; a disabled account still counts as
+an account. Other merchants are unaffected. An empty draft is not a live pool.
+
+`POST /merchant/accounts/test` can test an account before its pool exists.
+Include `pool`, `proxy`, access-only `credential` (or `api_key`), plus:
 
 ```json
-{
-  "draft_pool": {
-    "provider": "openai",
-    "allowed_models": ["model-id"]
-  }
-}
+{"draft_pool":{"provider":"openai","allowed_models":["model-id"]}}
 ```
 
-`allowed_models` may be null for all available text models, or an empty list to
-allow none. The draft is accepted only if the named pool is absent from this
-merchant's runtime. Published pools use their existing provider and model policy
-and reject a draft override. The same official endpoints, proxy validation,
-merchant authorization and probe limits apply.
-Testing does not publish the pool, persist credentials, refresh tokens, or create
-user charges. Save the account locally, then publish the nonempty pool after a
-successful test.
+`allowed_models:null` permits all officially available text models; `[]` permits
+none. A draft is accepted only if the named pool is absent from this merchant's
+runtime. Existing pools use their current provider and model policy and reject a
+draft override. Official endpoint, proxy, authorization and probe limits apply.
+
+Testing does not create a pool, persist credentials, renew tokens or create user
+consumption records. Account synchronization and testing are separate operations.

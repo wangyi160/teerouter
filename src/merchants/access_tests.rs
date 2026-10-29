@@ -139,7 +139,7 @@ async fn owner_access_sync_is_scoped_retry_safe_and_rejects_refresh_tokens() {
     );
     assert!(
         !vault
-            .checkpoint()
+            .checkpoint_export(None, None)
             .unwrap()
             .to_string()
             .contains("NEVER_HOLD")

@@ -1,4 +1,4 @@
-//! Shared official provider catalogs; test providers retain pool-local discovery.
+//! Shared official provider catalogs with isolated per-pool source bindings.
 pub(crate) mod capabilities;
 pub(crate) mod fetch;
 pub(crate) mod providers;
@@ -234,6 +234,7 @@ impl Catalog {
             }
             state.next_account = (account + 1) % self.clients.len();
             let client = &self.clients[account].1;
+            let credential_revision = client.oauth.as_ref().and_then(|a| a.request_revision().ok());
             let result = tokio::time::timeout_at(
                 deadline.min(Instant::now() + attempt_budget),
                 fetch::models(client, &self.options.codex_client_version),
@@ -278,8 +279,9 @@ impl Catalog {
                         }
                         if matches!(error, Error::Api { status: 401, .. })
                             && let Some(oauth) = &client.oauth
+                            && let Some(revision) = credential_revision
                         {
-                            oauth.rejected();
+                            oauth.rejected(revision);
                         }
                     }
                     state.error = Some(match error {

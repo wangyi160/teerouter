@@ -84,17 +84,7 @@ fn storage_ack_preserves_spend_and_settlement_preserves_newer_requests() {
     assert_eq!(v.lock().unwrap().consumption["u"], 50);
     settle(&v, 3, Some(second), 1070).unwrap();
     assert_eq!(v.lock().unwrap().consumption["u"], 30);
-    assert!(
-        v.acknowledge_receipts(
-            &v.boot_id,
-            0,
-            0,
-            Some(BTreeMap::new()),
-            BTreeMap::new(),
-            None
-        )
-        .is_err()
-    );
+
 }
 #[test]
 fn frozen_retries_and_public_records_have_rotating_pseudonyms_no_private_fields() {

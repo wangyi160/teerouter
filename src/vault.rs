@@ -46,12 +46,10 @@ fn account_enabled() -> bool {
 pub(crate) struct Data {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_relay: Option<crate::receipt_relay::State>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receipt_head: Option<crate::receipts::Head>,
     /// Last balances committed by management. Requests never modify this map.
     #[serde(default)]
     pub balances: BTreeMap<String, i64>,
-    /// Cost of receipts newer than the last acknowledged snapshot.
+    /// Cost of receipts not yet financially settled through relay.
     #[serde(default)]
     pub consumption: BTreeMap<String, u128>,
     #[serde(default)]
@@ -59,7 +57,7 @@ pub(crate) struct Data {
     #[serde(default)]
     pub pricing_source: crate::pricing::source::State,
     /// Merchant customers with evidence of a model request reaching an upstream.
-    /// Independent of the bounded/acknowledged usage and refusal queues.
+    /// Independent of usage-detail retention and refusal queues.
     #[serde(default)]
     pub upstream_users: BTreeSet<String>,
     /// Public admission and control-key digests only. No merchant secret backups.
@@ -71,8 +69,9 @@ pub(crate) struct Data {
     pub usage: BTreeMap<String, crate::ledger::Usage>,
     #[serde(default)]
     pub merchant_refusal_counts: crate::merchants::refusals::Counts,
-    #[serde(default)]
-    pub moderation: BTreeMap<String, crate::moderation::UserRecord>,
+    /// Empty marker emitted by previous releases; populated history requires archival first.
+    #[serde(default, rename = "moderation", skip_serializing, deserialize_with = "empty_retired_moderation")]
+    pub(crate) _retired_moderation: (),
     #[serde(default, skip_serializing)]
     pub refusals: BTreeMap<String, crate::refusal::UserRecord>,
     #[serde(default)]
@@ -94,6 +93,28 @@ pub(crate) struct Data {
     #[serde(skip)]
     pub log_sequence: u64,
 }
+fn empty_retired_moderation<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<(), D::Error> {
+    let map = BTreeMap::<String, serde::de::IgnoredAny>::deserialize(deserializer)?;
+    if map.is_empty() {
+        Ok(())
+    } else {
+        Err(serde::de::Error::custom("archive retired moderation history before restoring"))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn retired_scanner_history_is_not_silently_dropped_on_restore() {
+    let mut snapshot = serde_json::to_value(Data::default()).unwrap();
+    assert!(snapshot.get("moderation").is_none());
+    snapshot["moderation"] = json!({});
+    let restored: Data = serde_json::from_value(snapshot.clone()).unwrap();
+    assert!(serde_json::to_value(restored).unwrap().get("moderation").is_none());
+    snapshot["moderation"] = json!({"user":{"recent_events":[{"id":1}]}});
+    assert!(serde_json::from_value::<Data>(snapshot).err().unwrap().to_string()
+        .contains("archive retired moderation history"));
+}
+
 impl Data {
     pub(crate) fn changed(&mut self) {
         self.generation += 1;
@@ -107,19 +128,16 @@ impl Data {
     }
     pub(crate) fn log(&mut self, event: Value) {
         self.log_sequence += 1;
-        self.admin_log.push_back(json!({"id": self.log_sequence, "created_at":crate::anthropic::unix_now(), "event": event}));
+        self.admin_log.push_back(json!({"id": self.log_sequence, "created_at":crate::time::unix_now(), "event": event}));
         while self.admin_log.len() > 1000 {
             self.admin_log.pop_front();
         }
     }
 }
 struct SyncState {
-    receipt_export: Option<crate::receipts::Export>,
     managed: bool,
     initialized: bool,
-    acknowledged: Option<Instant>,
-    exported: (u64, u64),
-    confirmed: Option<(u64, u64)>,
+    last_contact: Option<Instant>,
     diff_base: Option<(String, Value)>,
 }
 pub struct Vault {
@@ -152,12 +170,9 @@ impl Vault {
             }),
             boot_id: random_id()?,
             sync: Mutex::new(SyncState {
-                receipt_export: None,
                 managed: false,
                 initialized: true,
-                acknowledged: None,
-                exported: (0, 0),
-                confirmed: None,
+                last_contact: None,
                 diff_base: None,
             }),
             user_gates: Mutex::new(BTreeMap::new()),
@@ -180,12 +195,9 @@ impl Vault {
     }
     pub fn require_manager(&self) {
         *self.sync.lock().unwrap() = SyncState {
-            receipt_export: None,
             managed: true,
             initialized: false,
-            acknowledged: None,
-            exported: (0, 0),
-            confirmed: None,
+            last_contact: None,
             diff_base: None,
         };
     }
@@ -207,7 +219,7 @@ impl Vault {
         self.sync
             .lock()
             .unwrap()
-            .acknowledged
+            .last_contact
             .is_some_and(|t| t.elapsed().as_secs() < 630)
     }
     pub(crate) fn initialize(&self, mut data: Data) -> Result<()> {
@@ -218,9 +230,6 @@ impl Vault {
                 }
             }
         }
-        for merchant in data.merchants.values_mut() {
-            merchant.backup = None;
-        }
         let mut current = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
         if sync.initialized {
@@ -228,12 +237,7 @@ impl Vault {
         }
         // Restored balances/configuration are management input. Historical events
         // must never be re-signed as if this process had observed them.
-        if !data.events.is_empty()
-            || data
-                .receipt_head
-                .as_ref()
-                .is_some_and(|h| !h.valid(data.sequence))
-        {
+        if !data.events.is_empty() {
             return Err(VaultError("invalid receipt recovery state"));
         }
         if let Some(relay) = &data.receipt_relay {
@@ -260,128 +264,13 @@ impl Vault {
         sync.initialized = true;
         Ok(())
     }
-    pub(crate) fn checkpoint(&self) -> Result<Value> {
-        let data = self.lock()?;
-        let mut sync = self.sync.lock().unwrap();
-        if data.receipt_relay.is_none()
-            && data.receipt_head.is_some()
-            && sync.initialized
-            && sync.receipt_export.is_none()
-        {
-            sync.receipt_export = Some(self.receipt_signer.seal(&data, &self.boot_id)?);
-        }
-        let state = sync
-            .receipt_export
-            .as_ref()
-            .map(|e| e.state.clone())
-            .unwrap_or(serde_json::to_value(&*data).map_err(|_| VaultError("invalid snapshot"))?);
-        sync.exported = (
-            state["generation"].as_u64().unwrap(),
-            state["sequence"].as_u64().unwrap(),
-        );
-        let mut result = json!({"version":1,"balance_sync_version":1,"router_access_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"boot_id":self.boot_id,"initialized":sync.initialized,"state":state});
-        result["receipt_relay_version"] = 1.into();
-        result["receipt_public_key"] = self.receipt_signer.public_key().into();
-        if let Some(export) = &sync.receipt_export {
-            result["receipt_batch"] = export.batch.clone();
-        }
-        Ok(result)
-    }
-    #[cfg(test)]
-    pub(crate) fn acknowledge(
-        &self,
-        boot: &str,
-        generation: u64,
-        sequence: u64,
-        balances: BTreeMap<String, i64>,
-    ) -> Result<()> {
-        self.acknowledge_balances(boot, generation, sequence, Some(balances), BTreeMap::new())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn acknowledge_balances(
-        &self,
-        boot: &str,
-        generation: u64,
-        sequence: u64,
-        full: Option<BTreeMap<String, i64>>,
-        patch: BTreeMap<String, Option<i64>>,
-    ) -> Result<()> {
-        self.acknowledge_receipts(boot, generation, sequence, full, patch, None)
-    }
-    pub(crate) fn acknowledge_receipts(
-        &self,
-        boot: &str,
-        generation: u64,
-        sequence: u64,
-        full: Option<BTreeMap<String, i64>>,
-        patch: BTreeMap<String, Option<i64>>,
-        batch_hash: Option<&str>,
-    ) -> Result<()> {
-        let mut data = self.lock()?;
-        let mut sync = self.sync.lock().unwrap();
-        if data.receipt_relay.is_some() {
-            return Err(VaultError("use relay settlement acknowledgement"));
-        }
-        if boot != self.boot_id || !sync.initialized || (generation, sequence) != sync.exported {
-            return Err(VaultError("checkpoint acknowledgement mismatch"));
-        }
-        if let Some(export) = &sync.receipt_export {
-            if batch_hash != Some(export.head.batch_hash.as_str()) {
-                return Err(VaultError("receipt acknowledgement mismatch"));
-            }
-        } else if let Some(hash) = batch_hash
-            && data
-                .receipt_head
-                .as_ref()
-                .is_none_or(|head| head.batch_hash != hash)
-        {
-            return Err(VaultError("receipt acknowledgement mismatch"));
-        }
-        if patch.len() > 100_000 || patch.keys().any(|id| !crate::config::valid_name(id)) {
-            return Err(VaultError("invalid balance changes"));
-        }
-        let mut balances = full.unwrap_or_else(|| data.balances.clone());
-        for (id, amount) in patch {
-            if let Some(amount) = amount {
-                balances.insert(id, amount);
-            } else {
-                balances.remove(&id);
-            }
-        }
-        if balances.len() > 100_000
-            || balances.keys().any(|id| !crate::config::valid_name(id))
-            || (sync.confirmed == Some((generation, sequence)) && balances != data.balances)
-        {
-            return Err(VaultError("invalid or conflicting balance acknowledgement"));
-        }
-        // One atomic boundary: replace the saved balance and clear only the
-        // consumption already included in management's committed snapshot.
-        data.balances = balances;
-        if let Some(export) = sync.receipt_export.take() {
-            data.receipt_head = Some(export.head);
-        }
-        data.events
-            .retain(|e| e["seq"].as_u64().unwrap_or(u64::MAX) > sequence);
-        data.pending_event_bytes = data
-            .events
-            .iter()
-            .map(|v| serde_json::to_vec(v).map_or(0, |b| b.len()))
-            .sum();
-        data.consumption = crate::balances::consumption(&data.events);
-        data.changed();
-        sync.confirmed = Some((generation, sequence));
-        sync.acknowledged = Some(Instant::now());
-        self.persist_accounting(&data)?;
-        Ok(())
-    }
     pub(crate) fn configure_relay(&self, config: crate::receipt_relay::Config) -> Result<()> {
         config.validate()?;
         let mut data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
-        if !sync.managed || !sync.initialized || sync.receipt_export.is_some() {
+        if !sync.managed || !sync.initialized {
             return Err(VaultError(
-                "settle private checkpoint before enabling relay",
+                "initialize managed router before enabling relay",
             ));
         }
         if data.bundle.as_ref().is_some_and(|b| {
@@ -420,7 +309,6 @@ impl Vault {
                 balance_revision: 0,
                 last_settlement_hash: None,
             });
-            data.receipt_head = None;
             // Public relay records carry only a refusal type; retire old text copies.
             let last = data.refusal_queue.last_id;
             data.refusal_queue.delete_through(last);
@@ -531,12 +419,6 @@ impl Vault {
     pub fn accounts(&self) -> Result<Vec<Value>> {
         let data = self.lock()?;
         Ok(data.bundle.as_ref().into_iter().flat_map(|b| b.accounts.iter()).map(|(name,a)| json!({"name":name,"provider":a.provider,"revision":data.account_revisions[name],"proxy_configured":a.proxy.is_some()})).collect())
-    }
-    pub(crate) fn account_credential(&self, name: &str) -> Result<Option<Value>> {
-        let mut data = self.lock()?;
-        let value = data.bundle.as_ref().and_then(|b| b.accounts.get(name)).map(|a| json!({"name":name,"provider":a.provider,"revision":data.account_revisions[name],"credential":a.credential}));
-        data.log(json!({"operation":"account_credential_read","account":name}));
-        Ok(value)
     }
     pub fn put_account(&self, name: &str, provider: Provider, record: &Value) -> Result<()> {
         validate_account(name, record)?;
@@ -710,85 +592,6 @@ impl Vault {
 }
 
 impl Provision {
-    /// Explicit import boundary. Runtime reads neither these files nor environment secrets.
-    pub fn legacy(mut config: Config, lookup: impl Fn(&str) -> Option<String>) -> Result<Self> {
-        let mut secrets = BTreeMap::new();
-        let mut accounts = BTreeMap::new();
-        let mut files = BTreeMap::new();
-        let mut import = |name: &str| -> Result<()> {
-            let value = lookup(name)
-                .filter(|s| !s.trim().is_empty())
-                .ok_or(VaultError("missing legacy environment secret"))?;
-            secrets.insert(name.to_owned(), value);
-            Ok(())
-        };
-        for key in &config.keys {
-            import(&key.key_env)?;
-        }
-        if let Some(name) = &config.server.admin_key_env {
-            import(name)?;
-        }
-        if let Some(name) = &config.server.router_access_key_ref {
-            import(name)?;
-        }
-        for d in config.models.iter_mut().flat_map(|m| &mut m.deployments) {
-            if !d.enabled {
-                if d.oauth_file.take().is_some() {
-                    d.oauth_account = Some(d.id.clone());
-                }
-                continue;
-            }
-            if let Some(name) = d.model.strip_prefix("env:") {
-                d.model = lookup(name)
-                    .filter(|s| !s.trim().is_empty())
-                    .ok_or(VaultError("missing legacy model value"))?;
-            }
-            if !d.api_key_env.is_empty() {
-                import(&d.api_key_env)?;
-            }
-            // Explicit legacy conversion only. Runtime never falls back to server.proxy.
-            if d.proxy.is_none() {
-                d.proxy = config.server.proxy.clone();
-            }
-            if let Some(path) = d.oauth_file.take() {
-                let path = std::fs::canonicalize(path)
-                    .map_err(|_| VaultError("cannot read legacy account"))?;
-                let name = files
-                    .entry(path.clone())
-                    .or_insert_with(|| d.id.clone())
-                    .clone();
-                let text = Zeroizing::new(
-                    std::fs::read_to_string(path)
-                        .map_err(|_| VaultError("cannot read legacy account"))?,
-                );
-                let credential = serde_json::from_str(text.trim_start_matches('\u{feff}'))
-                    .map_err(|_| VaultError("invalid legacy account JSON"))?;
-                if let Some(existing) = accounts.get(&name) {
-                    let existing: &StoredAccount = existing;
-                    if existing.provider != d.provider || existing.proxy != d.proxy {
-                        return Err(VaultError(
-                            "shared legacy account requires the same provider and proxy",
-                        ));
-                    }
-                }
-                accounts.insert(
-                    name.clone(),
-                    StoredAccount {
-                        provider: d.provider,
-                        credential,
-                        proxy: d.proxy.take(),
-                        enabled: true,
-                    },
-                );
-                d.oauth_account = Some(name);
-            }
-        }
-        Ok(Self {
-            config,
-            secrets,
-            accounts,
-        })
-    }
 }
 fn validate_proxy(provider: Provider, proxy: &str) -> Result<()> {
     crate::network::validate_proxy(provider, proxy)

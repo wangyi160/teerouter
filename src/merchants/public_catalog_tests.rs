@@ -109,10 +109,8 @@ async fn public_inventory_is_aggregate_read_only_and_respects_pool_policy_and_ca
         serde_json::to_value(live.settings.lock().unwrap().clone()).unwrap(),
         before_settings
     );
-    let (_, inventory) = catalog_fixture(&r,"pools","alice-key").await;
-    assert_eq!(inventory["data"][0]["proxy_latency"], pool["proxy_latency"]);
     assert_eq!(
-        inventory["data"][0]["accounts"][0]["proxy_latency"],
+        pool["client_accounts"][0]["proxy_latency"],
         pool["proxy_latency"]
     );
     drop(permit);

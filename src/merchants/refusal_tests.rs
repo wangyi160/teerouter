@@ -81,9 +81,6 @@ async fn refusal_limit_is_per_user_across_keys_and_scoped_to_one_merchant() {
     .unwrap();
     assert_eq!(call(&server,Method::POST,"/v1/chat/completions","alice-regenerated",
         json!({"model":format!("{}/model-test",crypto::identity(&a)),"messages":[{"role":"user","content":"test"}]})).await.0,403);
-    let (_, models) = catalog_fixture(&r,"models","alice-key").await;
-    assert!(!models.to_string().contains(&pa));
-    assert!(models.to_string().contains(&pb));
     // Reset only the enforcement baseline, preserving the lifetime total.
     let mut clear = update(3);
     let mut customer = state["settings"]["customers"][0].clone();

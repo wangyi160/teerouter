@@ -20,7 +20,6 @@ struct Snapshot {
     sequence: u64,
     balances: BTreeMap<String, i64>,
     receipt_relay: Option<crate::receipt_relay::State>,
-    receipt_head: Option<crate::receipts::Head>,
     usage: BTreeMap<String, crate::ledger::Usage>,
     #[serde(default)]
     merchant_refusal_counts: Option<crate::merchants::refusals::Counts>,
@@ -35,7 +34,6 @@ impl Snapshot {
             sequence: data.sequence,
             balances: data.balances.clone(),
             receipt_relay: data.receipt_relay.clone(),
-            receipt_head: data.receipt_head.clone(),
             usage: data.usage.clone(),
             merchant_refusal_counts: Some(data.merchant_refusal_counts.clone()),
             events: data.events.clone(),
@@ -127,6 +125,11 @@ impl Snapshot {
                 return Err(bad());
             }
         }
+        // Existing relay journals wrote this retired field as null. Accept only
+        // that inert marker; never silently discard a private settlement head.
+        if meta.remove("receipt_head").is_some_and(|value| !value.is_null()) {
+            return Err(VaultError("legacy_private_receipt_journal_requires_migration"));
+        }
         meta.insert("usage".into(), Value::Object(usage));
         meta.insert("events".into(), events.into());
         if !counts.is_empty() {
@@ -150,15 +153,8 @@ impl Snapshot {
                 .as_ref()
                 .map_or(relay.start_sequence, |h| h.through_seq)
         } else {
-            self.receipt_head.as_ref().map_or_else(
-                || {
-                    self.events
-                        .front()
-                        .and_then(|r| r["seq"].as_u64())
-                        .map_or(self.sequence, |s| s.saturating_sub(1))
-                },
-                |h| h.through_seq,
-            )
+            self.events.front().and_then(|r| r["seq"].as_u64())
+                .map_or(self.sequence, |s| s.saturating_sub(1))
         };
         let mut seq = before;
         for row in &self.events {
@@ -372,7 +368,6 @@ impl Vault {
         };
         if saved.receipt_relay.is_none()
             && saved.events.is_empty()
-            && saved.receipt_head.is_none()
             && saved
                 .merchant_refusal_counts
                 .as_ref()
@@ -426,7 +421,6 @@ impl Vault {
         data.sequence = saved.sequence;
         data.balances = saved.balances;
         data.receipt_relay = saved.receipt_relay;
-        data.receipt_head = saved.receipt_head;
         data.usage = saved.usage;
         // Pre-upgrade journals have no counter field; retain management's
         // historical backfill in that case. New journals own the exact totals.

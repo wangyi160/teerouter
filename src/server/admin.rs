@@ -204,8 +204,6 @@ pub(super) async fn admin_checkpoint_diff(
     struct Base {
         boot_id: Option<String>,
         base_id: Option<String>,
-        #[serde(default)]
-        sign_receipts: bool,
     }
     let base: Base = serde_json::from_value(body).map_err(|_| invalid())?;
     if base.boot_id.as_ref().is_some_and(|id| id.len() > 64)
@@ -219,7 +217,6 @@ pub(super) async fn admin_checkpoint_diff(
         .checkpoint_export(
             base.boot_id.as_deref(),
             base.base_id.as_deref(),
-            base.sign_receipts,
         )
         .map_err(storage)?;
     Ok(([("cache-control", "no-store")], Json(result)))

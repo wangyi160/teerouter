@@ -14,22 +14,20 @@ fn managed() -> Arc<Vault> {
     sync(&vault, 100);
     vault
 }
-fn ack(vault: &Vault, checkpoint: &Value, balance: i64) -> Result<(), crate::vault::VaultError> {
-    vault.acknowledge(
-        &vault.boot_id,
-        checkpoint["state"]["generation"].as_u64().unwrap(),
-        checkpoint["state"]["sequence"].as_u64().unwrap(),
-        BTreeMap::from([("user".into(), balance)]),
-    )
+fn ack(vault: &Vault, command: &Value, balance: i64) -> Result<(), crate::vault::VaultError> {
+    let mut command = command.clone();
+    command["balances"] = json!({"user":balance});
+    vault.relay_settle(serde_json::from_value(command).unwrap())
 }
 fn sync(vault: &Vault, balance: i64) {
-    ack(vault, &vault.checkpoint().unwrap(), balance).unwrap();
+    crate::receipt_relay::test_support::enable(vault, &["user","other-user"]);
+    crate::receipt_relay::test_support::settle(vault, BTreeMap::from([("user".into(),balance)]));
 }
 fn record(ledger: &Ledger, key: &str, user: &str, cost: u64) {
     ledger.record(
         key,
         &Usage::default(),
-        &json!({"user_id":user,"billing":{"state":"calculated","charge_microusd":cost}}),
+        &json!({"user_id":user,"key":key,"billing":{"state":"calculated","charge_microusd":cost}}),
         None,
     );
 }
@@ -55,11 +53,11 @@ fn requests_only_accumulate_spend_shared_by_all_user_keys() {
 }
 
 #[test]
-fn ack_clears_only_persisted_spending_and_retries_do_not_change_balance() {
+fn relay_settlement_clears_only_uploaded_spending_and_retries_do_not_change_balance() {
     let v = managed();
     let ledger = Ledger::new(v.clone());
     record(&ledger, "key", "user", 30);
-    let snapshot = v.checkpoint().unwrap();
+    let snapshot = crate::receipt_relay::test_support::settlement(&v, BTreeMap::from([("user".into(),70)]));
     // This request finishes while management persists the first receipt.
     record(&ledger, "key", "user", 20);
     ack(&v, &snapshot, 70).unwrap();
@@ -125,7 +123,7 @@ fn pending_usage_does_not_invent_a_charge_and_large_sums_do_not_wrap() {
         v.lock().unwrap().consumption["user"],
         u128::from(u64::MAX) * 2
     );
-    let checkpoint = v.checkpoint().unwrap();
+    let checkpoint = v.checkpoint_export(None, None).unwrap();
     let restored: Data = serde_json::from_value(checkpoint["state"].clone()).unwrap();
     assert_eq!(restored.consumption["user"], u128::from(u64::MAX) * 2);
 }

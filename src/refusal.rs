@@ -1,4 +1,4 @@
-//! Observe explicit upstream signals before protocol conversion. Never inspect prompts.
+//! Observe explicit native upstream signals. Never inspect prompts.
 use crate::{Provider, upstream::Protocol};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

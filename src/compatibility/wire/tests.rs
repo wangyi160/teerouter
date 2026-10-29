@@ -98,7 +98,7 @@ fn catalog_metadata_remains_configurable_without_rewriting_generation() {
     let mut headers = HeaderMap::new();
     headers.insert("x-old", HeaderValue::from_static("old"));
     profile
-        .prepare("models", &mut url, &mut headers, None)
+        .prepare("models", &mut url, &mut headers)
         .unwrap();
     assert_eq!(headers["x-version"], "v2");
     assert!(!headers.contains_key("x-old"));
@@ -125,14 +125,13 @@ fn all_parameter_edits_fail_at_validation_and_runtime_without_mutation() {
         let mut url = Url::parse("https://api.openai.com/v1/responses?beta=false").unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("x-future", HeaderValue::from_static("caller"));
-        let body = json!({"unknown_parameter":1,"metadata":{"keep":true}});
-        let before = (url.clone(), headers.clone(), body.clone());
+        let before = (url.clone(), headers.clone());
         assert!(
             profile
-                .prepare("responses", &mut url, &mut headers, Some(&body))
+                .prepare("responses", &mut url, &mut headers)
                 .is_err()
         );
-        assert_eq!((url, headers, body), before);
+        assert_eq!((url, headers), before);
     }
 }
 

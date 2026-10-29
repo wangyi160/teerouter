@@ -153,7 +153,7 @@ async fn native_refusal_is_forwarded_and_audited_once(
     }
     assert_eq!(usage(&g).await["output_tokens"], 5);
     assert_eq!(upstream.calls.lock().unwrap().len(), 1);
-    let state = g.runtime.as_ref().unwrap().engine().vault.checkpoint().unwrap().to_string();
+    let state = g.runtime.as_ref().unwrap().engine().vault.checkpoint_export(None, None).unwrap().to_string();
     assert!(!state.contains("REQUEST_BODY_MUST_NOT_BE_SAVED") && !state.contains("DO_NOT_RETAIN"));
     assert_eq!(
         client()
@@ -170,28 +170,21 @@ async fn native_refusal_is_forwarded_and_audited_once(
 }
 
 #[tokio::test]
-async fn scanner_is_disabled_even_when_restoring_legacy_configuration_and_normal_text_is_not_flagged()
+async fn ordinary_refusal_words_are_not_scanned_or_flagged()
  {
-    let scanner = mock(vec![]).await;
     let mut normal = completion();
     normal["choices"][0]["message"]["content"] =
         json!("I cannot help with that. refusal content_policy_violation");
     let upstream = mock(vec![Reply::json(normal)]).await;
-    let mut config = configuration(&upstream);
-    config.moderation = Some(crate::moderation::Config {
-        api_key_ref: "MISSING_RETIRED_KEY".into(),
-        test_endpoint: Some(format!("{}/v1/scan", scanner.running.url)),
-        ..Default::default()
-    });
+    let config = configuration(&upstream);
     let g = gateway(config).await;
     let mut body = input(false);
     body["messages"][0]["content"] = json!("long agent context ".repeat(30_000));
     assert_eq!(post(&g, "/v1/chat/completions", body).await.status(), 200);
     assert_eq!(record(&g).await["pending"], 0);
     assert_eq!(upstream.calls.lock().unwrap().len(), 1);
-    assert!(scanner.calls.lock().unwrap().is_empty());
     let status = admin(&g, "/admin/status").await;
-    assert_eq!(status["lockllm_enabled"], false);
+    assert!(status.get("lockllm_enabled").is_none());
     assert_eq!(status["refusal_audit_enabled"], true);
     assert!(
         admin(&g, "/admin/config").await["config"]

@@ -138,7 +138,7 @@ fn test_report() -> Report {
 }
 
 #[test]
-fn queue_backpressure_never_evicts_and_usage_ack_does_not_consume_refusals() {
+fn queue_backpressure_never_evicts_and_checkpoint_does_not_consume_refusals() {
     let vault = crate::vault::Vault::memory().unwrap();
     let ledger = crate::ledger::Ledger::new(vault.clone());
     let report = test_report();
@@ -169,21 +169,13 @@ fn queue_backpressure_never_evicts_and_usage_ack_does_not_consume_refusals() {
                 .all(|e| e["event"].get("refusal").is_none())
         );
     }
-    let exported = vault.checkpoint().unwrap();
+    vault.checkpoint_export(None, None).unwrap();
     ledger.record("key", &usage, &json!({"user_id":"inflight"}), Some(&report));
-    vault
-        .acknowledge(
-            &vault.boot_id,
-            exported["state"]["generation"].as_u64().unwrap(),
-            exported["state"]["sequence"].as_u64().unwrap(),
-            std::collections::BTreeMap::new(),
-        )
-        .unwrap();
     assert!(!ledger.healthy());
     {
         let mut data = vault.lock().unwrap();
         assert_eq!(data.refusal_queue.events.len(), count + 1);
-        assert_eq!(data.events.len(), 1);
+        assert_eq!(data.events.len(), count + 1);
         assert_eq!(data.refusal_queue.delete_through(count as u64), Some(count));
         assert_eq!(data.refusal_queue.events[0].user_id, "inflight");
         assert_eq!(

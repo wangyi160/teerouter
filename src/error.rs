@@ -6,8 +6,6 @@ pub enum Error {
     MissingApiKey(&'static str),
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
-    #[error("unsupported parameter or content type: {0}")]
-    Unsupported(String),
     #[error("invalid provider response: {0}")]
     InvalidResponse(&'static str),
     #[error("provider returned HTTP {status}: {body}")]
@@ -58,7 +56,7 @@ impl ApiError {
                 "upstream_authentication_error",
                 "Provider OAuth credential is unavailable; check account login",
             ),
-            Error::InvalidRequest(_) | Error::Unsupported(_) => (
+            Error::InvalidRequest(_) => (
                 400,
                 "invalid_request",
                 "Request is invalid or unsupported by this provider",
@@ -69,6 +67,11 @@ impl ApiError {
                 400,
                 "upstream_rejected_request",
                 "Provider rejected the request; check the model's supported parameters",
+            ),
+            Error::Api { status: 413, .. } => (
+                413,
+                "upstream_body_too_large",
+                "Provider rejected the request body as too large",
             ),
             Error::Api { status: 429, .. } => {
                 (429, "upstream_rate_limit", "Provider rate limit exceeded")

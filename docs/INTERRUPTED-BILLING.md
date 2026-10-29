@@ -48,6 +48,5 @@ it, and never proves an explicit user action.
 
 Only interrupted/failed model requests may use local estimates. They remain
 labelled `estimated`/`mixed`, `coverage=partial`; hidden output is not invented.
-The actual serialized provider request (including protocol adaptation) supplies
-the input estimate. Text remains transient and is excluded from signed receipts.
+The actual serialized native provider request supplies the input estimate. Text remains transient and is excluded from signed receipts.
 Existing signed receipts are not rewritten under this new policy.

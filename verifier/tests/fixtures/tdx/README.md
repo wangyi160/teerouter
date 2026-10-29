@@ -9,5 +9,6 @@ SHA-256:
 - tdx_quote_collateral.json: b0a5f5fd620a8881b1eda45261fdf30dd930b49aff93231556645c81fcb4c0bc
 
 Offline tests use a historical clock inside this fixture's validity window.
-This is not a teellm deployment, a release allowlist, or current hardware evidence.
-Production verification downloads current collateral and uses the client's clock.
+This fixture provides historical cryptographic test input only, not a trusted
+Router policy or current hardware evidence. Normal verification downloads current
+collateral and uses the verifier's clock.

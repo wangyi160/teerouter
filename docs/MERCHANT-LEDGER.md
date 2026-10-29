@@ -1,13 +1,9 @@
-# Merchant accounting ownership
+# Router 内部的商户记账边界
 
-The platform ledger records each routed request once, including the merchant ID,
-request-time pricing, usage, calculated charge and refusal category. Its accounting
-journal and signed batch publisher remain responsible for durable export.
+根 runtime 对每个路由请求形成一份消费事件，关联商户、用户、账号池、模型、请求时冻结的价格、用量、金额和拒答类别。该事件由统一的账务日志与签名批次发布器处理。
 
-Merchant runtimes retain per-customer usage totals for limits and the existing
-upstream-user relationship. They no longer create a second usage/refusal outbox.
-Merchant availability therefore does not depend on a merchant client downloading
-or acknowledging receipts. The platform ledger's capacity and durability checks
-still apply to request admission.
+商户 runtime 保留客户用量汇总、限额及“曾收到上游响应”的可见关系，不建立第二份消费或拒答待确认队列。商户连接断开或不读取状态不会造成第二份明细积压，也不是模型请求准入的条件。
 
-Merchant applications obtain ledger records and settlement updates from their management platform. Legacy direct ledger query/ACK endpoints have been removed. Account and access-token uploads remain direct to the attested Router; public configuration is platform-mediated.
+根账务队列容量、未结算消费、上传确认和日志健康仍约束新请求。上传确认只释放已上传明细；结算确认通过独立接口更新同步余额和消费边界。详见 [同步协议](../OPERATIONS.md)、[签名批次](CONSUMPTION-PROOFS.md) 和 [本地日志](ACCOUNTING-JOURNAL.md)。
+
+Router 不提供商户逐笔流水查询或 ACK 接口。公开商户状态中的用量、客户关系和拒答计数是限额与授权所需的状态，不是额外账本。

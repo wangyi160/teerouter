@@ -56,13 +56,6 @@ pub(crate) struct Routed {
 }
 
 impl Engine {
-    pub fn new(config: Config, env: impl Fn(&str) -> Option<String>) -> Result<Arc<Self>, String> {
-        let bundle = crate::vault::Provision::legacy(config, env).map_err(|e| e.to_string())?;
-        let vault = crate::vault::Vault::memory().map_err(|e| e.to_string())?;
-        vault.provision(&bundle).map_err(|e| e.to_string())?;
-        Self::from_vault(vault)
-    }
-
     pub fn from_vault(vault: Arc<crate::vault::Vault>) -> Result<Arc<Self>, String> {
         let snapshot = vault.snapshot().map_err(|e| e.to_string())?;
         Self::from_snapshot(vault, &snapshot.bundle, None, snapshot.revision)
@@ -321,6 +314,7 @@ impl Engine {
                 .any(|g| g.backends.iter().any(|b| b.ready()))
     }
 
+    #[cfg(test)]
     pub(crate) async fn models(&self, account: usize) -> Value {
         let catalogs = self
             .groups
@@ -413,7 +407,7 @@ impl Engine {
     pub(crate) fn status(&self) -> Value {
         let mut groups: Vec<_> = self.groups.values().collect();
         groups.sort_by_key(|g| &g.config.name);
-        json!({"ready":self.ready(),"moderation_mode":"upstream_refusal","lockllm_enabled":false,"refusal_audit_enabled":true,"usage_healthy":self.ledger.healthy(),"storage":if self.vault.journal_enabled() {"persistent_accounting"} else {"memory"},"accounting_journal":self.vault.journal_status(),"initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
+        json!({"ready":self.ready(),"moderation_mode":"upstream_refusal","refusal_audit_enabled":true,"usage_healthy":self.ledger.healthy(),"storage":if self.vault.journal_enabled() {"persistent_accounting"} else {"memory"},"accounting_journal":self.vault.journal_status(),"initialized":self.vault.initialized(),"boot_id":self.vault.boot_id,
             "in_flight":self.global.used(),
             "models":groups.iter().map(|g| json!({"model":g.config.name,"deployments":g.backends.iter().map(|b| b.status()).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
@@ -912,6 +906,7 @@ impl Engine {
             request_client.refusal = Some(observer.clone());
             request_client.billing = ticket.billing.clone();
             request_client.activity = ticket.activity();
+            let credential_revision = request_client.oauth.as_ref().and_then(|a| a.request_revision().ok());
             let result = timeout_at(deadline, async {
                 let output = upstream::call(
                     &request_client,
@@ -988,7 +983,7 @@ impl Engine {
                 Ok(Err(error)) => {
                     if matches!(
                         &error,
-                        Error::OAuth(_) | Error::InvalidRequest(_) | Error::Unsupported(_)
+                        Error::OAuth(_) | Error::InvalidRequest(_)
                     ) || matches!(&error, Error::Http(e) if e.is_connect())
                     {
                         if let Some(billing) = &ticket.billing {
@@ -998,8 +993,9 @@ impl Engine {
                     self.cache.failed(&cache_request, backend);
                     if matches!(error, Error::Api { status: 401, .. })
                         && let Some(account) = &backend.client.oauth
+                        && let Some(revision) = credential_revision
                     {
-                        account.rejected();
+                        account.rejected(revision);
                     }
                     last_error = if observer.detected() {
                         ApiError::new(
@@ -1051,7 +1047,7 @@ fn retryable(error: &Error) -> bool {
         Error::Api { status, .. } => {
             matches!(status, 401 | 402 | 403 | 404 | 408 | 409 | 429 | 500..=599)
         }
-        Error::InvalidRequest(_) | Error::Unsupported(_) => false,
+        Error::InvalidRequest(_) => false,
         _ => true,
     }
 }

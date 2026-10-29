@@ -1,7 +1,9 @@
 //! Ordered, explicitly acknowledged refusal outbox. No automatic eviction.
 use super::{Event, PENDING_BYTES};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
+#[cfg(test)]
+use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -24,6 +26,7 @@ impl Queue {
         self.events.push_back(event);
         self.last_id
     }
+    #[cfg(test)]
     pub(crate) fn page(&self, after: u64, limit: usize) -> Value {
         // Binary search over the ordered deque; do not scan other users or old IDs.
         let start = self.events.partition_point(|event| event.id <= after);

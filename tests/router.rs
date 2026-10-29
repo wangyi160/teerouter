@@ -24,6 +24,8 @@ use tokio::{net::TcpListener, sync::Notify, task::JoinHandle};
 
 #[path = "router/agents.rs"]
 mod agents;
+#[path = "router/body_limits.rs"]
+mod body_limits;
 #[path = "router/cache.rs"]
 mod cache;
 #[path = "router/catalog_policy.rs"]
@@ -192,7 +194,7 @@ async fn mock_inner(replies: Vec<Reply>, automatic_catalog: bool) -> Mock {
         let notified = notified.clone();
         async move {
             let (parts, body) = request.into_parts();
-            let bytes = to_bytes(body, 2_000_000).await.unwrap();
+            let bytes = to_bytes(body, 32 * 1024 * 1024).await.unwrap();
             if automatic_catalog
                 && (parts.uri.path().ends_with("/models")
                     || parts.uri.path().ends_with("/language-models"))
@@ -299,7 +301,7 @@ fn engine(config: Config) -> Arc<Engine> {
             .into(),
         )
     };
-    Engine::new(config, lookup).unwrap()
+    Engine::from_fixture(config, lookup).unwrap()
 }
 
 async fn gateway(config: Config) -> Running {
@@ -869,8 +871,8 @@ async fn enforces_body_limit_json_validation_protocol_and_deadline() {
 async fn rejects_bad_configs_and_missing_env_before_listening() {
     let mock = mock(vec![]).await;
     let mut config = configuration(&mock);
-    assert!(Engine::new(config.clone(), |_| None).is_err());
-    assert!(Engine::new(config.clone(), |_| Some("duplicate".into())).is_err());
+    assert!(Engine::from_fixture(config.clone(), |_| None).is_err());
+    assert!(Engine::from_fixture(config.clone(), |_| Some("duplicate".into())).is_err());
     config.models[0].fallbacks = vec!["chat".into()];
     assert!(config.validate().unwrap_err().contains("cycle"));
     config.models[0].fallbacks = vec!["missing".into()];
@@ -1083,7 +1085,7 @@ async fn missing_usage_is_marked_unknown_and_not_fabricated() {
 #[rstest]
 fn example_config_requires_only_enabled_credentials_and_model() {
     let config = Config::parse(include_str!("../config.example.toml")).unwrap();
-    let engine = Engine::new(config, |name| match name {
+    let engine = Engine::from_fixture(config, |name| match name {
         "TEELLM_API_KEY" => Some("client-secret".into()),
         "OPENAI_API_KEY" => Some("provider-secret".into()),
         "OPENAI_MODEL" => Some("actual-model".into()),

@@ -196,16 +196,11 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
     let pa = format!("{}.official", crypto::identity(&a));
     let pb = format!("{}.official", crypto::identity(&b));
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, catalog) = catalog_fixture(&r,"models","alice-key").await;
+    let catalog = public_inventory(&r).await;
     assert_eq!(catalog["data"].as_array().unwrap().len(), 2);
-    assert_eq!(catalog["data"][0]["id"], "chatgpt/model-test");
-    assert_eq!(catalog["data"][1]["id"], "grok/model-test");
-    assert_eq!(catalog["data"][1]["router_pools"], json!([pb]));
-    assert_eq!(catalog["data"][1]["router_pricing"]["rates"][0]["pool"], pb);
-    assert_eq!(
-        catalog["data"][1]["router_pricing"]["rates"][0]["price_version"],
-        3
-    );
+    let grok = catalog["data"].as_array().unwrap().iter().find(|p| p["id"] == pb).unwrap();
+    assert_eq!(grok["models"][0]["id"], "grok/model-test");
+    assert_eq!(grok["price_version"], 3);
     let body = json!({"model":"grok/model-test","messages":[{"role":"user","content":"hello"}]});
     // A provider-qualified name, fixed pool, raw name, or legacy merchant
     // selector must never override the agent's provider constraint.
@@ -268,7 +263,7 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
         response.json::<Value>().await.unwrap()["error"]["code"],
         "agent_provider_mismatch"
     );
-    // Provider-scoped platform grants also apply to catalogs and legacy raw IDs.
+    // Provider-scoped platform grants also apply to generation using raw model IDs.
     let mut config = r.engine().config.clone();
     config.keys[0].models = vec!["grok/model-test".into()];
     r.apply(
@@ -280,12 +275,6 @@ async fn provider_model_ids_disambiguate_catalog_and_enforce_fixed_and_auto_rout
     )
     .await
     .unwrap();
-    let (_, catalog) = catalog_fixture(&r,"models","alice-key").await;
-    assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
-    assert_eq!(catalog["data"][0]["id"], "grok/model-test");
-    let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
-    assert_eq!(pools["data"].as_array().unwrap().len(), 1);
-    assert_eq!(pools["data"][0]["id"], pb);
     let response = grok_request(
         &server,
         "alice-key",

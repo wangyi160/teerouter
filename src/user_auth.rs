@@ -56,7 +56,7 @@ impl Replay {
         }
         let time = field("x-router-user-timestamp")?;
         let timestamp: u64 = time.parse().map_err(|_| denied())?;
-        let now = crate::anthropic::unix_now();
+        let now = crate::time::unix_now();
         if timestamp.to_string() != time
             || timestamp > now.saturating_add(60)
             || now > timestamp.saturating_add(300)
@@ -116,7 +116,7 @@ mod tests {
         headers.insert("authorization", "Bearer platform-issued".parse().unwrap());
         headers.insert("x-router-routing", "fixed-pool".parse().unwrap());
         headers.insert("user-agent", "codex_cli_rs/1.0".parse().unwrap());
-        let time = crate::anthropic::unix_now().to_string();
+        let time = crate::time::unix_now().to_string();
         let sig = key.sign(&wire::message(
             boot, &uid, &method, &uri, &headers, body, &time, nonce,
         ));
@@ -132,6 +132,20 @@ mod tests {
             headers.insert(name, value.parse().unwrap());
         }
         (uid, method, uri, headers)
+    }
+    #[test]
+    fn concurrent_replays_admit_exactly_once() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[71; 32]).unwrap();
+        let (uid, method, uri, headers) = proof(&key, "boot-concurrent", b"body", &"c".repeat(64));
+        let public = wire::hex(key.public_key().as_ref());
+        let verifier = Replay::default();
+        let admitted = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+                verifier.verify("boot-concurrent", &uid, &public, &method, &uri, &headers, b"body").is_ok()
+            })).collect();
+            handles.into_iter().map(|handle| usize::from(handle.join().unwrap())).sum::<usize>()
+        });
+        assert_eq!(admitted, 1);
     }
     #[test]
     fn owner_proof_covers_identity_boot_body_headers_path_and_replay() {

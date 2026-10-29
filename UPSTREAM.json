@@ -84,12 +84,14 @@
       "source": "litellm:litellm-rust/crates/{framer,llms,core-utils}",
       "target": [
         "src/sse.rs",
-        "src/stream.rs",
-        "src/anthropic.rs",
         "src/client.rs"
       ],
-      "details": "Earlier SSE extraction and adapted Claude/provider transformations; exact paths in NOTICE. Standalone server/config/scheduler/retries/accounting/ledger are newly implemented Rust components.",
-      "adaptations": ""
+      "details": "SSE framing and transport provenance retained. Former Claude request/response and chat stream transformations removed; all model traffic uses native forwarding.",
+      "adaptations": "No Chat-to-Claude conversion, field remapping, forced store/stream, or legacy conversion SDK entry points.",
+      "removed_targets": [
+        "src/anthropic.rs",
+        "src/stream.rs"
+      ]
     }
   ],
   "validation": {
@@ -106,7 +108,7 @@
       "tests/router/operations.rs",
       "tests/router/compatibility.rs",
       "tests/router.rs",
-      "tests/completion.rs",
+      "tests/native_client.rs",
       "tests/router/faithful.rs"
     ],
     "scope": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
@@ -134,18 +136,19 @@
       "chatgpt_capabilities": "https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs",
       "claude_capabilities": "https://platform.claude.com/docs/en/api/http/models"
     },
-    "behavior": "Mandatory account-scoped official catalog admission for every deployment, including legacy discover=false. Exact model IDs/aliases and explicit reasoning values must be supported by fresh authenticated metadata; missing evidence fails closed. Dynamic capability parsing with configurable official response pointers, no local allowlists or value rewrites. Fresh snapshots only, in memory and bound to credential revision, proxy, endpoint and profile. Scheduling, retries and pinning use each selected account catalog. Model listing exposes capabilities separately per deployment.",
-    "limitations": "OpenAI API-key catalogs and Claude manual budgets may lack required capability metadata; explicit controls fail closed without it. Omitted reasoning parameters remain omitted. Catalogs do not prove runtime model execution or all parameter combinations. Pricing imports live in the independent management platform; fixtures are not live vendor validation."
+    "behavior": "Shared official provider catalogs with per-account authorization, proxy and capability checks. Exact model IDs and explicit reasoning values must have fresh authenticated evidence. No generation parameter rewrites or static model allowlist.",
+    "limitations": "Official metadata may lack required capability detail; explicit unsupported controls fail closed. Catalogs do not prove account-level generation availability. Pricing import is implemented separately in src/pricing/source.rs; fixtures are not live vendor validation."
   },
   "storage_adaptation": {
-    "implementation": "New Rust integration; all router state is now memory-only.",
+    "implementation": "Memory business configuration with optional TEE-sealed SQLite accounting journal.",
     "files": [
       "src/vault.rs",
       "src/cli.rs",
-      "src/ledger.rs"
+      "src/ledger.rs",
+      "src/vault/journal.rs"
     ],
-    "behavior": "Router holds revision-controlled configuration, OAuth credentials, usage and model catalogs in memory. An external management service is responsible for encrypted persistence, initializing an empty router, and acknowledging checkpoints through the router API; its implementation is not included. Catalogs are rediscovered after restart.",
-    "key_management": "Protected stdin or encrypted Phala environment bootstrap; management database key belongs to the separate management process."
+    "behavior": "Business state in memory; optional authenticated SQLite accounting journal. Root checkpoints contain public recovery state; merchant secrets enter through the owner-authenticated account channel.",
+    "key_management": "TLS and receipt keys are generated per process. Journal keys derive from the local TEE interface; no external journal key is accepted."
   },
   "operations_adaptation": {
     "implementation": "New Rust integration; not claimed as an upstream port.",
@@ -159,7 +162,7 @@
       "src/resources.rs",
       "tests/router/operations.rs"
     ],
-    "behavior": "Validated configuration generations, atomic in-memory updates, account health, bounded session affinity and shared limits. Checkpoints contain no request bodies or ordinary responses; explicit refusal text and public refusal metadata are retained for administrator audit; management persists then acknowledges them. The router has no money accounting, database or backup file.",
+    "behavior": "Validated configuration generations, bounded sessions, account health and limits. Root checkpoints exclude merchant credentials. Native consumption billing, atomic settlement and the optional sealed journal are implemented in Router.",
     "compatibility": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only.",
     "excluded": "Current access-token-only protocol: merchant-managed authorization and renewal; Router retains access authentication, official model discovery, native parameter-preserving forwarding and proxy-bound requests. Refresh/discovery-of-token-endpoint/form-refresh code was removed. Legacy upstream references document provenance only."
   },
@@ -167,10 +170,14 @@
     "implementation": "New teellm Rust code; not copied from LiteLLM.",
     "files": [
       "src/official.rs",
-      "src/reasoning.rs",
-      "tests/router/trust.rs"
+      "src/client.rs",
+      "tests/router/trust.rs",
+      "tests/router/faithful.rs"
     ],
-    "behavior": "Only official OpenAI, Anthropic and xAI HTTPS hosts are permitted, with redirects disabled. Raw model and effort values are preserved."
+    "behavior": "Only official OpenAI, Anthropic and xAI HTTPS hosts are permitted, with redirects disabled. Raw model and effort values are preserved.",
+    "removed_targets": [
+      "src/reasoning.rs"
+    ]
   },
   "wire_configuration_adaptation": {
     "implementation": "New teellm Rust code; no added runtime dependencies or script engine.",
@@ -193,15 +200,14 @@
     "behavior": "Deny-only provider/model blocks and thinking/effort restrictions subtract from authenticated catalog evidence without modifying it. The router does not require callers to supply a token budget."
   },
   "refusal_audit": {
-    "implementation": "New Rust integration; LockLLM network scanning removed. Legacy moderation configuration and records are read-only compatibility data.",
+    "implementation": "Explicit native upstream signal observation; LockLLM configuration and historical scanner type hierarchy removed.",
     "files": [
       "src/refusal.rs",
       "src/refusal/tests.rs",
       "tests/router/refusals.rs",
-      "src/refusal/queue.rs",
-      "src/server/refusals.rs"
+      "src/refusal/queue.rs"
     ],
-    "behavior": "Observe explicit upstream signals before conversion, merge streaming parts and enqueue each refusal once with a global increasing ID and user identity. Admins page across all users and delete the archived prefix by ID. No automatic eviction; backlog pauses admission. Checkpoint usage ACK is independent, usage events retain only refusal_id, and deleted bodies have no per-user or usage-log copy. Queue, counter and deletion watermark survive checkpoint restore. No request-body storage or plain-text refusal classification.",
+    "behavior": "Relay records retain refusal type, not original text. Merchant counters persist independently. Standalone refusal HTTP APIs are removed. Bounded historical queue decoding remains for state recovery; nonempty retired scanner history requires prior archival.",
     "validation": "Local JSON/SSE fixtures for retained providers; no live vendor policy-trigger tests."
   }
 }

@@ -45,7 +45,6 @@ fn public_update(value: &Value) -> Result<MerchantUpdate, ApiError> {
         if d.proxy.as_deref().is_some_and(|p| p != "[redacted]")
             || d.oauth_file.is_some()
             || d.api_base.is_some()
-            || d.gemini_project.is_some()
         {
             return Err(invalid());
         }

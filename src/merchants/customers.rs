@@ -63,25 +63,6 @@ pub(super) fn visible(live: &Live, settings: &Settings) -> Result<Vec<Customer>,
         .collect())
 }
 
-// Old capsules have already ACKed their usage rows. Successful aggregate usage
-// is still positive evidence; registration and zero-use customer overrides are not.
-#[cfg(test)]
-pub(super) fn restore(data: &mut Data) {
-    data.upstream_users
-        .extend(data.refusal_queue.events.iter().map(|e| e.user_id.clone()));
-    if let Some(bundle) = &data.bundle {
-        for key in &bundle.config.keys {
-            if data
-                .usage
-                .get(&key.name)
-                .is_some_and(|u| u.requests > u.errors || u.input_tokens > 0 || u.output_tokens > 0)
-            {
-                data.upstream_users.insert(key.user_id.clone());
-            }
-        }
-    }
-}
-
 pub(super) fn configure(
     config: &mut Config,
     settings: &Settings,

@@ -63,16 +63,9 @@ async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
     engine.vault.require_manager();
     let initial = engine.vault.lock().unwrap().clone();
     engine.vault.initialize(initial).unwrap();
-    let checkpoint = engine.vault.checkpoint().unwrap();
-    engine
-        .vault
-        .acknowledge(
-            &engine.vault.boot_id,
-            checkpoint["state"]["generation"].as_u64().unwrap(),
-            checkpoint["state"]["sequence"].as_u64().unwrap(),
-            std::collections::BTreeMap::from([("test-user".into(), 2_000_000)]),
-        )
-        .unwrap();
+    crate::receipt_relay::test_support::enable(&engine.vault,&["test-user"]);
+    crate::receipt_relay::test_support::settle(&engine.vault,
+        std::collections::BTreeMap::from([("test-user".into(),2_000_000)]));
     let g = run_fixture(engine.clone()).await;
     let current: Value = admin(&g, "GET", "/admin/config", Value::Null)
         .await
@@ -110,7 +103,7 @@ async fn balance_policy_hot_update_validates_and_restores_with_checkpoint() {
         409
     );
     assert_eq!(admin(&g, "PATCH", "/admin/config", json!({"expected_revision":changed["revision"], "patch":{"balance_concurrency":{"tiers":[]}}})).await.status(), 400);
-    let saved = engine.vault.checkpoint().unwrap();
+    let saved = engine.vault.checkpoint_export(None, None).unwrap();
     assert_eq!(
         saved["state"]["bundle"]["config"]["balance_concurrency"],
         policy

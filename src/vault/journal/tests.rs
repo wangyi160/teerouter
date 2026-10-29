@@ -168,6 +168,38 @@ struct Cloud {
     fail: AtomicUsize,
     bodies: Mutex<Vec<Value>>,
 }
+
+#[tokio::test]
+async fn settlement_write_failure_never_acknowledges_success_and_restart_preserves_spend() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cloud, url, task) = cloud().await;
+    let v = create(dir.path(), &url);
+    record(&v, 10);
+    v.publish_public(true).await.unwrap();
+    let head = v.lock().unwrap().receipt_relay.as_ref().unwrap().uploaded.clone().unwrap();
+    let mut saved = recovery(&v);
+    saved.sequence = head.through_seq;
+    saved.balances.insert("u".into(), 990);
+    saved.receipt_relay.as_mut().unwrap().uploaded = Some(head.clone());
+    saved.receipt_relay.as_mut().unwrap().settled = Some(head.clone());
+    let ack = json!({"boot_id":v.boot_id,"revision":1,"through":head,
+        "balances":{"u":990},"balances_patch":null});
+    v.journal.as_ref().unwrap().lock().unwrap().db.execute_batch("PRAGMA query_only=ON").unwrap();
+    for _ in 0..2 {
+        assert!(v.relay_settle(serde_json::from_value(ack.clone()).unwrap()).is_err());
+    }
+    assert!(!v.serving());
+    drop(v);
+    let next = reopen(dir.path(), saved);
+    assert_eq!(crate::balances::available(&next.lock().unwrap(), "u").unwrap(), 990);
+    assert_eq!(next.lock().unwrap().consumption["u"], 10);
+    let mut ack = ack;
+    ack["boot_id"] = next.boot_id.clone().into();
+    next.relay_settle(serde_json::from_value(ack).unwrap()).unwrap();
+    assert!(next.lock().unwrap().consumption.is_empty());
+    assert_eq!(crate::balances::available(&next.lock().unwrap(), "u").unwrap(), 990);
+    task.abort();
+}
 async fn upload(
     State(cloud): State<Arc<Cloud>>,
     Json(body): Json<Value>,
@@ -385,4 +417,22 @@ fn forced_process_kill_preserves_committed_wal_without_destructors() {
     let v = reopen(dir.path(), saved);
     assert_eq!(v.lock().unwrap().consumption["u"], 17);
     assert_eq!(v.lock().unwrap().events.len(), 1);
+}
+
+#[test]
+fn retired_null_head_in_existing_relay_journal_preserves_pending_spend() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = create(dir.path(), "https://example.org");
+    record(&v, 17);
+    let data = v.lock().unwrap();
+    let snapshot = Snapshot::capture(&data,&v.relay_publishing.lock().unwrap());
+    let mut rows = snapshot.rows().unwrap();
+    assert!(!rows.contains_key("m/receipt_head"));
+    rows.insert("m/receipt_head".into(),b"null".to_vec());
+    let restored = Snapshot::decode(&rows).unwrap().unwrap();
+    assert_eq!(restored.sequence,1);
+    assert_eq!(crate::balances::consumption(&restored.events)["u"],17);
+    assert!(restored.receipt_relay.is_some());
+    rows.insert("m/receipt_head".into(),br#"{"through_seq":1}"#.to_vec());
+    assert_eq!(Snapshot::decode(&rows).err().unwrap().0,"legacy_private_receipt_journal_requires_migration");
 }

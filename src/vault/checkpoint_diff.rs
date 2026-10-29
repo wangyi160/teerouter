@@ -1,5 +1,5 @@
 //! One bounded, process-local baseline. A missing/stale base falls back to a full
-//! snapshot; acknowledgements still refer to the exact exported generation.
+//! snapshot. Export never signs receipts or advances financial settlement.
 use super::*;
 
 fn changes(before: &Value, after: &Value, path: &mut Vec<String>, out: &mut Vec<Value>) {
@@ -29,29 +29,14 @@ fn changes(before: &Value, after: &Value, path: &mut Vec<String>, out: &mut Vec<
 }
 
 impl Vault {
-    #[cfg(test)]
-    pub(crate) fn checkpoint_diff(&self, boot: Option<&str>, base: Option<&str>) -> Result<Value> {
-        self.checkpoint_export(boot, base, false)
-    }
     pub(crate) fn checkpoint_export(
         &self,
         boot: Option<&str>,
         base: Option<&str>,
-        signed: bool,
     ) -> Result<Value> {
         let data = self.lock()?;
         let mut sync = self.sync.lock().unwrap();
-        if (signed || data.receipt_head.is_some())
-            && data.receipt_relay.is_none()
-            && sync.initialized
-            && sync.receipt_export.is_none()
-        {
-            sync.receipt_export = Some(self.receipt_signer.seal(&data, &self.boot_id)?);
-        }
-        let state = match &sync.receipt_export {
-            Some(export) => export.state.clone(),
-            None => serde_json::to_value(&*data).map_err(|_| VaultError("invalid snapshot"))?,
-        };
+        let state = serde_json::to_value(&*data).map_err(|_| VaultError("invalid snapshot"))?;
         let id = random_id()?;
         let mut result = json!({"version":1,"balance_sync_version":1,"router_access_version":1,"checkpoint_diff_version":1,"receipt_proof_version":1,"merchant_refusal_limit_version":1,
             "receipt_relay_version":1,"receipt_public_key":self.receipt_signer.public_key(),
@@ -67,14 +52,12 @@ impl Vault {
         } else {
             result["state"] = state.clone();
         }
-        if let Some(export) = &sync.receipt_export {
-            result["receipt_batch"] = export.batch.clone();
-        }
-        sync.exported = (
-            state["generation"].as_u64().unwrap(),
-            state["sequence"].as_u64().unwrap(),
-        );
         sync.diff_base = Some((id, state));
+        // Relay-only managers no longer call the retired private ACK endpoint.
+        // A successful authenticated checkpoint pull is also evidence of contact.
+        if sync.managed && sync.initialized {
+            sync.last_contact = Some(Instant::now());
+        }
         Ok(result)
     }
 }
@@ -83,97 +66,33 @@ impl Vault {
 mod tests {
     use super::*;
 
-    fn append(vault: &Vault, charge: u64) {
-        let mut data = vault.lock().unwrap();
-        data.sequence += 1;
-        let seq = data.sequence;
-        data.events.push_back(json!({"seq":seq,"event":{"user":"u","billing":{"state":"calculated","charge_microusd":charge}}}));
-        data.changed();
-    }
     #[test]
-    fn signed_checkpoint_retries_freeze_records_and_ack_preserves_new_spend() {
+    fn checkpoint_pull_updates_contact_without_a_legacy_ack() {
         let vault = Vault::memory().unwrap();
-        append(&vault, 7);
-        let first = vault.checkpoint_export(None, None, true).unwrap();
-        append(&vault, 9);
-        let retry = vault.checkpoint_export(None, None, true).unwrap();
-        assert_eq!(first["receipt_batch"], retry["receipt_batch"]);
-        assert_eq!(first["state"], retry["state"]);
-        let generation = first["state"]["generation"].as_u64().unwrap();
-        assert!(
-            vault
-                .acknowledge_balances(&vault.boot_id, generation, 1, None, BTreeMap::new())
-                .is_err()
-        );
-        assert_eq!(vault.lock().unwrap().events.len(), 2);
-        let hash = first["receipt_batch"]["batch_hash"].as_str().unwrap();
-        for _ in 0..2 {
-            vault
-                .acknowledge_receipts(
-                    &vault.boot_id,
-                    generation,
-                    1,
-                    None,
-                    BTreeMap::new(),
-                    Some(hash),
-                )
-                .unwrap();
-        }
-        assert_eq!(vault.lock().unwrap().events.len(), 1);
-        assert_eq!(vault.lock().unwrap().events[0]["seq"], 2);
-        let second = vault.checkpoint_export(None, None, true).unwrap();
-        let m: Value =
-            serde_json::from_str(second["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
-        assert_eq!(m["previous_batch_hash"], hash);
-        assert_eq!(m["sequence_before"], 1);
-        assert_eq!(m["sequence_through"], 2);
-        assert_eq!(m["record_count"], 1);
-        assert_eq!(m["charge_microusd"], "9");
-    }
-    #[test]
-    fn restart_is_explicit_and_restored_events_cannot_be_signed() {
-        let old = Vault::memory().unwrap();
-        append(&old, 5);
-        let export = old.checkpoint_export(None, None, true).unwrap();
-        old.acknowledge_receipts(
-            &old.boot_id,
-            export["state"]["generation"].as_u64().unwrap(),
-            1,
-            None,
-            BTreeMap::new(),
-            export["receipt_batch"]["batch_hash"].as_str(),
-        )
-        .unwrap();
-        let saved = old.lock().unwrap().clone();
-        append(&old, 999); // Deliberately lost: not part of the durable saved state.
-        let next = Vault::memory().unwrap();
-        next.require_manager();
-        assert!(next.initialize(old.lock().unwrap().clone()).is_err());
-        next.initialize(saved).unwrap();
-        append(&next, 8);
-        let export = next.checkpoint_export(None, None, true).unwrap();
-        let m: Value =
-            serde_json::from_str(export["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
-        assert_eq!(m["continuity"], "restart");
-        assert_eq!(m["charge_microusd"], "8");
-        assert_eq!(m["previous_boot_id"], old.boot_id);
-        assert_ne!(m["public_key"], old.receipt_signer.public_key());
+        vault.require_manager();
+        vault.initialize(Data::default()).unwrap();
+        assert!(!vault.manager_connected());
+        vault.checkpoint_export(None, None).unwrap();
+        assert!(vault.manager_connected());
+        vault.sync.lock().unwrap().last_contact = Instant::now().checked_sub(std::time::Duration::from_secs(631));
+        assert!(!vault.manager_connected());
+        assert!(vault.serving(), "contact freshness must not become a serving lease");
     }
 
     #[test]
     fn checkpoint_diff_excludes_unchanged_state_and_falls_back_for_wrong_base() {
         let vault = Vault::memory().unwrap();
         vault.lock().unwrap().balances.insert("u".into(), 50);
-        let first = vault.checkpoint_diff(None, None).unwrap();
+        let first = vault.checkpoint_export(None, None).unwrap();
         assert!(first.get("state").is_some());
         let unchanged = vault
-            .checkpoint_diff(Some(&vault.boot_id), first["checkpoint_id"].as_str())
+            .checkpoint_export(Some(&vault.boot_id), first["checkpoint_id"].as_str())
             .unwrap();
         assert_eq!(unchanged["changes"], json!([]));
         assert!(unchanged.get("state").is_none());
         vault.lock().unwrap().balances.insert("u".into(), 75);
         let changed = vault
-            .checkpoint_diff(Some(&vault.boot_id), unchanged["checkpoint_id"].as_str())
+            .checkpoint_export(Some(&vault.boot_id), unchanged["checkpoint_id"].as_str())
             .unwrap();
         assert_eq!(
             changed["changes"],
@@ -181,14 +100,14 @@ mod tests {
         );
         assert!(
             vault
-                .checkpoint_diff(Some("old-boot"), changed["checkpoint_id"].as_str())
+                .checkpoint_export(Some("old-boot"), changed["checkpoint_id"].as_str())
                 .unwrap()
                 .get("state")
                 .is_some()
         );
         assert!(
             vault
-                .checkpoint_diff(Some(&vault.boot_id), first["checkpoint_id"].as_str())
+                .checkpoint_export(Some(&vault.boot_id), first["checkpoint_id"].as_str())
                 .unwrap()
                 .get("state")
                 .is_some()
@@ -209,43 +128,4 @@ mod tests {
         assert_eq!(delta.len(), 5);
     }
 
-    #[test]
-    fn delta_balance_ack_preserves_others_and_is_idempotent() {
-        let vault = Vault::memory().unwrap();
-        vault.lock().unwrap().balances = BTreeMap::from([("u".into(), 100), ("other".into(), 42)]);
-        let cp = vault.checkpoint_diff(None, None).unwrap();
-        let generation = cp["state"]["generation"].as_u64().unwrap();
-        let patch = BTreeMap::from([("u".into(), Some(70))]);
-        for _ in 0..2 {
-            vault
-                .acknowledge_balances(&vault.boot_id, generation, 0, None, patch.clone())
-                .unwrap();
-        }
-        assert_eq!(
-            vault.lock().unwrap().balances,
-            BTreeMap::from([("u".into(), 70), ("other".into(), 42)])
-        );
-        assert!(
-            vault
-                .acknowledge_balances(
-                    &vault.boot_id,
-                    generation,
-                    0,
-                    None,
-                    BTreeMap::from([("u".into(), Some(60))])
-                )
-                .is_err()
-        );
-        let cp = vault.checkpoint().unwrap();
-        vault
-            .acknowledge_balances(
-                &vault.boot_id,
-                cp["state"]["generation"].as_u64().unwrap(),
-                0,
-                None,
-                BTreeMap::from([("other".into(), None)]),
-            )
-            .unwrap();
-        assert!(!vault.lock().unwrap().balances.contains_key("other"));
-    }
 }

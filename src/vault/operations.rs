@@ -251,7 +251,7 @@ impl Vault {
     ) -> Result<()> {
         let mut data = self.lock()?;
         if data.account_revisions.get(name) == Some(&revision) {
-            data.health.insert(name.into(),(revision,json!({"state":state,"failures":failures,"next_retry_at":retry,"last_error":error,"updated_at":crate::anthropic::unix_now()})));
+            data.health.insert(name.into(),(revision,json!({"state":state,"failures":failures,"next_retry_at":retry,"last_error":error,"updated_at":crate::time::unix_now()})));
         }
         Ok(())
     }
@@ -274,18 +274,18 @@ impl Vault {
     }
     pub(crate) fn maintain(&self, ops: &crate::config::Operations) -> Result<()> {
         let mut data = self.lock()?;
-        let cutoff = crate::anthropic::unix_now().saturating_sub(ops.log_retention_days * 86400);
+        let cutoff = crate::time::unix_now().saturating_sub(ops.log_retention_days * 86400);
         data.admin_log
             .retain(|v| v["created_at"].as_u64().is_some_and(|n| n >= cutoff));
         while data.admin_log.len() as u64 > ops.max_log_rows {
             data.admin_log.pop_front();
         }
         data.sessions
-            .retain(|_, (_, expires)| *expires >= crate::anthropic::unix_now());
+            .retain(|_, (_, expires)| *expires >= crate::time::unix_now());
         data.catalog.retain(|_, v| {
             v["fetched_at"]
                 .as_u64()
-                .is_some_and(|t| t.saturating_add(604800) >= crate::anthropic::unix_now())
+                .is_some_and(|t| t.saturating_add(604800) >= crate::time::unix_now())
         });
         Ok(())
     }
@@ -308,7 +308,7 @@ impl Vault {
             .lock()?
             .sessions
             .get(&(owner.into(), kind.into(), hash(token)))
-            .filter(|(_, expires)| *expires >= crate::anthropic::unix_now())
+            .filter(|(_, expires)| *expires >= crate::time::unix_now())
             .map(|(b, _)| b.clone()))
     }
     #[cfg(test)]
@@ -338,7 +338,7 @@ impl Vault {
             return Ok(false);
         }
         let binding = if stale { "!ambiguous" } else { binding };
-        let now = crate::anthropic::unix_now();
+        let now = crate::time::unix_now();
         data.sessions.retain(|_, (_, expires)| *expires >= now);
         let key = (owner.into(), kind.into(), hash(token));
         if data.sessions.len() as u64 >= max && !data.sessions.contains_key(&key) {

@@ -6,17 +6,17 @@ Revision: 98465fe2ba4fc26ab9e6ab366c7f90f8e4d9c685
 
 The SSE decoder in src/sse.rs is extracted and modified from
 litellm-rust/crates/framer/src/sse.rs. The streaming transport follows
-litellm-rust/crates/framer/src/framed.rs. Claude request/response and usage
-normalization are adapted from litellm-rust/crates/llms/src/anthropic/chat/
+litellm-rust/crates/framer/src/framed.rs. Retired Claude request/response and usage
+normalization were adapted from litellm-rust/crates/llms/src/anthropic/chat/
 transformation.rs and litellm-rust/crates/core-utils/src/core_helpers.rs.
-Compatible-provider parameter mapping follows litellm-rust/crates/llms/src/
+Retired compatible-provider parameter mapping followed litellm-rust/crates/llms/src/
 openai_like/chat/transformation.rs.
 
-Modifications remove the surrounding workspace and platform dependencies,
+Modifications remove the surrounding workspace dependencies,
 restrict providers to OpenAI, Claude and Grok, introduce a standalone HTTP client, and implement
-tool, image and streaming support missing from the upstream Rust chat path.
+native protocol forwarding. The former Chat-to-Claude and stream conversion implementation has been removed.
 
-The standalone HTTP server, authentication, configuration, multi-deployment
+The standalone HTTP server, authentication, configuration, multi-account
 scheduler, retry/fallback logic, circuit breakers, limits and in-memory usage collection
 are newly implemented in Rust for this project.
 
@@ -25,7 +25,7 @@ OAuth ports added from the same LiteLLM revision:
 - litellm/llms/xai/oauth.py and its Chat/Responses integration
 - litellm-rust/crates/llms/src/anthropic/common_utils.rs (Rust extraction)
 - litellm/completion_extras/litellm_responses_transformation/transformation.py
-The ChatGPT default instruction text is retained in src/oauth/chatgpt_instructions.txt.
+ChatGPT instruction injection and its instruction asset were removed; Agent instructions pass through unchanged.
 Selected upstream authentication test cases were adapted into Rust tests.
 
 UPSTREAM.json records ported functions, integration changes and validation.
@@ -39,21 +39,21 @@ In-memory state/credential injection/CLI integration is new teellm code, not an 
 
 Online administration, validated configuration generations, provider compatibility
 profiles, account health, session affinity, shared account limits,
-bounded resource handling, management checkpoint/restore and operational diagnostics
+bounded resource handling, Router checkpoint/restore and operational diagnostics
 are new teellm Rust integration code. OAuth algorithms retain the provenance above.
-Declarative per-operation request header/query/JSON/form configuration is new
-teellm code, applied after the retained provider transformations. It includes no
+Declarative discovery header/query configuration is new teellm code.
+Generation body rewrites and JSON/form conversion are forbidden. It includes no
 script interpreter or replacement OAuth/streaming protocol implementation.
 Official-host enforcement, raw model routing with separate pool selection, and
-lossless reasoning-parameter bridging/protection are new teellm Rust integration.
+native reasoning-parameter preservation/protection are new teellm Rust integration.
 
 The private teerouter-egress component links unmodified Xray-core v1.260327.0
 (upstream release v26.3.27), https://github.com/XTLS/Xray-core, under MPL-2.0.
 Source is available at https://github.com/XTLS/Xray-core/tree/v26.3.27.
 The helper and Rust pipe/SOCKS lifecycle integration are new teerouter code.
 Exact transitive versions and checksums are recorded in egress/go.mod and go.sum.
-Container distributions include dependency notices and the Go license under
-/usr/share/doc/teerouter-egress; the helper is part of the measured router image.
+Dependency copyright and license notices must be preserved when redistributing
+the helper and its dependencies; the helper is part of the Router trust boundary.
 
 Error/interruption-only text estimation uses unmodified tiktoken-rs 0.12.1
 (MIT), https://github.com/zurawiki/tiktoken-rs,

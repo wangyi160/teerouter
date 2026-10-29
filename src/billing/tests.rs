@@ -105,7 +105,7 @@ fn openai_cache_and_reasoning_are_not_double_counted() {
 }
 
 #[test]
-fn claude_stream_merges_cumulative_usage_and_cache_durations_before_conversion() {
+fn claude_stream_merges_native_cumulative_usage_and_cache_durations() {
     let o = Observer::new(
         Provider::Anthropic,
         &json!({"messages":[{"role":"user","content":"hello"}]}),

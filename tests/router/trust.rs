@@ -44,43 +44,20 @@ async fn removed_provider_routes_and_configuration_cannot_reach_upstream() {
 }
 
 #[tokio::test]
-async fn legacy_empty_provider_fields_restore_without_reenabling_removed_features() {
+async fn retired_provider_and_scanner_fields_are_rejected_even_when_null() {
     let upstream = mock(vec![]).await;
-    let mut legacy = serde_json::to_value(configuration(&upstream)).unwrap();
-    legacy["models"][0]["deployments"][0]["gemini_project"] = Value::Null;
-    legacy["compatibility"] = json!({"openai":{"client_secret_ref":null,"requests":{"responses":{"client_secret_ref":null}}}});
-    let config: Config = serde_json::from_value(legacy.clone()).unwrap();
-    config.validate().unwrap();
-    let encoded = serde_json::to_value(config).unwrap();
-    assert!(
-        encoded["models"][0]["deployments"][0]
-            .get("gemini_project")
-            .is_none()
-    );
-    assert!(
-        encoded["compatibility"]["openai"]
-            .get("client_secret_ref")
-            .is_none()
-    );
-    assert!(
-        encoded["compatibility"]["openai"]["requests"]["responses"]
-            .get("client_secret_ref")
-            .is_none()
-    );
-    for path in [
-        "/models/0/deployments/0/gemini_project",
-        "/compatibility/openai/client_secret_ref",
-        "/compatibility/openai/requests/responses/client_secret_ref",
-    ] {
-        let mut invalid = legacy.clone();
-        *invalid.pointer_mut(path).unwrap() = json!("legacy-value");
-        assert!(
-            serde_json::from_value::<Config>(invalid)
-                .unwrap()
-                .validate()
-                .is_err()
-        );
+    let clean = serde_json::to_value(configuration(&upstream)).unwrap();
+    for value in [Value::Null, json!("retired-value")] {
+        let mut removed = clean.clone();
+        removed["models"][0]["deployments"][0]["gemini_project"] = value.clone();
+        assert!(serde_json::from_value::<Config>(removed).is_err());
+        let mut removed = clean.clone();
+        removed["moderation"] = value.clone();
+        assert!(serde_json::from_value::<Config>(removed).is_err());
+        assert!(serde_json::from_value::<crate::compatibility::Profile>(json!({"client_secret_ref":value})).is_err());
+        assert!(serde_json::from_value::<crate::compatibility::RequestProfile>(json!({"client_secret_ref":value})).is_err());
     }
+    assert!(upstream.calls.lock().unwrap().is_empty());
 }
 
 #[rstest]

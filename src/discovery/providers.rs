@@ -284,6 +284,7 @@ impl Shared {
             // not a different merchant's capability overrides.
             client.profile = profile.clone();
             let revision_before = catalog.current_revision(account).ok();
+            let credential_revision = client.oauth.as_ref().and_then(|a| a.request_revision().ok());
             let result = tokio::time::timeout_at(
                 deadline.min(Instant::now() + attempt_budget),
                 fetch::models(&client, &options.codex_client_version),
@@ -324,16 +325,9 @@ impl Shared {
                         && self.active(&owner, &catalog)
                         && catalog.current_revision(account).ok() == revision_before
                         && let Some(oauth) = &client.oauth
-                        && let Some(Some(revision)) = revision_before
+                        && let Some(revision) = credential_revision
                     {
-                        let _ = catalog.vault.record_health(
-                            &oauth.name,
-                            revision,
-                            "reauthorization_required",
-                            0,
-                            0,
-                            Some("access_rejected"),
-                        );
+                        oauth.rejected(revision);
                     }
                     state.error = Some(match error {
                         Error::Api {

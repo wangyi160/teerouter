@@ -1,9 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 
-use crate::{CompletionStream, Error, Provider, anthropic, stream};
+use crate::{Error, Provider};
 
 #[derive(Clone)]
 pub struct Client {
@@ -22,7 +24,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Keep the validated caller's identity through chat/OAuth adapters too.
+    /// Keep the validated caller's identity through native/OAuth forwarding.
     /// This runs on a per-request clone, never on catalog/probe clients.
     pub(crate) fn preserve_agent_headers(&mut self, headers: &HeaderMap) {
         for &name in crate::agent::HEADERS {
@@ -38,19 +40,14 @@ impl Client {
         }
     }
 
-    pub fn new(provider: Provider, api_key: impl AsRef<str>) -> Result<Self, Error> {
+    #[cfg(test)]
+    pub(crate) fn new(provider: Provider, api_key: impl AsRef<str>) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Self::with_http_client(provider, api_key, http)
-    }
-
-    pub fn from_env(provider: Provider) -> Result<Self, Error> {
-        let key = std::env::var(provider.api_key_env())
-            .map_err(|_| Error::MissingApiKey(provider.api_key_env()))?;
-        Self::new(provider, key)
     }
 
     pub fn with_http_client(
@@ -176,93 +173,6 @@ impl Client {
         })
     }
 
-    pub async fn completion(&self, request: Value) -> Result<Value, Error> {
-        let response = self.send(request, false).await?;
-        let body = crate::resources::json(response, self.limits.bytes).await?;
-        if let Some(observer) = &self.billing {
-            observer.observe(self.chat_protocol(), &body, false);
-        }
-        if let Some(observer) = &self.refusal {
-            observer.observe(self.chat_protocol(), &body, false);
-        }
-        if self.provider == Provider::Anthropic {
-            anthropic::response(body)
-        } else {
-            if !body.get("choices").is_some_and(Value::is_array) {
-                return Err(Error::InvalidResponse("missing choices array"));
-            }
-            Ok(body)
-        }
-    }
-
-    pub async fn stream(&self, request: Value) -> Result<CompletionStream, Error> {
-        let include_usage = request["stream_options"]["include_usage"] == true;
-        let response = self.send(request, true).await?;
-        if !response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| {
-                v.split(';')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .eq_ignore_ascii_case("text/event-stream")
-            })
-        {
-            return Err(Error::InvalidResponse("expected text/event-stream"));
-        }
-        Ok(stream::decode(
-            response,
-            self.provider,
-            include_usage,
-            self.limits,
-            self.refusal.clone(),
-            self.billing.clone(),
-        ))
-    }
-
-    async fn send(&self, request: Value, streaming: bool) -> Result<reqwest::Response, Error> {
-        validate(&request)?;
-        let body = if self.provider == Provider::Anthropic {
-            anthropic::request(request, streaming)?
-        } else {
-            let mut body = request;
-            if self.provider == Provider::XAI {
-                let object = body
-                    .as_object_mut()
-                    .ok_or(Error::InvalidRequest("request must be an object"))?;
-                if let Some(limit) = object.remove("max_completion_tokens") {
-                    object.insert("max_tokens".into(), limit);
-                }
-            }
-            body["stream"] = streaming.into();
-            if self.provider == Provider::OpenAI {
-                body["store"] = false.into();
-            }
-            body
-        };
-        let (operation, endpoint) = if self.provider == Provider::Anthropic {
-            ("messages", self.profile.path("messages", "messages"))
-        } else {
-            (
-                "chat_completions",
-                self.profile.path("chat_completions", "chat/completions"),
-            )
-        };
-        let mut url = self.base_url.clone();
-        url.set_path(&format!("{}/{endpoint}", url.path().trim_end_matches('/')));
-        let request = self.profile.json(
-            operation,
-            &self.http,
-            url,
-            self.auth_headers(HeaderMap::new()).await?,
-            body,
-        )?;
-        let response = self.dispatch(request).await?;
-        self.checked(response, self.chat_protocol()).await
-    }
-
     pub(crate) fn supports_native(&self, protocol: crate::upstream::Protocol) -> bool {
         protocol.supports(self.provider)
             && !(self.provider == Provider::OpenAI
@@ -325,13 +235,6 @@ impl Client {
             transport.send(request.build()?, observer.clone()).await
         } else {
             Ok(request.send().await?)
-        }
-    }
-    fn chat_protocol(&self) -> crate::upstream::Protocol {
-        if self.provider == Provider::Anthropic {
-            crate::upstream::Protocol::Messages
-        } else {
-            crate::upstream::Protocol::Chat
         }
     }
     pub(crate) async fn checked(

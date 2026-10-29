@@ -4,6 +4,22 @@ use axum::{Json, Router, routing::any};
 use reqwest::Method;
 
 const ADMIN: &str = "platform-admin";
+#[tokio::test]
+async fn retired_merchant_backup_and_scanner_config_are_rejected_without_mutation() {
+    let r = root();
+    let server = serve(crate::server::app_runtime(r.clone())).await;
+    let before = serde_json::to_value(&*r.engine().vault.lock().unwrap()).unwrap();
+    for backup in [Value::Null, json!({"version":1,"nonce":"old","ciphertext":"retired"})] {
+        let mut item = serde_json::to_value(registration(&control("a"))).unwrap();
+        item["backup"] = backup;
+        assert_eq!(call(&server, Method::PUT, "/admin/merchants", ADMIN, item).await.0, 400);
+    }
+    for moderation in [json!({}), json!({"api_key_ref":"retired-scanner"})] {
+        assert_eq!(call(&server, Method::POST, "/admin/apply", ADMIN,
+            json!({"config":{"moderation":moderation}})).await.0, 400);
+    }
+    assert_eq!(serde_json::to_value(&*r.engine().vault.lock().unwrap()).unwrap(), before);
+}
 #[path = "access_tests.rs"]
 mod access_tests;
 #[path = "billing_tests.rs"]
@@ -17,23 +33,17 @@ mod provider_catalogs;
 #[path = "refusal_tests.rs"]
 mod refusal_tests;
 #[tokio::test]
-async fn signed_checkpoint_requires_its_proof_hash_and_rejects_arbitrary_digest_attestation() {
+async fn checkpoint_rejects_retired_signing_flag_and_arbitrary_digest_attestation() {
     let r = root();
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (status, first) = call(
-        &server,
-        Method::POST,
-        "/admin/checkpoint/diff",
-        ADMIN,
-        json!({"sign_receipts":true}),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let manifest: Value =
-        serde_json::from_str(first["receipt_batch"]["manifest"].as_str().unwrap()).unwrap();
-    assert_eq!(manifest["record_count"], 0);
-    let (_,again)=call(&server,Method::POST,"/admin/checkpoint/diff",ADMIN,json!({"sign_receipts":true})).await;
-    assert_eq!(again["receipt_batch"]["batch_hash"],first["receipt_batch"]["batch_hash"]);
+    for signed in [false, true] {
+        let (status, _) = call(&server, Method::POST, "/admin/checkpoint/diff", ADMIN,
+            json!({"sign_receipts":signed})).await;
+        assert_eq!(status,400);
+    }
+    let (status, first) = call(&server,Method::POST,"/admin/checkpoint/diff",ADMIN,json!({})).await;
+    assert_eq!(status,200);
+    assert!(first.get("receipt_batch").is_none());
     assert_eq!(
         call(
             &server,
@@ -118,7 +128,7 @@ async fn checkpoint_diff_is_admin_only_and_survives_explicit_quiesce() {
 async fn private_merchant_changes_never_enter_platform_checkpoints() {
     let r = root();
     let merchant = add(&r, &control("a")).await;
-    let before = r.engine().vault.checkpoint().unwrap();
+    let before = r.engine().vault.checkpoint_export(None, None).unwrap();
     {
         let engine = merchant.runtime.engine();
         let mut data = engine.vault.lock().unwrap();
@@ -130,8 +140,8 @@ async fn private_merchant_changes_never_enter_platform_checkpoints() {
         data.upstream_users.insert(test_user("alice"));
         data.changed();
     }
-    let after = r.engine().vault.checkpoint().unwrap();
-    assert_eq!(before, after);
+    let after = r.engine().vault.checkpoint_export(None, None).unwrap();
+    assert_eq!(before["state"], after["state"]);
     let encoded = after.to_string();
     for forbidden in [
         "MERCHANT_PRIVATE",
@@ -247,11 +257,7 @@ async fn explicit_quiesce_blocks_new_work_and_drains_shared_merchant_jobs() {
         200
     );
     assert!(merchant.runtime.background_job().is_some());
-    assert_eq!(
-        catalog_fixture(&r,"models","alice-key").await
-            .0,
-        200
-    );
+    assert!(public_inventory(&r).await["data"].is_array());
 }
 
 #[path = "probe_tests.rs"]
@@ -394,13 +400,12 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
     let _mock = fixture(&live, completion()).await;
     let frozen = routing::selections(&r, &test_user("alice")).await.unwrap().remove(0);
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
+    let pools = public_inventory(&r).await;
     assert_eq!(pools["data"][0]["multiplier_millionths"], 200000);
-    let (_, models) = catalog_fixture(&r,"models","alice-key").await;
-    let quote = &models["data"][0]["router_pricing"]["rates"][0];
-    assert_eq!(quote["basis"], "official_pool_multiplier");
-    assert_eq!(quote["input"], 1000000);
-    assert_eq!(quote["multiplier_millionths"], 200000);
+    assert_eq!(pools["data"][0]["models"][0]["pricing"]["input"], 1000000);
+    let quotes = crate::pricing::quotes(&frozen.settings, &frozen.engine.config, &frozen.price_book);
+    assert_eq!(quotes[0].basis, "official_pool_multiplier");
+    assert_eq!(quotes[0].multiplier_millionths, 200000);
     let mut update =
         json!({"expected_revision":1,"providers":crate::pricing::book(&r).unwrap().providers});
     update["providers"][0]["version"] = json!(2);
@@ -497,27 +502,12 @@ async fn pool_multiplier_quotes_are_authorized_versioned_and_frozen() {
 }
 
 #[tokio::test]
-async fn legacy_prices_migrate_only_when_the_whole_pool_has_one_exact_multiplier() {
+async fn pool_prices_reject_per_model_quotes_duplicate_pools_and_excessive_multipliers() {
     let r = root();
     let token = control("a");
     let live = add(&r, &token).await;
     let config = live.runtime.engine().config.clone();
-    let book = crate::pricing::book(&r).unwrap();
     let mut settings = live.settings.lock().unwrap().clone();
-    settings.pool_pricing.clear();
-    settings.prices = vec![
-        serde_json::from_value(
-            json!({"pool":"official","model":"model-test","input":200000,"output":400000}),
-        )
-        .unwrap(),
-    ];
-    let mut invalid = settings.clone();
-    invalid.prices[0].output = 500000;
-    assert!(crate::pricing::migrate(&mut invalid, &config, &book).is_err());
-    assert!(crate::pricing::migrate(&mut settings.clone(), &config, &Default::default()).is_err());
-    crate::pricing::migrate(&mut settings, &config, &book).unwrap();
-    assert!(settings.prices.is_empty());
-    assert_eq!(settings.pool_pricing[0].multiplier_millionths, 200000);
     let mut bad = update(2);
     bad["prices"] = json!([{"pool":"official","model":"model-test","input":0,"output":0}]);
     assert!(
@@ -538,20 +528,20 @@ fn test_user(user: &str) -> String {
     use ring::signature::KeyPair;
     crate::request_proof::user_id(signing_key(user).public_key().as_ref())
 }
-async fn catalog_fixture(r:&Runtime,kind:&str,key:&str)->(u16,Value) {
-    let e=r.engine();let account=e.authenticate(key).unwrap();
-    let rows=match kind {
-        "models"=>model_catalog::models(r,&e,account).await.unwrap(),
-        "pools"=>routing::pools(r,&e,account).await.unwrap(),
-        _=>panic!("unknown catalog fixture")
-    };
-    (200,json!({"data":rows}))
+async fn public_inventory(r: &Arc<Runtime>) -> Value {
+    // Prepare current discovery state explicitly; the public handler itself only reads it.
+    for item in records(r).unwrap() {
+        if let Ok(live) = live(r, &item.id) {
+            live.runtime.engine().refresh_models(true).await;
+        }
+    }
+    public_catalog::get(axum::extract::State(r.clone())).await.unwrap().0
 }
 fn root() -> Arc<Runtime> {
     use ring::signature::KeyPair;
     let config: Config = serde_json::from_value(json!({"server":{"allow_empty_routes":true,"admin_key_ref":"ADMIN"},"users":[{"id":test_user("alice"),"public_key":crate::request_proof::hex(signing_key("alice").public_key().as_ref())},{"id":test_user("bob"),"public_key":crate::request_proof::hex(signing_key("bob").public_key().as_ref())}],"keys":[{"name":"alice-key","user_id":test_user("alice"),"key_ref":"ALICE"},{"name":"bob-key","user_id":test_user("bob"),"key_ref":"BOB"}],"models":[]})).unwrap();
     let runtime = Runtime::new(
-        Engine::new(config, |k| {
+        Engine::from_fixture(config, |k| {
             Some(
                 match k {
                     "ADMIN" => ADMIN,
@@ -635,7 +625,7 @@ impl SignedRequest for reqwest::RequestBuilder {
             if !headers.contains_key("user-agent") {headers.insert("user-agent","codex_cli_rs/1.0 (signed fixture)".parse().unwrap());}
             if !headers.contains_key("accept") {headers.insert("accept","*/*".parse().unwrap());}
             let uri=format!("{}{}",request.url().path(),request.url().query().map(|q|format!("?{q}")).unwrap_or_default()).parse().unwrap();
-            let time=crate::anthropic::unix_now().to_string();let nonce=crypto::digest(&crate::vault::random_id().unwrap());
+            let time=crate::time::unix_now().to_string();let nonce=crypto::digest(&crate::vault::random_id().unwrap());
             let uid=crate::request_proof::user_id(key.public_key().as_ref());
             let sig=key.sign(&crate::request_proof::message(boot,&uid,request.method(),&uri,request.headers(),request.body().and_then(|b|b.as_bytes()).unwrap_or_default(),&time,&nonce));
             for (name,value) in [("x-router-user-id",crate::request_proof::user_id(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(sig.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
@@ -653,7 +643,7 @@ async fn call(s: &Server, method: Method, path: &str, token: &str, body: Value) 
         let boot=health["boot_id"].as_str().unwrap();
         let key=signing_key(if token.starts_with("alice-") {"alice"} else {"bob"});
         let uid=crate::request_proof::user_id(key.public_key().as_ref());
-        let time=crate::anthropic::unix_now().to_string();
+        let time=crate::time::unix_now().to_string();
         let nonce=crypto::digest(&crate::vault::random_id().unwrap());
         let signature=key.sign(&crate::request_proof::message(boot,&uid,request.method(),&path.parse().unwrap(),request.headers(),request.body().unwrap().as_bytes().unwrap(),&time,&nonce));
         for (name,value) in [("x-router-user-id",crate::request_proof::user_id(key.public_key().as_ref())),("x-router-user-timestamp",time),("x-router-user-nonce",nonce),("x-router-user-signature",crate::request_proof::hex(signature.as_ref()))] {request.headers_mut().insert(name,value.parse().unwrap());}
@@ -731,20 +721,7 @@ async fn platform_rejects_upstream_configuration_and_unowned_requests() {
     .await;
     assert_eq!(status, 400);
     assert_eq!(result["error"]["code"], "merchant_required");
-    assert!(
-        catalog_fixture(&runtime,"models","alice-key").await
-            .1["data"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        catalog_fixture(&runtime,"pools","alice-key").await
-            .1["data"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(public_inventory(&runtime).await["data"].as_array().unwrap().is_empty());
     let token = control("a");
     let merchant = add(&runtime, &token).await;
     let _upstream = fixture(&merchant, completion()).await;
@@ -861,7 +838,7 @@ async fn namespaced_model_acl_accepts_only_its_merchant() {
 }
 
 #[tokio::test]
-async fn merchant_credentials_are_separate_and_root_backups_are_opaque() {
+async fn merchant_credentials_are_separate_and_platform_snapshots_have_no_secret_backups() {
     let r = root();
     let a = control("a");
     let b = control("b");
@@ -952,7 +929,7 @@ async fn restart_requires_merchant_resync_and_platform_secret_cannot_control_acc
     assert!(register(&r, forged, ADMIN).await.is_err());
     register(&r, registration(&token), ADMIN).await.unwrap();
     assert!(authenticate(&r, &token).is_ok());
-    let checkpoint = r.engine().vault.checkpoint().unwrap();
+    let checkpoint = r.engine().vault.checkpoint_export(None, None).unwrap();
     assert_eq!(
         checkpoint["state"]["merchants"][&id]["owner_hash"],
         crypto::digest(token.split('.').nth(1).unwrap())
@@ -998,22 +975,12 @@ async fn unified_key_routes_two_merchants_and_audits_independent_queues() {
     let _ma = fixture(&la, completion()).await;
     let _mb = fixture(&lb, completion()).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, models) = catalog_fixture(&r,"models","alice-key").await;
-    assert_eq!(models["data"].as_array().unwrap().len(), 1);
-    assert_eq!(models["data"][0]["id"], "chatgpt/model-test");
-    assert_eq!(
-        models["data"][0]["router_pools"].as_array().unwrap().len(),
-        2
-    );
-    assert_eq!(
-        models["data"][0]["router_merchants"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    let (_, bob) = catalog_fixture(&r,"models","bob-key").await;
-    assert!(bob["data"].as_array().unwrap().is_empty());
+    let catalog = public_inventory(&r).await;
+    assert_eq!(catalog["data"].as_array().unwrap().len(), 2);
+    for pool in catalog["data"].as_array().unwrap() {
+        assert_eq!(pool["models"][0]["id"], "chatgpt/model-test");
+    }
+    assert!(routing::selections(&r, &test_user("bob")).await.unwrap().is_empty());
     for token in [&a, &b] {
         let body = json!({"model":format!("{}/model-test",crypto::identity(token)),"messages":[{"role":"user","content":"REQUEST_BODY_MUST_NOT_BE_SAVED"}]});
         let (status, result) = call(
@@ -1121,7 +1088,7 @@ async fn explicit_selection_prices_and_revocation_fail_closed() {
 }
 
 #[tokio::test]
-async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
+async fn platform_pool_acl_blocks_generation_for_other_merchants() {
     let r = root();
     let a = control("a");
     let b = control("b");
@@ -1141,11 +1108,11 @@ async fn catalog_acl_and_price_lists_hide_other_merchant_pools() {
     .await
     .unwrap();
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    let (_, catalog) = catalog_fixture(&r,"models","alice-key").await;
-    assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
-    assert!(!catalog.to_string().contains(&crypto::identity(&b)));
-    let (_, pools) = catalog_fixture(&r,"pools","alice-key").await;
-    assert_eq!(pools["data"].as_array().unwrap().len(), 1);
+    for (token, allowed) in [(&a, true), (&b, false)] {
+        let (status, result) = call(&server, Method::POST, "/v1/chat/completions", "alice-key",
+            json!({"model":format!("{}/model-test", crypto::identity(token)),"messages":[{"role":"user","content":"hello"}]})).await;
+        assert_eq!((200..300).contains(&status), allowed, "{status} {result}");
+    }
 
 }
 
@@ -1166,7 +1133,7 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
         .unwrap();
     let _mock = fixture(&la, completion()).await;
     let server = serve(crate::server::app_runtime(r.clone())).await;
-    for key in ["alice-key","bob-key"] {for kind in ["models","pools"] {assert_eq!(catalog_fixture(&r,kind,key).await.0,200);}}
+    assert!(public_inventory(&r).await["data"].is_array());
     let state = state(&r, &reg).unwrap();
     assert!(state["merchant"].get("users").is_none());
     assert_eq!(state["settings"]["customers"], json!([]));
@@ -1266,36 +1233,6 @@ async fn customers_are_private_until_upstream_use_and_remain_visible_after_ack_a
             .iter()
             .all(|s| s.item.id != id)
     );
-}
-
-#[tokio::test]
-async fn legacy_customer_migration_uses_completed_usage_not_preauthorization() {
-    let r = root();
-    let token = control("a");
-    let live = add(&r, &token).await;
-    let engine = live.runtime.engine();
-    customers::ensure(&live, &test_user("alice")).await.unwrap();
-    customers::ensure(&live, &test_user("bob")).await.unwrap();
-    let mut data = engine.vault.lock().unwrap();
-    data.usage.insert(
-        test_user("alice"),
-        crate::ledger::Usage {
-            requests: 2,
-            errors: 1,
-            ..Default::default()
-        },
-    );
-    data.usage.insert(
-        test_user("bob"),
-        crate::ledger::Usage {
-            requests: 1,
-            errors: 1,
-            ..Default::default()
-        },
-    );
-    assert!(data.upstream_users.is_empty());
-    customers::restore(&mut data);
-    assert_eq!(data.upstream_users, BTreeSet::from([test_user("alice")]));
 }
 
 #[tokio::test]

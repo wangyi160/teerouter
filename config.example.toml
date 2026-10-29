@@ -3,7 +3,8 @@
 [server]
 bind = "127.0.0.1:4000"
 max_concurrent = 256
-max_body_bytes = 16777216
+# Whole model request, including Base64 images; upstream limits still apply.
+max_body_bytes = 536870912
 request_timeout_secs = 120
 body_timeout_secs = 15
 # Optional, separate credential for GET /admin/status and /admin/usage:

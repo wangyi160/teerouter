@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use serde::{Deserialize, Serialize};
@@ -11,9 +11,6 @@ use crate::Provider;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Retired configuration accepted on import, never executed or exported.
-    #[serde(default, skip_serializing)]
-    pub moderation: Option<crate::moderation::Config>,
     #[serde(default)]
     pub server: Server,
     #[serde(default)]
@@ -117,7 +114,9 @@ impl Default for Server {
             proxy: None,
             no_proxy: None,
             max_concurrent: 256,
-            max_body_bytes: 16 * 1024 * 1024,
+            // Cover OpenAI's documented 512 MB vision payloads, including Base64.
+            // This ingress ceiling is not a claim about every upstream's limits.
+            max_body_bytes: 512 * 1024 * 1024,
             request_timeout_secs: 120,
             body_timeout_secs: 15,
             max_ingress: 256,
@@ -237,9 +236,6 @@ pub struct Deployment {
     pub proxy: Option<String>,
     #[serde(default)]
     pub api_base: Option<String>,
-    /// Accept legacy empty checkpoints; a configured project is rejected.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gemini_project: Option<String>,
     #[serde(default = "enabled")]
     pub enabled: bool,
     #[serde(default = "one")]
@@ -306,27 +302,6 @@ fn default_timeout() -> u64 {
 }
 
 impl Config {
-
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let config: Self =
-            toml::from_str(text).map_err(|e| format!("invalid TOML configuration: {e}"))?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    pub fn load(path: &Path) -> Result<Self, String> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| format!("cannot read configuration: {e}"))?;
-        let mut config = Self::parse(&text)?;
-        for group in &mut config.models {
-            for deployment in &mut group.deployments {
-                if let Some(account) = deployment.oauth_file.as_mut().filter(|p| p.is_relative()) {
-                    *account = path.parent().unwrap_or(Path::new(".")).join(&*account);
-                }
-            }
-        }
-        Ok(config)
-    }
 
     pub fn validate(&self) -> Result<(), String> {
         crate::policy::validate(&self.restrictions)?;
@@ -419,9 +394,6 @@ impl Config {
                     .is_some_and(|provider| provider != deployment.provider)
                 {
                     return Err("deployment provider must match its pool provider".into());
-                }
-                if deployment.gemini_project.is_some() {
-                    return Err("Gemini projects are no longer supported".into());
                 }
                 if let Some(base) = &deployment.api_base {
                     crate::official::validate(base, Some(deployment.provider)).map_err(|_| {

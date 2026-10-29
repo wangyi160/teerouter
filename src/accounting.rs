@@ -87,7 +87,7 @@ impl Account {
             .ok_or_else(invalid)?;
         if !key.enabled
             || key.user_id != self.config.user_id
-            || (key.expires_at != 0 && key.expires_at <= crate::anthropic::unix_now())
+            || (key.expires_at != 0 && key.expires_at <= crate::time::unix_now())
             || !bundle
                 .secrets
                 .get(&key.key_env)
@@ -184,7 +184,7 @@ impl Account {
             model,
             pool: None,
             provider: None,
-            created_at: crate::anthropic::unix_now(),
+            created_at: crate::time::unix_now(),
             started_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

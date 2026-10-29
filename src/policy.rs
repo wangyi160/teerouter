@@ -1,7 +1,11 @@
 //! Administrator restrictions only subtract from authenticated official evidence.
-use crate::{Provider, discovery::capabilities::Capabilities, error::ApiError};
+use crate::{Provider, error::ApiError};
+#[cfg(test)]
+use crate::discovery::capabilities::Capabilities;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -129,6 +133,7 @@ impl Restrictions {
     }
 
     /// Derived client view only. The source object and cached catalog are never mutated.
+    #[cfg(test)]
     pub(crate) fn available(&self, official: &Capabilities) -> Value {
         let subtract = |values: &Option<BTreeSet<String>>, denied: &BTreeSet<String>| {
             values

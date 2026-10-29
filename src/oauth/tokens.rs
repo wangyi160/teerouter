@@ -87,6 +87,21 @@ impl TokenStore {
         Ok(revision)
     }
 
+    pub(crate) fn request_revision(&self) -> Result<(i64, i64), Error> {
+        let data = self
+            .vault
+            .lock()
+            .map_err(|_| Error::OAuth("account unavailable"))?;
+        let account = data
+            .account_revisions
+            .get(&self.name)
+            .copied()
+            .ok_or(Error::OAuth("account unavailable"))?;
+        // The configuration revision prevents delete/recreate from reusing an
+        // account-local revision while an old request is still in flight.
+        Ok((data.revision, account))
+    }
+
     fn check_proxy(&self) -> Result<(), Error> {
         if let Ok(config) = self.vault.config() {
             let current = config
@@ -140,15 +155,19 @@ impl TokenStore {
         }
         credential(&data)
     }
-    pub(crate) fn rejected(&self) {
-        if let Ok(revision) = self.revision() {
-            let _ = self.vault.record_health(
-                &self.name,
-                revision,
-                "reauthorization_required",
-                0,
-                0,
-                Some("access_rejected"),
+    pub(crate) fn rejected(&self, (config, account): (i64, i64)) {
+        // Compare and mark under the same lock as account replacement/deletion.
+        if let Ok(mut data) = self.vault.lock()
+            && data.revision == config
+            && data.account_revisions.get(&self.name) == Some(&account)
+        {
+            data.health.insert(
+                self.name.clone(),
+                (
+                    account,
+                    json!({"state":"reauthorization_required","failures":0,"next_retry_at":0,
+                    "last_error":"access_rejected","updated_at":crate::time::unix_now()}),
+                ),
             );
         }
     }
