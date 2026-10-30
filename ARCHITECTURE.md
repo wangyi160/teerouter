@@ -1,4 +1,8 @@
+<a id="router-code-structure"></a>
+
 # Router 代码结构
+
+**简体中文** | [English](ARCHITECTURE.en.md)
 
 ```text
 HTTP 请求 → 认证与用户签名 → 权限、余额、限流 → 商户与账号选路 → 原生上游请求
@@ -7,6 +11,8 @@ HTTP 请求 → 认证与用户签名 → 权限、余额、限流 → 商户与
                                       ↑
                             控制接口：配置、恢复、结算
 ```
+
+<a id="request-and-account-isolation"></a>
 
 ## 请求与账号隔离
 
@@ -18,6 +24,8 @@ HTTP 请求 → 认证与用户签名 → 权限、余额、限流 → 商户与
 
 `src/client.rs` 与 `src/upstream.rs` 只实现原生转发；`src/sse.rs` 处理帧边界。请求与响应不经过 Chat→Claude 或 Claude→Chat 转换。官方目录由 `src/discovery/` 获取与验证，账号代理和官方域名限制由 `src/network/` 与 `src/official.rs` 执行。
 
+<a id="billing-and-state"></a>
+
 ## 计费与状态
 
 `src/accounting.rs` 管理请求和流的生命周期。`src/ledger.rs` 记录用量、费用与拒答类别；`src/billing/` 使用请求开始时冻结的报价，按 OpenAI、Anthropic、xAI 各自的计量语义计算费用。
@@ -27,6 +35,8 @@ HTTP 请求 → 认证与用户签名 → 权限、余额、限流 → 商户与
 `src/vault.rs` 保存受互斥锁保护的内存状态；`src/vault/operations.rs` 处理版本比较、原子更新、凭据竞争和短期会话。可选 `src/vault/journal.rs` 以 SQLite WAL/FULL 事务保存账务状态，逐行认证加密并认证完整行集合，不记录上游凭证或请求正文。
 
 `src/refusal.rs` 采集原生明确拒答信号；公开消费批次仅保存拒答类别，商户拒答次数单独累计。历史拒答队列的结构校验仍用于恢复，正常 relay 流程不新增原文队列。
+
+<a id="lifecycle-and-attestation"></a>
 
 ## 生命周期与证明
 

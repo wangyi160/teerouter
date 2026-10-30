@@ -1,10 +1,16 @@
+<a id="litellm-price-data-source"></a>
+
 # LiteLLM 价格数据源
+
+**简体中文** | [English](PRICE_SOURCE.en.md)
 
 Router 可从公开 GitHub JSON 自动维护 OpenAI、Anthropic、xAI 的直接服务文本模型价格。默认地址是：
 
 `https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json`
 
 配置通过管理员认证的 Router 控制接口设置；普通用户和商户不能修改。配置、更新状态和价格簿一起进入 checkpoint。该功能默认关闭，启用后首次拉取，之后每 18000 秒（5 小时）检查一次（后台检查间隔最多 30 秒）。重启不会重置上次更新时间；已经到期时恢复服务后更新。
+
+<a id="configuration-and-manual-refresh"></a>
 
 ## 配置和手动更新
 
@@ -31,6 +37,8 @@ Content-Type: application/json
 Router 使用 GitHub Contents / Git Blobs API 读取配置文件，完整 TLS 校验，不跟随重定向，不附加控制接口、用户或商户密钥。一次检查最长约 120 秒，响应最大 16 MiB。手动刷新立即返回 `accepted: true, running: true`；下载在后台进行，不等待原 HTTP 请求完成下载。随后轮询 `GET /admin/pricing/source`，以 `running: false` 和 `last_error` 判断结果。并发更新返回 `409 pricing_sync_running`，配置版本冲突返回 `409 pricing_source_conflict`。下载或校验失败记为 `pricing_fetch_failed` 或 `invalid_price_source`，保留旧价格；下一次自动检查在上次尝试的 5 小时后，管理员可随时重试。
 
 状态包含 `last_attempt`、`last_success`、`last_error`、`next_update_at`、`running`、源文件 SHA-256、Git blob SHA 和最近 32 次成功检查的记录。`history.changed` 表示是否改变价格版本。请求回执冻结实际使用的报价、来源、价格版本和商户倍率。
+
+<a id="import-scope-and-billing"></a>
 
 ## 导入范围与计费
 

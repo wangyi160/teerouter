@@ -1,25 +1,19 @@
-# Merchant pool state
+<a id="merchant-pool-state"></a>
 
-The owner-authenticated `PUT /merchant/accounts/sync` creates or updates account
-bindings. A new nonempty pool can include initial `new_pool_pricing`. Existing
-pool policy and multipliers are preserved; public policy updates use
-`PUT /admin/merchants/{mid}/config` with admin authentication.
+# 商户账号池状态
 
-Pools with no accounts are omitted, together with their `pool_pricing` entries.
-Removing the last account withdraws a pool; a disabled account still counts as
-an account. Other merchants are unaffected. An empty draft is not a live pool.
+**简体中文** | [English](MERCHANT-POOLS.en.md)
 
-`POST /merchant/accounts/test` can test an account before its pool exists.
-Include `pool`, `proxy`, access-only `credential` (or `api_key`), plus:
+经过所有者认证的 `PUT /merchant/accounts/sync` 创建或更新账号绑定。新的非空池可携带初始 `new_pool_pricing`。现有池策略与倍率保持不变；公开策略更新使用管理员认证的 `PUT /admin/merchants/{mid}/config`。
+
+没有账号的池及其 `pool_pricing` 项不会发布。移除最后一个账号会撤下该池；停用的账号仍计作账号。其他商户不受影响。空草稿不是已运行的账号池。
+
+`POST /merchant/accounts/test` 可在池尚不存在时测试账号。请求包含 `pool`、`proxy`、仅含访问凭据的 `credential`（或 `api_key`），以及：
 
 ```json
 {"draft_pool":{"provider":"openai","allowed_models":["model-id"]}}
 ```
 
-`allowed_models:null` permits all officially available text models; `[]` permits
-none. A draft is accepted only if the named pool is absent from this merchant's
-runtime. Existing pools use their current provider and model policy and reject a
-draft override. Official endpoint, proxy, authorization and probe limits apply.
+`allowed_models:null` 允许所有官方可用的文本模型；`[]` 不允许任何模型。只有当前商户 runtime 中不存在该池时才接受草稿。已有池使用当前提供商和模型策略，拒绝草稿覆盖。官方端点、代理、授权及探测限制照常生效。
 
-Testing does not create a pool, persist credentials, renew tokens or create user
-consumption records. Account synchronization and testing are separate operations.
+测试不会创建账号池、持久化凭据、续期令牌或生成用户消费记录。账号同步与账号测试是两个独立操作。

@@ -1,52 +1,31 @@
-# Interrupted request billing
+<a id="interrupted-request-billing"></a>
 
-An interruption is not evidence of zero upstream work. Billing uses the frozen
-quote for each attempt and records a deterministic disposition from observable
-progress. The policy does not claim to know whether the remote application ran.
+# 中断请求计费
 
-| Outcome | Settlement |
+**简体中文** | [English](INTERRUPTED-BILLING.en.md)
+
+请求中断不代表上游未做任何工作。计费按每次尝试冻结的报价，依据可观察的进度确定结果；该策略不声称能知道远程应用是否执行了请求。
+
+| 结果 | 结算 |
 | --- | --- |
-| Router rejects admission, validation or authorization | Zero |
-| Upstream rejects the request with HTTP 3xx/4xx | Zero; counters, if present, retained as `waived_usage` |
-| HTTP 5xx with no generation/usage evidence | Zero |
-| Connection fails, or request is cancelled before complete local transmission, with no generation/usage evidence | Zero |
-| Request body is completely written and flushed, then connection fails/times out/is cancelled before a reply | Estimate input at ordinary input price; zero observed output |
-| Upstream has accepted the request (2xx headers), then reading fails | Official counters where available; otherwise estimate input and observed output |
-| Failure after partial generation | Official counters where available; estimate missing input and observed output |
-| Complete official usage on an executed request, even if delivery fails | Official usage, including confirmed cache discount |
-| Successful response with missing usage, invalid counters or unsupported estimation | Keep explicit pending reason; never manufacture official usage |
+| Router 拒绝准入、校验或授权 | 零费用 |
+| 上游以 HTTP 3xx/4xx 拒绝请求 | 零费用；若有计数则保留为 `waived_usage` |
+| HTTP 5xx，且无生成/用量证据 | 零费用 |
+| 连接失败，或完整本地发送前取消，且无生成/用量证据 | 零费用 |
+| 正文完整写入并 flush 后，收到回复前连接失败、超时或取消 | 按普通输入价估算输入；已观察输出为零 |
+| 上游已接受请求（2xx 响应头），随后读取失败 | 有官方计数则使用；否则估算输入及已观察输出 |
+| 部分生成后失败 | 优先官方计数，估算缺失输入及已观察输出 |
+| 已执行请求有完整官方用量，即使交付失败 | 按官方用量，包括已确认的缓存折扣 |
+| 成功响应缺少用量、计数无效或不支持估算 | 保留明确待核对原因，不伪造官方用量 |
 
-HTTP request rejection differs from a generated refusal inside a successful model
-response. Generated refusals remain model output and follow normal usage billing.
-A 5xx with valid usage is an execution failure rather than admission rejection.
+HTTP 请求拒绝不同于成功模型响应内生成的拒答。生成拒答仍是模型输出，按正常用量计费。有有效用量的 5xx 属于执行失败，而非准入拒绝。
 
-Each attempt records `transport.version=1`, `transport.phase`,
-`transport.request_flushed`, `termination`, `upstream_status` and its billing
-reason/source. Phases are `not_started`, `connecting`, `writing_request`,
-`awaiting_response`, `response_headers`, and `receiving_response`.
+每次尝试记录 `transport.version=1`、`transport.phase`、`transport.request_flushed`、`termination`、`upstream_status` 及计费原因/来源。阶段为 `not_started`、`connecting`、`writing_request`、`awaiting_response`、`response_headers` 和 `receiving_response`。
 
-`request_flushed` is set only after the serialized HTTP headers and full body
-have been accepted by the authenticated connection and its flush succeeds.
-Handing a body to an HTTP library, opening a proxy tunnel or completing TLS does
-not set this flag. Flush is a local boundary, **not proof of remote receipt or
-execution**. TCP/TLS cannot eliminate this distributed-systems ambiguity; the
-above policy fixes the financial disposition without pretending otherwise.
+只有序列化 HTTP 请求头和完整正文被已认证连接接收、且 flush 成功后才设置 `request_flushed`。将正文交给 HTTP 库、建立代理隧道或完成 TLS 均不会设置此标志。flush 是本地边界，**不是远端收到或执行请求的证明**。TCP/TLS 无法消除这种分布式系统歧义；上述规则明确财务处理方式，不假装歧义不存在。
 
-Inference uses HTTP/1 with bounded connection reuse and explicit HTTP(S), SOCKS5h
-or VLESS account egress. TLS certificate verification stays enabled. Every retry
-gets fresh observations. The HTTP transport never retries a transmitted model
-request internally; router retries are separately evidenced and charged once.
+推理使用 HTTP/1、有时间上限的连接复用和显式 HTTP(S)、SOCKS5h 或 VLESS 账号出口，TLS 证书验证始终开启。每次重试获取新的进度观测。HTTP 传输层不会内部重试已发送的模型请求；Router 层重试分别留证，费用只计算一次。
 
-When a downstream request/response task is dropped, Router cancels its upstream
-operation, releases request permits and records 499 (`request_cancelled`). It
-does not drain a model reply in the background or issue another attempt. Dropping
-the metered response also aborts its connection driver. This cannot guarantee
-that an upstream application instantly stops work on noticing a closed socket.
-The already observed progress determines the charge; unobserved future output is
-not estimated. 499 identifies task cancellation, not which physical peer caused
-it, and never proves an explicit user action.
+下游请求/响应任务被丢弃时，Router 取消对应上游操作、释放请求名额，并记录 499（`request_cancelled`）。不会在后台继续读取模型回复或发起新尝试；计量响应被丢弃时也终止其连接驱动。这不能保证上游应用看到 socket 关闭后立即停工。已观察进度决定费用，不估算未观察的未来输出。499 标识任务取消，不判断由哪个物理端点引起，更不能证明用户显式操作。
 
-Only interrupted/failed model requests may use local estimates. They remain
-labelled `estimated`/`mixed`, `coverage=partial`; hidden output is not invented.
-The actual serialized native provider request supplies the input estimate. Text remains transient and is excluded from signed receipts.
-Existing signed receipts are not rewritten under this new policy.
+仅中断/失败模型请求可使用本地估算，保持 `estimated`/`mixed`、`coverage=partial` 标记，不捏造隐藏输出。输入估算使用实际序列化的原生提供商请求。文本仅临时存在，不进入签名凭据。已有签名凭据不按新策略改写。

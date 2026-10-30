@@ -1,12 +1,18 @@
 # teerouter-verify
 
+**简体中文** | [English](README.en.md)
+
 独立消费凭据校验器，支持 Windows / Linux。校验原始批次签名、流水摘要、顺序、金额汇总及衔接；可结合 Intel TDX 证明与独立指定的参考策略验证签名身份。
+
+<a id="current-public-format"></a>
 
 ## 当前公开格式
 
 支持 `teerouter.public-consumption-batch.v1`。`manifest` 与 `records_json` 按原始 UTF-8 字节验证，不得重新序列化。公开批次使用完整记录摘要，每批一个签名，不使用单条 Merkle 证明。用户和 key 代号按批次变化，拒答只保留类型。
 
 没有 `records_json` 时只能验证签名与承诺的摘要，不能证明明细已通过核验。
+
+<a id="verification-inputs-and-results"></a>
 
 ## 验证输入与结果
 
@@ -30,6 +36,8 @@ teerouter-verify --bundle batch.json --signature-only
 
 此模式始终返回 `tee_verified:false`，不证明 TEE 身份。`tests/sample-bundle.json` 使用公开测试种子，只是测试向量。
 
+<a id="historical-private-formats-and-limitations"></a>
+
 ## 历史私有格式与限制
 
 校验器保留对已签发私有批次的验证，包括带随机盐的 payload、Merkle 路径和历史空批次格式；这些不是当前 Router 的流水查询或上传接口。格式见 [消费批次协议](../docs/CONSUMPTION-PROOFS.md#historical-private-format)。
@@ -38,6 +46,8 @@ teerouter-verify --bundle batch.json --signature-only
 - 输入可附上一批签名以验证衔接。前批采用另一公钥时，仍需独立验证其身份；`previous_tee_verified:false` 明确这一限制。
 - Router 异常退出可能丢失未提交记录。签名和重启标识不能补造缺失流水。
 - 消费事件的证明不覆盖外部余额变更，且不保证每次网络异常都有完整官方用量。
+
+<a id="local-builds-and-tests"></a>
 
 ## 本地构建与测试
 

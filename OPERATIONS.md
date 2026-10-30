@@ -1,6 +1,12 @@
+<a id="router-state-and-synchronization-protocol"></a>
+
 # Router 状态与同步协议
 
+**简体中文** | [English](OPERATIONS.en.md)
+
 本文描述 Router 接收控制请求后的状态变化。所有 `/admin/*` 接口需要管理员 Bearer；用户和商户凭据不能读取根检查点或初始化根 runtime。
+
+<a id="initialization"></a>
 
 ## 初始化
 
@@ -16,6 +22,8 @@
 
 恢复输入不得携带未结算的 relay 汇总：`retained` 必须为空，`uploaded` 与 `settled` 必须一致；边界还须符合用量序号。启用认证日志时，Router 再校验日志与恢复边界并恢复已提交的尾部。恢复失败不替换为新的空账本。
 
+<a id="differential-checkpoints"></a>
+
 ## 差量检查点
 
 `POST /admin/checkpoint/diff` 只接受 `boot_id`、`base_id`，首次均可为 null。响应包含 `checkpoint_diff_version:1`、新的 `checkpoint_id`，并返回完整 `state` 或基于 `base_id` 的 `changes`：
@@ -30,6 +38,8 @@
 
 `storage.manager_connected` 是保留的状态字段名：最近 630 秒有合法差分快照读取时为 true。它不参与业务准入，不是心跳租约。
 
+<a id="settlement-and-balances"></a>
+
 ## 结算与余额
 
 可用余额为最近同步余额减去未结算消费。模型请求只累加消费；上传确认只释放相应明细，不能更新余额或清除消费。
@@ -38,11 +48,15 @@
 
 用户及权限通过 `/admin/apply` 原子更新。合并补丁中的 null 表示删除字段；完整配置仍使用严格字段校验。配置更新和结算使用不同版本与状态边界。
 
+<a id="draining"></a>
+
 ## 排空状态
 
 `POST /admin/quiesce` 接收 `{"boot_id":"当前值","quiescing":true}`。排空期间，新模型请求、商户操作和配置写入返回 `503 router_draining`；已有请求和已开始的后台任务继续结束。控制读取、检查点、relay flush 与结算仍可用。
 
 `/admin/metrics` 的 `lifecycle.drained:true` 表示根及商户 runtime 均无在途请求或后台任务。提交 `quiescing:false` 恢复准入。该状态只在当前进程有效，不写入恢复检查点。
+
+<a id="credentials-and-rejection-boundaries"></a>
 
 ## 凭据与拒绝边界
 
@@ -52,11 +66,15 @@ Router 使用 `access-token-only-v1`，不接受 refresh token，也不发起 OA
 
 提供商仅接受 `openai`、`anthropic`（别名 `claude`）、`xai`（别名 `grok`）。完整配置拒绝 `gemini_project`、`client_secret_ref`、`config.moderation` 和商户 `backup`，包括 null。旧快照中的空 `state.moderation:{}` 可读入但不再导出；非空历史明确拒绝，避免静默丢弃。旧 journal 中空 `receipt_head:null` 的读取规则见 [消费凭据](docs/CONSUMPTION-PROOFS.md)。
 
+<a id="upstream-refusal-auditing"></a>
+
 ## 上游拒答审计
 
 拒答识别默认启用；状态为 `moderation_mode:"upstream_refusal"`、`refusal_audit_enabled:true`。普通自然语言拒答不做关键词推断。明确拒答保留原始响应状态且不换账号重试。
 
 完成、失败、超时或取消时，拒答类别与用量一并记录。公开批次只含 `refusal_type`，不含拒答原文。商户计数独立于逐笔明细保存。历史拒答队列仍进行恢复校验，但不提供独立 HTTP 查询/删除接口。
+
+<a id="durability-boundaries"></a>
 
 ## 耐久性边界
 

@@ -1,6 +1,12 @@
+<a id="router-merchant-protocol"></a>
+
 # Router 商户协议
 
+**简体中文** | [English](MERCHANTS.en.md)
+
 所有上游账号与池都属于隔离的商户 runtime。根 runtime 负责用户授权、商户公开登记和统一消费记录，根配置的 `models`、`accounts` 必须为空。控制接口不能导出商户凭据。
+
+<a id="identity-and-authentication"></a>
 
 ## 身份与认证
 
@@ -15,6 +21,8 @@
 商户通道另要求独立的 32 字节控制密钥。Bearer 为 `<接入凭据>.<控制密钥>`；`POST /merchant/bind` 首次绑定控制密钥摘要 `owner_hash`，后续请求同时校验两者。登记更新不能替换已绑定的摘要，管理员或用户 Bearer 不能调用商户私有通道。
 
 商户私有请求应在验证 TEE 证据及当前 TLS 绑定的同一连接发送。首次绑定前，持有接入凭据者可能抢先绑定；只有绑定响应与预期控制密钥一致时，才能确认账号秘密将交给预期身份。Router 不提供控制密钥取回接口。
+
+<a id="public-control-and-private-accounts"></a>
 
 ## 公开控制与私有账号
 
@@ -39,11 +47,15 @@
 
 账号代理通过私有账号同步传入：API key 账号的 `deployments[].proxy`，或 OAuth `accounts` 对象的 `proxy`。只接受已支持的 HTTP(S)、SOCKS5h 或 [VLESS](VLESS.md) 代理；上游地址仍固定为官方域名。账号配置不接受本地 OAuth 文件、自定义上游 URL 或池间 fallback。
 
+<a id="account-tests"></a>
+
 ## 账号测试
 
 `POST /merchant/accounts/test` 接收 `pool`、`proxy`、access-only `credential` 或 `api_key`，可选 `model`。未发布池使用 [draft_pool](MERCHANT-POOLS.md)。Router 先读取模型目录，再选择开放且有文本报价的模型发送最多 32 输出 token 的短请求。
 
 成功返回 `ok:true`、`model`、`model_count`、`provider`、`latency_ms`；失败返回 `ok:false`、`stage`、脱敏错误 `code` 及可用的上游状态。只列出模型不算测试成功。总超时 75 秒，每商户同时最多一次、全局最多八次。测试不保存凭据、不续期、不生成用户消费事件；真实上游可能对该请求计费。
+
+<a id="pools-models-and-charges"></a>
 
 ## 池、模型与费用
 
@@ -57,11 +69,15 @@
 
 目录状态含 `scope:"provider"`、`provider`、`refresh_secs`，不暴露来源商户或 `source_deployment`。商户状态中的 `catalog.data` 按本商户账号组织，同一提供商引用相同目录证据。
 
+<a id="user-requests-and-routing"></a>
+
 ## 用户请求与选路
 
 使用 [请求路由规则 v1](API.md#请求路由规则-v1) 指定固定池或自动匹配、倍率上限与价格/延迟优先。模型命名空间为 `chatgpt/`、`claude/`、`grok/`；Router 先约束提供商，再检查池、授权、能力和价格。上游请求使用官方模型 ID。
 
 不带路由规则时，仍支持 `x-router-pool: m_sig_<公钥SHA256>.池名` 或商户限定模型名。缺少足以确定商户的标识返回 `400 merchant_required`，没有隐式直连账号。旧账号/目录控制路径不提供兼容别名。
+
+<a id="customer-visibility-and-refusal-thresholds"></a>
 
 ## 客户可见性与拒答阈值
 
@@ -74,6 +90,8 @@
 计数按商户 ID 与用户 ID 归属，覆盖所有 key、池和模型；每次请求最多计一次明确拒答，普通网络错误、429、普通 5xx 不计数。`customer_refusals` 只展示可见客户的 `total`、`count`、`limit` 和 `blocked`。
 
 清零提交 `refusal_baseline:total` 并启用客户；基线单调递增，读取基线之后的新拒答保留。累计总数独立于逐笔队列，启用日志时同一事务持久化。没有日志时，未同步尾部仍有丢失窗口。
+
+<a id="access-token-only-v1-and-recovery"></a>
 
 ## Access-token-only v1 与恢复
 

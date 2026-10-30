@@ -1,6 +1,10 @@
 # teerouter
 
+**简体中文** | [English](README.en.md)
+
 运行在 TEE 中的 Rust 大模型 Router。本仓库文档描述 Router 的代码结构、HTTP 接口、原生转发、认证、计费、状态同步和验证方法。
+
+<a id="core-capabilities"></a>
 
 ## 核心能力
 
@@ -14,6 +18,8 @@
 - TLS 1.3、挑战绑定的 dstack TDX / Linux SNP 取证与模型转发位于同一进程。另提供独立的消费凭据校验器。
 
 `GET /admin/public-catalog` 返回 Router 当前池、模型、价格、容量以及可用账号的脱敏摘要。它是只读控制接口，不触发目录刷新、不建立客户关系；不返回凭证、代理地址或原始错误。接口权限和请求格式见 [API](docs/API.md)。
+
+<a id="code-and-examples"></a>
 
 ## 代码与示例
 
@@ -29,6 +35,8 @@
 
 TOML 和本地凭据文件的装配仅在 `cfg(test)` 夹具中使用。根 runtime 的初始化配置不接受上游账号池；商户账号与公开策略使用不同认证通道，见 [商户协议](docs/MERCHANTS.md)。
 
+<a id="local-builds-and-tests"></a>
+
 ## 本地构建与测试
 
 crate 和可执行文件名为 `teellm`。
@@ -40,6 +48,8 @@ cargo test --locked --all-targets --features sample-demo
 ```
 
 `sample-demo` 默认关闭，仅用于受控测试；它不生成可被严格验证器接受的硬件证据。本地测试使用模拟上游，不证明真实账号可用，也不替代真实硬件证明验证。日志只保护已经提交的记录，见 [流水日志](docs/ACCOUNTING-JOURNAL.md)。
+
+<a id="documentation-index"></a>
 
 ## 文档索引
 

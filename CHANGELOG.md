@@ -1,6 +1,12 @@
-# Changelog
+<a id="changelog"></a>
 
-## Unreleased
+# 更新记录
+
+**简体中文** | [English](CHANGELOG.en.md)
+
+<a id="unreleased"></a>
+
+## 未发布
 
 - 模型请求默认接收上限提高至 512 MiB，覆盖公开 OpenAI 图片请求范围；分别报告本地超限、读取失败与上游 413。
 - 旧凭据请求的迟到 401 不再禁用更新后的凭据；清理旧签名快照对现行流水同步的干扰。

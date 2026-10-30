@@ -1,6 +1,12 @@
+<a id="provider-specific-billing-billing-v2"></a>
+
 # 按模型提供商计算费用（billing v2）
 
+**简体中文** | [English](BILLING.en.md)
+
 `/admin/status` 的 `provider_billing_version: 2` 表示 Router 在进程内生成逐请求计费结果，逐次上游尝试分别保留 v1 计算明细，再汇总并只舍入一次。异常请求按实际发送进度处理。计算代码和计费事件位于 Router 进程内。计费规则由模型提供商决定，与提供账号的商户无关。
+
+<a id="billing-basis-and-precision"></a>
 
 ## 计费基准与精度
 
@@ -12,6 +18,8 @@ Router 保留上次同步余额和未结算消费，按两者之差检查新请�
 
 Token 单价仍为整数 micro-USD / 百万 Token。内部用 `u128` 按 10^-12 USD 累计各分项，乘倍率后只向上舍入一次至 micro-USD。事件同时保留舍入前的精确十进制整数字符串；可据此复算分项、合计、倍率及舍入。该舍入约定固定输出精度，不声称与服务商月账单的舍入、折扣或税额完全相同。
 
+<a id="three-calculators"></a>
+
 ## 三种计算器
 
 * `chatgpt_v1`：OpenAI 输入总量包含缓存部分；普通输入减去缓存读写后分别计价。推理 Token 属于输出明细，不能再加一次。
@@ -20,6 +28,8 @@ Token 单价仍为整数 micro-USD / 百万 Token。内部用 `u128` 按 10^-12 
 
 
 采集直接读取各家原生响应；Router 不转换 Agent 的生成协议，也不修改缓存、TTL 或 usage 请求参数。流中的累计用量覆盖前值，不能逐帧累加。只保留白名单数字和枚举，不保存请求文本、正常回答、工具参数或工具结果。
+
+<a id="quote-extensions"></a>
 
 ## 报价扩展
 
@@ -53,6 +63,8 @@ Anthropic 的 `standard`、`standard_only` 归一为 `default`；OpenAI/xAI 的 
 
 Anthropic 搜索每次调用的 micro-USD 价格位于 `tools.web_search`，计数来自原始 `usage.server_tool_use.web_search_requests`。报价缺失则请求前拒绝，启用了工具但未返回调用计数则待核对。
 
+<a id="billing-events"></a>
+
 ## 计费事件
 
 根账务事件的 `event.billing` 包含计费结果；外层事件绑定请求 ID、用户、商户、池、模型和请求时间。商户 runtime 不另建逐笔待确认队列。
@@ -64,6 +76,8 @@ Anthropic 搜索每次调用的 micro-USD 价格位于 `tools.web_search`，计�
 计费结果进入签名消费批次。`pending` 或未知版本不能被解释为零费用，也不能退回旧公式猜算。历史已签名记录保持原字节，不按新规则改写。结算命令的版本和边界校验保证完全相同的重试不重复应用。
 
 独立验证者可核验批次签名、摘要及签名公钥的 TEE 绑定，见[消费凭据](CONSUMPTION-PROOFS.md)。运行中的流水日志和恢复边界见[本地记账日志](ACCOUNTING-JOURNAL.md)。签名证明记录来源与完整性，不代表所有网络异常都有完整的官方用量。
+
+<a id="current-boundaries"></a>
 
 ## 当前边界
 

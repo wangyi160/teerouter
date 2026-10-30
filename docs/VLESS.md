@@ -1,49 +1,28 @@
-# Account-bound VLESS egress
+<a id="account-bound-vless-egress"></a>
 
-An account's `proxy` field accepts a VLESS share URI through the owner-authenticated
-account synchronization channel. Example (dummy credentials only):
+# 按账号绑定的 VLESS 出口
+
+**简体中文** | [English](VLESS.en.md)
+
+通过所有者认证的账号同步通道，账号的 `proxy` 字段可接受 VLESS 分享链接。示例仅使用虚构凭据：
 
 ```json
 {"proxy":"vless://12345678-1234-1234-1234-123456789abc@node.example:443?encryption=none&security=tls&type=xhttp&sni=node.example&path=%2Ftunnel&mode=stream-one"}
 ```
 
-Supported: TLS with TCP or XHTTP (`auto`, `stream-one`, `stream-up`, `packet-up`).
-Optional fields: `sni`, `fp` (chrome/firefox/safari/edge/randomized), `alpn`
-(h2/http/1.1), XHTTP `host`/`path`/`mode`, TCP `flow=xtls-rprx-vision`.
-Only UUID identities and `encryption=none` are accepted. REALITY, WS, gRPC,
-XHTTP extra JSON, insecure certificates and unrecognized/duplicate parameters
-are rejected. An IPv6 node requires a DNS `sni`. Certificate verification is
-mandatory; a public CA certificate for the node's SNI must be valid.
+支持 TLS 配合 TCP 或 XHTTP（`auto`、`stream-one`、`stream-up`、`packet-up`）。可选字段包括 `sni`、`fp`（chrome/firefox/safari/edge/randomized）、`alpn`（h2/http/1.1）、XHTTP 的 `host`/`path`/`mode`，以及 TCP 的 `flow=xtls-rprx-vision`。只接受 UUID 身份与 `encryption=none`。REALITY、WS、gRPC、XHTTP extra JSON、不安全证书和未知/重复参数均被拒绝。IPv6 节点需要 DNS 名称形式的 `sni`。证书验证不可关闭；节点 SNI 对应的公共 CA 证书必须有效。
 
-Account bindings apply to model discovery, inference/streaming and credential probes.
-Router does not perform OAuth renewal.
-Official upstream hosts and their HTTPS certificate checks remain enforced by
-the router. A failed VLESS route never falls back to direct access or the system
-proxy. Target hostnames pass through SOCKS to VLESS; only the node itself is
-resolved locally. Inner provider TLS terminates at the provider, not at Xray.
+账号绑定作用于模型发现、推理/流式请求和凭据探测。Router 不执行 OAuth 续期。官方上游域名及其 HTTPS 证书检查仍由 Router 强制执行。VLESS 路由失败不回退到直连或系统代理。目标主机名通过 SOCKS 传给 VLESS，只有节点本身在本地解析。内层提供商 TLS 终止于提供商，而非 Xray。
 
-The router uses `teerouter-egress`, a private Go helper embedding pinned
-Xray-core. Rust starts one process on demand. It exposes only an authenticated
-loopback SOCKS listener, with an unadvertised random password; its configuration
-channel is stdin/stdout, not a network API. UUIDs/configuration remain in memory
-and private pipes, never CLI arguments or files. The helper exposes no public configuration endpoint.
+Router 使用 `teerouter-egress`，这是嵌入固定版本 Xray-core 的私有 Go 辅助进程。Rust 按需启动一个进程，仅开放带认证的回环 SOCKS 监听器，密码随机生成且不对外公开；配置通道为 stdin/stdout，不是网络 API。UUID 和配置仅存在于内存和私有管道，不进入命令行参数或文件。辅助进程没有公开配置端点。
 
-Identical node configurations share a route across accounts. Routes are retained
-by live HTTP clients and drain ongoing streams when their clients are replaced.
-There are at most 64 active/draining node routes and 2048 concurrent SOCKS sockets
-per router, bounded by the runtime's memory/process limits. Admission fails
-closed when capacity is exhausted. Helper exit causes current requests to fail;
-the next newly constructed client can start a fresh helper. Private account bindings are reconstructed by the owner-authenticated account
-synchronization protocol; root checkpoints do not contain those secrets.
+相同节点配置可被多个账号共享。活跃 HTTP 客户端持有路由；替换客户端时，旧路由等待已有流结束。每个 Router 最多有 64 条活跃/排空中的节点路由和 2048 个并发 SOCKS socket，同时受 runtime 的内存/进程限制。容量耗尽时拒绝准入。辅助进程退出使当前请求失败；下一个新建客户端可启动新的辅助进程。私有账号绑定通过所有者认证的同步协议重建；根检查点不含这些秘密。
 
-For local source checks in `egress/`, use the Go version declared in `go.mod`:
+在 `egress/` 中进行本地源码检查，使用 `go.mod` 指定的 Go 版本：
 
 ```sh
 go build -mod=readonly .
 go test ./...
 ```
 
-Tests cover local TLS/XHTTP, authentication, fail-closed behavior, stream draining
-and cancellation. Module versions are locked in `go.mod`
-and `go.sum`; dependency license requirements are recorded in the repository's
-`NOTICE`. The helper is part of the code covered by the TEE trust policy.
+测试覆盖本地 TLS/XHTTP、认证、失败时拒绝放行、流排空和取消。模块版本锁定于 `go.mod` 与 `go.sum`，依赖许可要求记录在仓库 `NOTICE` 中。辅助进程属于 TEE 信任策略覆盖的代码。

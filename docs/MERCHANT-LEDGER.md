@@ -1,4 +1,8 @@
+<a id="merchant-accounting-boundaries-inside-router"></a>
+
 # Router 内部的商户记账边界
+
+**简体中文** | [English](MERCHANT-LEDGER.en.md)
 
 根 runtime 对每个路由请求形成一份消费事件，关联商户、用户、账号池、模型、请求时冻结的价格、用量、金额和拒答类别。该事件由统一的账务日志与签名批次发布器处理。
 
