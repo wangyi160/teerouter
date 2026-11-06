@@ -140,6 +140,34 @@ async fn body_read_failure_is_not_reported_as_too_large() {
 }
 
 #[tokio::test]
+async fn default_body_timeout_accepts_upload_beyond_fifteen_seconds() {
+    let mock = mock(vec![Reply::json(native(Provider::OpenAI))]).await;
+    let config = configuration(&mock);
+    let runtime = crate::runtime::Runtime::merchant(engine(config));
+    let mut app = server::app_runtime(runtime);
+    let input = json!({"model":"chat","input":"hello"});
+    let encoded = serde_json::to_vec(&input).unwrap();
+    let body = Body::from_stream(futures_util::stream::once(async move {
+        tokio::time::sleep(Duration::from_secs(16)).await;
+        Ok::<_, std::io::Error>(bytes::Bytes::from(encoded))
+    }));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("authorization", "Bearer client-secret")
+        .header("user-agent", agent_ua(Provider::OpenAI))
+        .body(body)
+        .unwrap();
+    let response = tower_service::Service::call(&mut app, request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let calls = mock.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body, input);
+}
+
+#[tokio::test]
 async fn body_timeout_remains_distinct_from_read_failure() {
     let mock = mock(vec![]).await;
     let mut config = configuration(&mock);

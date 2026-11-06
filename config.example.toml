@@ -6,7 +6,8 @@ max_concurrent = 256
 # Whole model request, including Base64 images; upstream limits still apply.
 max_body_bytes = 536870912
 request_timeout_secs = 120
-body_timeout_secs = 15
+# Total time to receive the body, separate from the upstream request timeout.
+body_timeout_secs = 120
 # Optional, separate credential for GET /admin/status and /admin/usage:
 # admin_key_env = "TEELLM_ADMIN_KEY"
 

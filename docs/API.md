@@ -20,6 +20,8 @@ OpenAI API key 账号使用 `https://api.openai.com/v1`；ChatGPT OAuth 账号�
 
 模型请求正文上限 `server.max_body_bytes` 默认为 536,870,912 字节（512 MiB），覆盖截至 2026-10-29 核对的 [OpenAI 视觉 API](https://developers.openai.com/api/docs/guides/images-vision) 所列 512 MB 总载荷范围。上限计算整个序列化 JSON，包括 Base64 图片和对话历史，无论是否提供 `Content-Length` 都生效。显式配置可覆盖默认值。这是 Router 的资源上限，不代表 ChatGPT 账号后端的限额，也不覆盖模型、图片、上下文或其他提供商限制；这些由上游验证。Router 原样转发图片，不缩放或重新压缩。
 
+`server.body_timeout_secs` 默认 120 秒，可配置为 1–300 秒。它限制接收整个请求正文的总时长，持续收到分块也计入该时长，与上游生成超时、响应空闲超时分别计算。正文接收超时发生在转发之前，不产生模型费用。已有配置中显式设置的超时值需要单独更新，不随软件默认值改变。
+
 正文错误分别返回：
 
 | HTTP 状态 | 错误代码 | 含义 |

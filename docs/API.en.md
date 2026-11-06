@@ -31,6 +31,12 @@ it does not establish the ChatGPT account backend's limit or override model,
 image, context, or other provider limits. The upstream validates those limits.
 Router forwards image inputs without resizing or recompressing them.
 
+`server.body_timeout_secs` defaults to 120 seconds (configurable from 1 to 300).
+It limits total request body reception, including time spent receiving chunks,
+and is separate from upstream generation and response idle timeouts. A body
+timeout occurs before forwarding, so it does not incur model charges. Existing
+explicit timeout settings must be updated separately from the software default.
+
 Body failures have distinct responses:
 
 | HTTP status | Error code | Meaning |

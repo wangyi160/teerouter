@@ -118,7 +118,9 @@ impl Default for Server {
             // This ingress ceiling is not a claim about every upstream's limits.
             max_body_bytes: 512 * 1024 * 1024,
             request_timeout_secs: 120,
-            body_timeout_secs: 15,
+            // Agent histories and images can take longer than 15 seconds to
+            // upload. Bound reception separately from upstream generation.
+            body_timeout_secs: 120,
             max_ingress: 256,
             max_response_bytes: 32 * 1024 * 1024,
             max_event_bytes: 2 * 1024 * 1024,
