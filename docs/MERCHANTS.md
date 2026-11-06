@@ -51,9 +51,9 @@
 
 ## 账号测试
 
-`POST /merchant/accounts/test` 接收 `pool`、`proxy`、access-only `credential` 或 `api_key`，可选 `model`。未发布池使用 [draft_pool](MERCHANT-POOLS.md)。Router 先读取模型目录，再选择开放且有文本报价的模型发送最多 32 输出 token 的短请求。
+`POST /merchant/accounts/test` 接收 `pool`、`proxy`、access-only `credential` 或 `api_key`，可选 `model`。未发布池使用 [draft_pool](MERCHANT-POOLS.md)。Router 通过账号代理获取官方模型目录；成功解析目录即通过，不发起模型生成请求，不依赖价格表或账号池开放名单。旧客户端的可选 `model` 字段仍可接受，但不会用于选择或调用模型。
 
-成功返回 `ok:true`、`model`、`model_count`、`provider`、`latency_ms`；失败返回 `ok:false`、`stage`、脱敏错误 `code` 及可用的上游状态。只列出模型不算测试成功。总超时 75 秒，每商户同时最多一次、全局最多八次。测试不保存凭据、不续期、不生成用户消费事件；真实上游可能对该请求计费。
+成功返回 `ok:true`、`stage:models`、`model_count`、`provider`、`latency_ms`；失败返回 `ok:false`、`stage`、脱敏错误 `code` 及可用的上游状态。空的有效目录返回数量 0；缺少目录字段、认证错误或网络错误仍失败。总超时 75 秒，每商户同时最多一次、全局最多八次。测试不保存凭据、不续期、不生成用户消费事件，也不产生模型推理费用。
 
 <a id="pools-models-and-charges"></a>
 

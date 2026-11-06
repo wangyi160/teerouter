@@ -51,9 +51,9 @@ Account proxies enter through private synchronization: `deployments[].proxy` for
 
 ## Account tests
 
-`POST /merchant/accounts/test` accepts `pool`, `proxy`, access-only `credential` or `api_key`, and optional `model`. Unpublished pools use [draft_pool](MERCHANT-POOLS.en.md). Router first reads the model catalog, then selects an allowed text-priced model and sends a short request with at most 32 output tokens.
+`POST /merchant/accounts/test` accepts `pool`, `proxy`, access-only `credential` or `api_key`, and optional `model`. Unpublished pools use [draft_pool](MERCHANT-POOLS.en.md). Router fetches the official model catalog through the account proxy. A successfully parsed catalog passes the test without generation, pricing lookup or pool model filtering. The optional legacy `model` field is accepted but never used to select or invoke a model.
 
-Success returns `ok:true`, `model`, `model_count`, `provider` and `latency_ms`. Failure returns `ok:false`, `stage`, a sanitized error `code` and an upstream status when available. Merely listing models does not count as a successful test. The overall timeout is 75 seconds, with at most one concurrent test per merchant and eight globally. Tests neither save credentials, renew tokens nor create user consumption events; the real upstream may charge for the request.
+Success returns `ok:true`, `stage:models`, `model_count`, `provider` and `latency_ms`. Failure returns `ok:false`, `stage`, a sanitized error `code` and an upstream status when available. A valid empty catalog reports zero models; malformed responses, authentication failures and network errors still fail. The overall timeout is 75 seconds, with at most one concurrent test per merchant and eight globally. Tests do not save credentials, renew tokens, create user consumption events or incur model inference charges.
 
 <a id="池模型与费用"></a>
 

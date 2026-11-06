@@ -1,10 +1,6 @@
 //! Disposable credential checks through the same official clients and egress as routing.
 use super::*;
-use crate::{
-    Client, Error,
-    upstream::{Output, Protocol},
-};
-use futures_util::StreamExt;
+use crate::{Client, Error};
 use std::time::Duration;
 
 #[derive(Deserialize)]
@@ -15,6 +11,7 @@ struct Input {
     proxy: String,
     credential: Option<Value>,
     api_key: Option<String>,
+    // Older callers may still send this; account checks never select or run a model.
     model: Option<String>,
 }
 
@@ -63,36 +60,32 @@ pub(super) async fn test(
     if !crate::config::valid_name(&input.pool) {
         return Err(invalid());
     }
-    let (provider, allowed_models) =
-        if let Some(pool) = config.models.iter().find(|p| p.name == input.pool) {
-            // A draft never overrides a published pool's provider or model policy.
-            if input.draft_pool.is_some() {
+    let provider = if let Some(pool) = config.models.iter().find(|p| p.name == input.pool) {
+        // A draft never overrides a published pool's provider or model policy.
+        if input.draft_pool.is_some() {
+            return Err(invalid());
+        }
+        pool.provider.ok_or_else(invalid)?
+    } else if let Some(draft) = input.draft_pool {
+        if let Some(models) = &draft.allowed_models {
+            let unique: BTreeSet<_> = models.iter().collect();
+            if models.len() > 4096
+                || unique.len() != models.len()
+                || models
+                    .iter()
+                    .any(|model| !crate::config::valid_model_id(model))
+            {
                 return Err(invalid());
             }
-            (
-                pool.provider.ok_or_else(invalid)?,
-                pool.allowed_models.clone(),
-            )
-        } else if let Some(draft) = input.draft_pool {
-            if let Some(models) = &draft.allowed_models {
-                let unique: BTreeSet<_> = models.iter().collect();
-                if models.len() > 4096
-                    || unique.len() != models.len()
-                    || models
-                        .iter()
-                        .any(|model| !crate::config::valid_model_id(model))
-                {
-                    return Err(invalid());
-                }
-            }
-            (draft.provider, draft.allowed_models)
-        } else {
-            return Err(ApiError::new(
-                404,
-                "probe_pool_missing",
-                "Provide the local draft pool when testing its first account",
-            ));
-        };
+        }
+        draft.provider
+    } else {
+        return Err(ApiError::new(
+            404,
+            "probe_pool_missing",
+            "Provide the local draft pool when testing its first account",
+        ));
+    };
     if input.proxy.len() > 8192 || crate::network::validate_proxy(provider, &input.proxy).is_err() {
         return Err(ApiError::new(
             400,
@@ -150,22 +143,10 @@ pub(super) async fn test(
         event: 256 * 1024,
         idle: 30,
     };
-    let prices = crate::pricing::book(runtime)?
-        .providers
-        .into_iter()
-        .find(|p| p.provider == provider)
-        .map(|p| p.models)
-        .unwrap_or_default();
     let started = Instant::now();
     let result = tokio::time::timeout(
         Duration::from_secs(75),
-        run(
-            &client,
-            &config.discovery.codex_client_version,
-            &prices,
-            allowed_models.as_deref(),
-            input.model.as_deref(),
-        ),
+        run(&client, &config.discovery.codex_client_version),
     )
     .await;
     let mut result =
@@ -175,92 +156,12 @@ pub(super) async fn test(
     Ok(result)
 }
 
-async fn run(
-    client: &Client,
-    version: &str,
-    prices: &[crate::pricing::ModelPrice],
-    allowed: Option<&[String]>,
-    requested: Option<&str>,
-) -> Value {
-    let catalog = match crate::discovery::fetch::models(client, version).await {
-        Ok((models, _)) => models,
-        Err(error) => return failure("models", error),
-    };
-    let mut eligible: Vec<_> = prices
-        .iter()
-        .filter(|p| catalog.contains_key(&p.model))
-        .collect();
-    eligible.sort_by_key(|p| {
-        (
-            u128::from(p.rates.output) + u128::from(p.rates.input),
-            &p.model,
-        )
-    });
-    let candidates: Vec<&str> = eligible.iter().map(|p| p.model.as_str()).collect();
-    let model = candidates.into_iter().find(|m| {
-        allowed.is_none_or(|list| list.iter().any(|v| v == m)) && requested.is_none_or(|r| r == *m)
-    });
-    let Some(model) = model else {
-        return json!({"ok":false,"stage":"models","code":"probe_no_text_model","model_count":catalog.len()});
-    };
-    // This is an explicit merchant-requested test, not an Agent request.
-    // Construct a native probe for each provider; never convert caller traffic.
-    let (protocol, body) = if client.provider == crate::Provider::Anthropic {
-        (
-            Protocol::Messages,
-            json!({"messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":32,"stream":false}),
-        )
-    } else if client.provider == crate::Provider::OpenAI && client.oauth.is_some() {
-        (
-            Protocol::Responses,
-            json!({"input":[{"role":"user","content":[{"type":"input_text","text":"Reply with OK."}]}],"instructions":"","stream":true,"store":false}),
-        )
-    } else {
-        (
-            Protocol::Chat,
-            json!({"messages":[{"role":"user","content":"Reply with OK."}],"max_completion_tokens":32,"stream":false}),
-        )
-    };
-    let streaming = body["stream"] == true;
-    match crate::upstream::call(client, protocol, model, body, streaming, Default::default()).await
-    {
-        Ok(Output::Json(value))
-            if ["choices", "content", "output"]
-                .iter()
-                .any(|key| value[*key].as_array().is_some_and(|v| !v.is_empty()))
-                && value.get("error").is_none_or(Value::is_null) =>
-        {
-            json!({"ok":true,"model":model,"model_count":catalog.len()})
-        }
-        Ok(Output::Stream(mut events)) => {
-            let mut received_output = false;
-            while let Some(frame) = events.next().await {
-                match frame {
-                    Err(error) => return failure("generation", error),
-                    Ok(frame) => {
-                        if let Some(value) = frame.value {
-                            received_output |= value["type"] == "response.output_text.delta"
-                                || value["response"]["output"]
-                                    .as_array()
-                                    .is_some_and(|items| !items.is_empty());
-                        }
-                    }
-                }
-            }
-            if received_output {
-                json!({"ok":true,"model":model,"model_count":catalog.len()})
-            } else {
-                failure(
-                    "generation",
-                    Error::InvalidResponse("missing model response"),
-                )
-            }
-        }
-        Ok(_) => failure(
-            "generation",
-            Error::InvalidResponse("missing model response"),
-        ),
-        Err(error) => failure("generation", error),
+// A connection test proves authenticated catalog access through the account's
+// proxy. Generation, model allowlists and pricing are separate routing concerns.
+async fn run(client: &Client, version: &str) -> Value {
+    match crate::discovery::fetch::models(client, version).await {
+        Ok((catalog, _)) => json!({"ok":true,"stage":"models","model_count":catalog.len()}),
+        Err(error) => failure("models", error),
     }
 }
 
@@ -268,54 +169,88 @@ async fn run(
 mod tests {
     use super::*;
     use crate::Provider;
-    use axum::{
-        Json, Router,
-        routing::{get, post},
-    };
+    use axum::{Json, Router, routing::get};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
-    async fn discovery_and_generation_are_both_required_and_errors_do_not_echo_secrets() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let app = Router::new().route("/v1/models",get(||async{Json(json!({"data":[{"id":"model-test"}]}))}))
-            .route("/v1/chat/completions",post(|headers:axum::http::HeaderMap,Json(body):Json<Value>|async move{
-                assert_eq!(body["model"],"model-test");assert_eq!(body["max_completion_tokens"],32);
-                if headers["authorization"] == "Bearer REJECTED_TEST_KEY" {
-                    return (axum::http::StatusCode::FORBIDDEN, Json(json!({"error":"PRIVATE_TEST_KEY"})));
-                }
-                (axum::http::StatusCode::OK,Json(json!({"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]})))
-            }));
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let mut client = Client::new(Provider::OpenAI, "PRIVATE_TEST_KEY").unwrap();
-        client.base_url = reqwest::Url::parse(&base).unwrap();
-        let prices = vec![
-            serde_json::from_value(json!({"model":"model-test","rates":{"input":1,"output":1}}))
-                .unwrap(),
-        ];
-        let result = run(&client, "0.162.0", &prices, None, None).await;
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["model"], "model-test");
-        assert_eq!(
-            run(&client, "0.162.0", &prices, Some(&[]), None).await["code"],
-            "probe_no_text_model"
-        );
-        let mut rejected = Client::new(Provider::OpenAI, "REJECTED_TEST_KEY").unwrap();
-        rejected.base_url = client.base_url.clone();
-        let denied = run(&rejected, "0.162.0", &prices, None, None).await;
-        assert_eq!(denied["stage"], "generation");
-        assert_eq!(denied["upstream_status"], 403);
-        assert_eq!(denied["ok"], false);
-        assert!(!denied.to_string().contains("PRIVATE_TEST_KEY"));
-        let error = failure(
-            "generation",
-            Error::Api {
-                status: 401,
-                body: "PRIVATE_TEST_KEY".into(),
-                retry_after_secs: None,
-            },
-        );
-        assert_eq!(error["code"], "credential_rejected");
-        assert!(!error.to_string().contains("PRIVATE_TEST_KEY"));
-        task.abort();
+    async fn catalog_access_succeeds_without_generation_for_every_provider() {
+        for provider in [Provider::OpenAI, Provider::Anthropic, Provider::XAI] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let unexpected = Arc::new(AtomicUsize::new(0));
+            let calls = unexpected.clone();
+            let app = Router::new()
+                .route(
+                    "/v1/models",
+                    get(|| async { Json(json!({"data":[{"id":"model-without-a-price"}]})) }),
+                )
+                .route(
+                    "/v1/language-models",
+                    get(|| async { Json(json!({"models":[{"id":"model-without-a-price"}]})) }),
+                )
+                .fallback(move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async { axum::http::StatusCode::TOO_MANY_REQUESTS }
+                });
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut client = Client::new(provider, "PRIVATE_TEST_KEY").unwrap();
+            client.base_url = reqwest::Url::parse(&base).unwrap();
+            let result = run(&client, "0.162.0").await;
+            assert_eq!(result, json!({"ok":true,"stage":"models","model_count":1}));
+            assert_eq!(
+                unexpected.load(Ordering::SeqCst),
+                0,
+                "must never send inference"
+            );
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_failures_remain_failures_and_do_not_echo_secrets() {
+        for (status, body, code) in [
+            (
+                401,
+                json!({"error":"PRIVATE_TEST_KEY"}),
+                "credential_rejected",
+            ),
+            (
+                403,
+                json!({"error":"PRIVATE_TEST_KEY"}),
+                "credential_rejected",
+            ),
+            (
+                429,
+                json!({"error":"PRIVATE_TEST_KEY"}),
+                "upstream_rate_limited",
+            ),
+            (500, json!({"error":"PRIVATE_TEST_KEY"}), "upstream_error"),
+            (
+                200,
+                json!({"error":"PRIVATE_TEST_KEY"}),
+                "invalid_upstream_response",
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let app = Router::new().route(
+                "/v1/models",
+                get(move || async move {
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        Json(body),
+                    )
+                }),
+            );
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut client = Client::new(Provider::OpenAI, "PRIVATE_TEST_KEY").unwrap();
+            client.base_url = reqwest::Url::parse(&base).unwrap();
+            let result = run(&client, "0.162.0").await;
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["stage"], "models");
+            assert_eq!(result["code"], code);
+            assert!(!result.to_string().contains("PRIVATE_TEST_KEY"));
+            task.abort();
+        }
     }
 }
