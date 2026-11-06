@@ -84,13 +84,16 @@ async fn provider_refresh_falls_back_then_clears_on_next_five_minute_check_and_r
     let cb = catalog(&b.url, Provider::OpenAI);
     registry.replace("a", &enabled, vec![ca.clone()]);
     registry.replace("b", &enabled, vec![cb.clone()]);
+    assert_eq!(ca.status()["check_id"], 0);
     ca.refresh(false).await;
+    assert_eq!(ca.status()["check_id"], 1);
     assert_eq!(a.calls.load(Ordering::SeqCst), 1);
     assert_eq!(b.calls.load(Ordering::SeqCst), 1);
     assert!(ca.models().contains("model-test"));
     assert_eq!(ca.models(), cb.models());
     b.code.store(503, Ordering::SeqCst);
     cb.refresh(false).await;
+    assert_eq!(cb.status()["check_id"], 1);
     assert_eq!(
         b.calls.load(Ordering::SeqCst),
         1,
@@ -110,11 +113,13 @@ async fn provider_refresh_falls_back_then_clears_on_next_five_minute_check_and_r
     assert!(cb.models().is_empty());
     assert!(shared.snapshot.read().unwrap().is_none());
     assert_eq!(ca.status()["complete_catalog"], false);
+    assert_eq!(ca.status()["check_id"], 2);
     assert!(ca.evidence("model-test").is_err());
     assert_eq!(a.calls.load(Ordering::SeqCst), 2);
     assert_eq!(b.calls.load(Ordering::SeqCst), 2);
     b.code.store(200, Ordering::SeqCst);
     ca.refresh(true).await;
+    assert_eq!(cb.status()["check_id"], 3);
     assert!(cb.models().contains("model-test"));
 }
 
@@ -132,11 +137,14 @@ async fn removed_source_cannot_publish_in_flight_catalog_and_is_not_retained() {
         tokio::spawn(async move { catalog.refresh(true).await })
     };
     up.entered.notified().await;
+    assert!(catalog.status()["check_id"].is_null());
+    assert_eq!(catalog.status()["refreshing"], true);
     registry.remove("merchant");
     up.release.notify_one();
     refresh.await.unwrap();
     assert!(catalog.models().is_empty());
     assert_eq!(catalog.status()["last_error"], "account_changed");
+    assert_eq!(catalog.status()["check_id"], 0);
     drop(catalog);
     assert!(weak.upgrade().is_none());
 }

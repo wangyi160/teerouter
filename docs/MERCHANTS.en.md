@@ -69,6 +69,8 @@ Official catalogs are shared across OpenAI, Claude and Grok respectively; each a
 
 Catalog status includes `scope:"provider"`, `provider` and `refresh_secs`, without revealing the source merchant or `source_deployment`. Merchant `catalog.data` is organized around that merchant's accounts; accounts from the same provider reference the same catalog evidence.
 
+`check_id` orders completed checks for that provider within the current Router runtime, starting at zero. Successes and failures advance it; it is null while a refresh is running. Coalesced, skipped or superseded checks do not advance it. Clients may record it with a token-upload acknowledgement to display an unchanged earlier failure as awaiting a catalog update. Compare it only within the same `merchant.runtime_id`. It orders shared catalog evidence and does not prove an individual account's generation capability.
+
 <a id="用户请求与选路"></a>
 
 ## User requests and routing

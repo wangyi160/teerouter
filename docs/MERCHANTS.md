@@ -69,6 +69,8 @@
 
 目录状态含 `scope:"provider"`、`provider`、`refresh_secs`，不暴露来源商户或 `source_deployment`。商户状态中的 `catalog.data` 按本商户账号组织，同一提供商引用相同目录证据。
 
+`check_id` 是当前 Router 实例内该提供商已完成检查的递增编号，初始为 0；成功和失败均递增，刷新进行中为 null。合并、跳过或因账号变更废弃的检查不递增。客户端可在 Token 上传回执中记录此编号，将未更新的旧失败显示为等待目录更新；编号必须与 `merchant.runtime_id` 一起使用，不能跨重启比较。它表示共享目录检查顺序，不证明某个账号的生成能力。
+
 <a id="user-requests-and-routing"></a>
 
 ## 用户请求与选路

@@ -33,6 +33,7 @@ struct Evidence {
 #[derive(Default)]
 struct Refresh {
     started: bool,
+    check_id: u64,
     completed: Option<Instant>,
     preferred: Option<(String, String, usize)>,
     error: Option<&'static str>,
@@ -138,6 +139,7 @@ impl Registry {
                 });
                 state.completed = Some(checked_at);
                 state.started = true;
+                state.check_id += 1;
                 state.preferred = Some((owner.into(), catalog.source.clone(), snapshot.account));
             }
             let catalogs: Vec<_> = selected
@@ -213,6 +215,7 @@ impl Shared {
             "refresh_secs":self.settings.read().unwrap().options.refresh_secs,
             "complete_catalog":snapshot.is_some(), "fetched_at":snapshot.map(|s| s.fetched_at),
             "models":snapshot.map(|s| s.models.len()).unwrap_or(0), "refreshing":state.is_err(),
+            "check_id":state.as_ref().ok().map(|s| s.check_id),
             "last_error":state.ok().and_then(|s| s.error)})
     }
 
@@ -349,6 +352,12 @@ impl Shared {
             state.preferred = None;
         }
         state.completed = (state.error != Some("account_changed")).then(Instant::now);
+        // Runtime-scoped evidence ordering lets clients distinguish an old
+        // failure from the next completed check after replacing credentials.
+        // Coalesced/skipped checks and superseded in-flight sources do not count.
+        if state.completed.is_some() {
+            state.check_id += 1;
+        }
     }
 
     fn contains(sources: &BTreeMap<String, Sources>, owner: &str, catalog: &Arc<Catalog>) -> bool {
